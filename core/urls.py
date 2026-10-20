@@ -18,8 +18,10 @@ from django.contrib import admin
 from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
+from accounts.views import routing_view
 
 urlpatterns = [
+    path('', routing_view, name='home'),
     path('admin/', admin.site.urls),
     
     # Django-Allauth Google routes

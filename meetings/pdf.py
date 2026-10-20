@@ -1,9 +1,13 @@
 from django.template.loader import render_to_string
 from django.core.files.base import ContentFile
-import weasyprint
-
 def generate_meeting_pdf(meeting):
     """Takes a meeting and its attendees, renders HTML, and creates a PDF."""
+    try:
+        import weasyprint
+    except (ImportError, OSError) as exc:
+        raise RuntimeError(
+            "WeasyPrint is required for PDF generation but could not be loaded."
+        ) from exc
     attendees = meeting.attendees.filter(has_signed=True)
     
     # Render the strict PDF template with the meeting data and signatures

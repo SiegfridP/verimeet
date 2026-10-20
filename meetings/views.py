@@ -1,3 +1,4 @@
+import hmac
 import time
 from django.shortcuts import render, get_object_or_404, redirect
 from django.contrib.auth.decorators import login_required
@@ -67,9 +68,17 @@ def sign_meeting(request, meeting_id):
     if not timestamp or not received_sig:
         return HttpResponseForbidden("Missing security token.")
     
-    expected_sig = generate_hmac_qr_token(meeting_id, timestamp)
-    # Check if signature matches AND if the token is less than 1 hour old (3600 secs)
-    if not hmac.compare_digest(expected_sig, received_sig) or (int(time.time()) - int(timestamp) > 3600):
+    try:
+        ts = int(timestamp)
+        now = int(time.time())
+        token_age = now - ts
+        if token_age < 0 or token_age > 3600:
+            return HttpResponseForbidden("Invalid or expired QR code.")
+        
+        expected_sig = generate_hmac_qr_token(meeting_id, timestamp)
+        if not hmac.compare_digest(expected_sig, received_sig):
+            return HttpResponseForbidden("Invalid or expired QR code.")
+    except (ValueError, TypeError):
         return HttpResponseForbidden("Invalid or expired QR code.")
 
     # 2. Get the attendance record
