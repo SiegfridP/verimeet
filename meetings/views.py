@@ -1,4 +1,5 @@
 import hmac
+from accounts.views import is_global_admin, has_membership
 import time
 from django.shortcuts import render, get_object_or_404, redirect
 from django.contrib.auth.decorators import login_required
@@ -6,17 +7,26 @@ from django.http import HttpResponseForbidden, HttpResponse
 from django.utils import timezone
 from .models import Meeting, Attendance, AuditLog
 from .crypto import generate_hmac_qr_token, sign_document_data
-from .pdf import generate_meeting_pdf
+from accounts.models import Membership
 
 def user_in_department(user, meeting):
     return user.department == meeting.department
 
 @login_required
-def admin_dashboard(request):
-    if not request.user.is_admin:
-        return redirect('student_dashboard')
-    meetings = Meeting.objects.filter(department=request.user.department)
-    return render(request, 'meetings/admin_dashboard.html', {'meetings': meetings})
+def authorized_personnel_dashboard(request):
+    # Authorized Personnel can view meetings for their department
+    if not request.user.is_authenticated:
+        return HttpResponseForbidden()
+    # Determine department via membership
+    try:
+        membership = Membership.objects.get(user=request.user, department=request.user.department)
+    except Membership.DoesNotExist:
+        return HttpResponseForbidden()
+    if membership.role != 'AP':
+        return HttpResponseForbidden()
+    department = membership.department
+    meetings = Meeting.objects.filter(department=department)
+    return render(request, 'meetings/authorized_personnel_dashboard.html', {'department': department, 'meetings': meetings})
 
 @login_required
 def student_dashboard(request):
@@ -28,7 +38,7 @@ def student_dashboard(request):
 def lock_meeting(request, meeting_id):
     """Admin changes state from Draft to Finished."""
     meeting = get_object_or_404(Meeting, id=meeting_id)
-    if not request.user.is_admin or not user_in_department(request.user, meeting):
+    if not has_membership(request.user, meeting.department, role='AP'):
         return HttpResponseForbidden()
     
     if meeting.status == 'Draft':
@@ -38,13 +48,13 @@ def lock_meeting(request, meeting_id):
             department=meeting.department, meeting=meeting, user=request.user,
             action="Locked document for signing"
         )
-    return redirect('admin_dashboard')
+    return redirect('authorized_personnel_dashboard')
 
 @login_required
 def projector_qr_view(request, meeting_id):
     """Displays the QR code for the projector."""
     meeting = get_object_or_404(Meeting, id=meeting_id)
-    if not request.user.is_admin or meeting.status != 'Finished':
+    if not has_membership(request.user, meeting.department, role='AP') or meeting.status != 'Finished':
         return HttpResponseForbidden()
     
     timestamp = str(int(time.time()))
