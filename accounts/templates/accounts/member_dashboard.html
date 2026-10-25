@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VeriMeet – Member Dashboard</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet" />
+  <style>
+    body {margin:0;font-family:'Inter',sans-serif;background:linear-gradient(135deg,#0d0d2b,#1a1a40);color:#e0e0ff;min-height:100vh;display:flex;flex-direction:column;}
+    header{background:rgba(255,255,255,0.1);padding:1rem 2rem;backdrop-filter:blur(5px);}
+    h1{font-size:2rem;margin:0;}
+    main{flex:1;padding:2rem;}
+    .card{background:rgba(255,255,255,0.08);border-radius:8px;padding:1.5rem;margin-top:1rem;backdrop-filter:blur(4px);}
+    a.button{display:inline-block;background:#4fd1c5;color:#1a1a40;padding:0.5rem 1rem;border-radius:4px;margin-top:0.5rem;text-decoration:none;transition:background .2s;}
+    a.button:hover{background:#81e6d9;}
+  </style>
+</head>
+<body>
+  <header><h1>Member Dashboard</h1></header>
+  <main>
+    <section class="card">
+      <h2>Department: {{ department.name }}</h2>
+      <p>Your role: {{ membership.get_role_display }}</p>
+    </section>
+    <section class="card">
+      <p>You have read‑only access. Contact an Authorized Personnel for elevated permissions.</p>
+    </section>
+  </main>
+</body>
+</html>

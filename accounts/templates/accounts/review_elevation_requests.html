@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Review Elevation Requests – VeriMeet</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet" />
+  <style>
+    body {margin:0;font-family:'Inter',sans-serif;background:linear-gradient(135deg,#0d0d2b,#1a1a40);color:#e0e0ff;min-height:100vh;display:flex;flex-direction:column;}
+    header{background:rgba(255,255,255,0.1);padding:1rem 2rem;backdrop-filter:blur(5px);}
+    main{flex:1;padding:2rem;}
+    table{width:100%;border-collapse:collapse;margin-top:1rem;}
+    th,td{padding:0.75rem;text-align:left;}
+    th{background:rgba(255,255,255,0.15);}
+    tr:nth-child(even){background:rgba(255,255,255,0.05);}
+    button{background:#4fd1c5;color:#1a1a40;padding:0.5rem 1rem;border:none;border-radius:4px;margin-right:0.5rem;cursor:pointer;transition:background .2s;}
+    button:hover{background:#81e6d9;}
+    a{color:#4fd1c5;text-decoration:none;}
+  </style>
+</head>
+<body>
+  <header><h1>Pending Role Elevation Requests</h1></header>
+  <main>
+    {% if pending_requests %}
+      <form method="post">{% csrf_token %}
+        <table>
+          <thead>
+            <tr><th>User</th><th>Department</th><th>Note</th><th>Action</th></tr>
+          </thead>
+          <tbody>
+            {% for req in pending_requests %}
+            <tr>
+              <td>{{ req.target_user.email }}</td>
+              <td>{{ req.department.name }}</td>
+              <td>{{ req.note|default:"—" }}</td>
+              <td>
+                <button type="submit" name="action" value="approve" formaction="?request_id={{ req.id }}&action=approve">Approve</button>
+                <button type="submit" name="action" value="reject" formaction="?request_id={{ req.id }}&action=reject">Reject</button>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </form>
+    {% else %}
+      <p>No pending requests.</p>
+    {% endif %}
+    <p><a href="{% url 'admin_dashboard' %}">← Back to Admin Dashboard</a></p>
+  </main>
+</body>
+</html>
