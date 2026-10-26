@@ -3,7 +3,7 @@ from django.contrib.auth.models import AbstractUser
 from django.core.validators import FileExtensionValidator
 from django.db.models.signals import post_save
 from django.dispatch import receiver
-from meetings.crypto import generate_ecdsa_keypair  # We will create this in the meetings app
+from meetings.crypto import generate_ecdsa_keypair, encrypt_private_key  # Updated to include encryption helper
 
 class Department(models.Model):
     name = models.CharField(max_length=100, unique=True)
@@ -39,9 +39,18 @@ class User(AbstractUser):
 def create_user_keys(sender, instance, created, **kwargs):
     if created and not instance.public_key:
         priv_pem, pub_pem = generate_ecdsa_keypair()
-        instance.private_key = priv_pem
+        encrypted_priv = encrypt_private_key(priv_pem)
+
+        # Save the encrypted private key and public key without
+        # triggering another post_save signal.
+        User.objects.filter(pk=instance.pk).update(
+            private_key=encrypted_priv,
+            public_key=pub_pem,
+        )
+
+        # Keep the in-memory instance consistent.
+        instance.private_key = encrypted_priv
         instance.public_key = pub_pem
-        instance.save()
 
 # ====================
 # RBAC / Multi‑tenancy models
