@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Select Department – VeriMeet</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: 'Inter', sans-serif;
+      background: linear-gradient(135deg, #0d0d2b, #1a1a40);
+      color: #e0e0ff;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      background: rgba(255, 255, 255, 0.08);
+      padding: 1.25rem 2rem;
+      backdrop-filter: blur(10px);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    header h1 { font-size: 1.5rem; margin: 0; font-weight: 600; }
+    main { flex: 1; padding: 2rem; max-width: 600px; margin: 0 auto; width: 100%; }
+    .card {
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 12px;
+      padding: 2rem;
+      backdrop-filter: blur(8px);
+    }
+    .dept-list {
+      list-style: none;
+      padding: 0;
+      margin: 1.5rem 0;
+    }
+    .dept-list li {
+      margin-bottom: 0.75rem;
+    }
+    .dept-link {
+      display: block;
+      padding: 0.85rem 1.25rem;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 8px;
+      color: #e0e0ff;
+      text-decoration: none;
+      font-weight: 500;
+      transition: background 0.2s, border-color 0.2s, transform 0.1s;
+    }
+    .dept-link:hover {
+      background: rgba(79, 209, 197, 0.15);
+      border-color: #4fd1c5;
+      color: #ffffff;
+      transform: translateY(-1px);
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Select Department for Meeting</h1>
+  </header>
+  <main>
+    <div class="card">
+      <p>Please choose which authorized department you want to create a meeting for:</p>
+      <ul class="dept-list">
+        {% for dept in departments %}
+          <li>
+            <a class="dept-link" href="{% url 'create_meeting_dept' dept_id=dept.id %}">
+              {{ dept.name }}
+            </a>
+          </li>
+        {% endfor %}
+      </ul>
+      <p><a href="{% url 'routing_view' %}" style="color:#4fd1c5; text-decoration:none;">← Return to Main</a></p>
+    </div>
+  </main>
+</body>
+</html>

@@ -52,6 +52,15 @@ def create_user_keys(sender, instance, created, **kwargs):
         instance.private_key = encrypted_priv
         instance.public_key = pub_pem
 
+    # Backward compatibility: If instance.department is set, ensure Membership exists
+    if instance.department:
+        # Assigned department members default to canonical Officer ('O')
+        Membership.objects.get_or_create(
+            user=instance,
+            department=instance.department,
+            defaults={'role': 'O'}
+        )
+
 # ====================
 # RBAC / Multi‑tenancy models
 # ====================
@@ -60,11 +69,10 @@ class Membership(models.Model):
     ROLE_CHOICES = [
         ('AP', 'Authorized Personnel'),
         ('O', 'Officer'),
-        ('S', 'Student'),
     ]
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='memberships')
     department = models.ForeignKey(Department, on_delete=models.CASCADE, related_name='memberships')
-    role = models.CharField(max_length=2, choices=ROLE_CHOICES, default='S')
+    role = models.CharField(max_length=2, choices=ROLE_CHOICES, default='O')
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -81,17 +89,20 @@ from datetime import timedelta
 def default_invitation_expiry():
     return timezone.now() + timedelta(days=7)
 
+def generate_invitation_token():
+    return uuid.uuid4().hex
+
 class Invitation(models.Model):
     email = models.EmailField()
     department = models.ForeignKey(Department, on_delete=models.CASCADE, related_name='invitations')
     inviter = models.ForeignKey(User, on_delete=models.CASCADE, related_name='sent_invitations')
-    token = models.CharField(max_length=64, unique=True, default=uuid.uuid4().hex)
+    token = models.CharField(max_length=64, unique=True, default=generate_invitation_token)
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField(default=default_invitation_expiry)
     accepted = models.BooleanField(default=False)
     accepted_at = models.DateTimeField(null=True, blank=True)
-    # Invitations always grant regular membership (Student/Officer). Role fixed to 'S'.
-    role = models.CharField(max_length=2, choices=Membership.ROLE_CHOICES, default='S', editable=False)
+    # Invitations grant Officer membership in the department.
+    role = models.CharField(max_length=2, choices=[('O', 'Officer')], default='O')
 
     def is_valid(self):
         return not self.accepted and timezone.now() < self.expires_at

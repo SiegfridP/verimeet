@@ -18,14 +18,65 @@
 <body>
   <header><h1>Authorized Personnel Dashboard</h1></header>
   <main>
+    {% if messages %}
+      {% for message in messages %}
+        <div style="background: rgba(79, 209, 197, 0.15); border: 1px solid #4fd1c5; color: #81e6d9; padding: 0.75rem 1rem; border-radius: 6px; margin-bottom: 1rem;">
+          {{ message }}
+        </div>
+      {% endfor %}
+    {% endif %}
     <section class="card">
       <h2>Department: {{ department.name }}</h2>
       <p>Your role: {{ membership.get_role_display }}</p>
     </section>
     <section class="card">
       <h3>Actions</h3>
-      <a href="{% url 'invite_member' dept_id=department.id %}" class="button">Invite Member</a>
+      <a href="{% url 'create_meeting_dept' dept_id=department.id %}" class="button" id="btn-create-meeting">Create Meeting</a>
+      <a href="{% url 'invite_member' dept_id=department.id %}" class="button">Invite an Officer</a>
       <a href="{% url 'request_authorized_personnel' dept_id=department.id %}" class="button">Request Authorized Personnel</a>
+    </section>
+    <section class="card">
+      <h3>Department Meetings</h3>
+      {% if meetings %}
+      <table style="width:100%; border-collapse:collapse; margin-top:1rem;">
+        <thead>
+          <tr style="text-align:left; border-bottom:1px solid rgba(255,255,255,0.15);">
+            <th style="padding:0.75rem 0.5rem;">Title</th>
+            <th style="padding:0.75rem 0.5rem;">Status</th>
+            <th style="padding:0.75rem 0.5rem;">Created</th>
+            <th style="padding:0.75rem 0.5rem;">Assigned Signers</th>
+            <th style="padding:0.75rem 0.5rem;">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for meeting in meetings %}
+          <tr style="border-bottom:1px solid rgba(255,255,255,0.06);">
+            <td style="padding:0.75rem 0.5rem;"><strong>{{ meeting.title }}</strong></td>
+            <td style="padding:0.75rem 0.5rem;">
+              <span style="display:inline-block; padding:0.2rem 0.5rem; border-radius:4px; font-size:0.8rem; font-weight:600;
+                {% if meeting.status == 'Draft' %}background:rgba(246,173,85,0.2); color:#f6ad55;
+                {% elif meeting.status == 'Finished' %}background:rgba(79,209,197,0.2); color:#4fd1c5;
+                {% else %}background:rgba(160,174,192,0.2); color:#cbd5e0;{% endif %}">
+                {{ meeting.get_status_display }}
+              </span>
+            </td>
+            <td style="padding:0.75rem 0.5rem; font-size:0.85rem; color:#c4c4f0;">{{ meeting.created_at|date:"M d, Y H:i" }}</td>
+            <td style="padding:0.75rem 0.5rem; font-size:0.85rem;">{{ meeting.attendees.count }} assigned</td>
+            <td style="padding:0.75rem 0.5rem;">
+              {% if meeting.status == 'Draft' %}
+                <a href="{% url 'assign_participants' meeting.id %}" class="button" style="padding:0.35rem 0.7rem; font-size:0.8rem; margin:0 0.25rem 0 0;">Assign Participants</a>
+                <a href="{% url 'lock_meeting' meeting.id %}" class="button" style="padding:0.35rem 0.7rem; font-size:0.8rem; background:#f6ad55; margin:0;">Lock for Signing</a>
+              {% elif meeting.status == 'Finished' %}
+                <a href="{% url 'projector_qr_view' meeting.id %}" class="button" style="padding:0.35rem 0.7rem; font-size:0.8rem; margin:0;">Projector QR</a>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+        <p style="color:#9a9ac8; font-size:0.9rem;">No meetings found for this department. Click "Create Meeting" to get started.</p>
+      {% endif %}
     </section>
   </main>
 </body>

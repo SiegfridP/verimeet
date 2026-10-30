@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Create Meeting Minutes – VeriMeet</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: 'Inter', sans-serif;
+      background: linear-gradient(135deg, #0d0d2b, #1a1a40);
+      color: #e0e0ff;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      background: rgba(255, 255, 255, 0.08);
+      padding: 1.25rem 2rem;
+      backdrop-filter: blur(10px);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    header h1 { font-size: 1.5rem; margin: 0; font-weight: 600; }
+    header .dept-badge {
+      background: rgba(79, 209, 197, 0.2);
+      color: #4fd1c5;
+      padding: 0.35rem 0.75rem;
+      border-radius: 9999px;
+      font-size: 0.875rem;
+      font-weight: 500;
+    }
+    main { flex: 1; padding: 2rem; max-width: 800px; margin: 0 auto; width: 100%; }
+    .card {
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 12px;
+      padding: 2rem;
+      backdrop-filter: blur(8px);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+    }
+    .form-group {
+      margin-bottom: 1.5rem;
+    }
+    label {
+      display: block;
+      font-weight: 500;
+      margin-bottom: 0.4rem;
+      font-size: 0.95rem;
+      color: #c4c4f0;
+    }
+    .help-text {
+      font-size: 0.8rem;
+      color: #9a9ac8;
+      margin-top: 0.25rem;
+    }
+    input[type="text"], textarea {
+      width: 100%;
+      padding: 0.75rem 1rem;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.08);
+      color: #ffffff;
+      font-family: inherit;
+      font-size: 0.95rem;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    input[type="text"]:focus, textarea:focus {
+      outline: none;
+      border-color: #4fd1c5;
+      box-shadow: 0 0 0 3px rgba(79, 209, 197, 0.25);
+    }
+    .participants-container {
+      max-height: 240px;
+      overflow-y: auto;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 8px;
+      padding: 0.75rem;
+      background: rgba(0, 0, 0, 0.15);
+    }
+    .participant-item {
+      display: flex;
+      align-items: center;
+      padding: 0.5rem 0.75rem;
+      border-radius: 6px;
+      margin-bottom: 0.25rem;
+      transition: background 0.15s;
+    }
+    .participant-item:hover {
+      background: rgba(255, 255, 255, 0.05);
+    }
+    .participant-item label {
+      margin-bottom: 0;
+      margin-left: 0.65rem;
+      cursor: pointer;
+      font-weight: 400;
+      color: #e0e0ff;
+    }
+    .participant-item input[type="checkbox"] {
+      width: 1.1rem;
+      height: 1.1rem;
+      accent-color: #4fd1c5;
+      cursor: pointer;
+    }
+    .errorlist {
+      color: #fc8181;
+      list-style: none;
+      padding: 0;
+      margin: 0.35rem 0 0 0;
+      font-size: 0.85rem;
+    }
+    .alert-error {
+      background: rgba(229, 62, 62, 0.2);
+      border: 1px solid #e53e3e;
+      color: #feb2b2;
+      padding: 0.75rem 1rem;
+      border-radius: 8px;
+      margin-bottom: 1.25rem;
+      font-size: 0.9rem;
+    }
+    .button {
+      display: inline-block;
+      background: #4fd1c5;
+      color: #0d0d2b;
+      font-weight: 600;
+      padding: 0.75rem 1.5rem;
+      border-radius: 8px;
+      border: none;
+      cursor: pointer;
+      font-size: 0.95rem;
+      transition: background 0.2s, transform 0.1s;
+      text-decoration: none;
+    }
+    .button:hover {
+      background: #81e6d9;
+    }
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.1);
+      color: #e0e0ff;
+      margin-left: 0.75rem;
+    }
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.18);
+    }
+    .actions-row {
+      display: flex;
+      align-items: center;
+      margin-top: 2rem;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Create Meeting Minutes</h1>
+    <span class="dept-badge">{{ department.name }}</span>
+  </header>
+  <main>
+    <div class="card">
+      {% if form.non_field_errors %}
+        <div class="alert-error">
+          {{ form.non_field_errors }}
+        </div>
+      {% endif %}
+
+      <form method="post" id="create-meeting-form">
+        {% csrf_token %}
+        <input type="hidden" name="department_id" value="{{ department.id }}" />
+
+        <div class="form-group">
+          <label for="id_title">Meeting Title / Subject <span style="color:#fc8181;">*</span></label>
+          {{ form.title }}
+          {% if form.title.errors %}
+            {{ form.title.errors }}
+          {% endif %}
+        </div>
+
+        <div class="form-group">
+          <label for="id_minutes_content">Agenda / Initial Minutes Content</label>
+          {{ form.minutes_content }}
+          {% if form.minutes_content.help_text %}
+            <div class="help-text">{{ form.minutes_content.help_text }}</div>
+          {% endif %}
+          {% if form.minutes_content.errors %}
+            {{ form.minutes_content.errors }}
+          {% endif %}
+        </div>
+
+        <div class="form-group">
+          <label>Assign Participants & Intended Signers</label>
+          <div class="help-text" style="margin-bottom: 0.5rem;">
+            Select eligible department members who should attend and be authorized to sign these minutes upon finalization.
+          </div>
+          {% if form.participants.field.queryset.exists %}
+            <div class="participants-container">
+              {% for pk, choice_label in form.participants.field.choices %}
+                <div class="participant-item">
+                  <input type="checkbox" name="participants" value="{{ pk }}" id="id_part_{{ pk }}"
+                    {% if pk in form.participants.value or pk|stringformat:"s" in form.participants.value %}checked{% endif %} />
+                  <label for="id_part_{{ pk }}">{{ choice_label }}</label>
+                </div>
+              {% endfor %}
+            </div>
+          {% else %}
+            <p style="color:#9a9ac8; font-size:0.9rem; font-style:italic;">No other eligible members found in {{ department.name }}. You can still create the meeting and assign members later.</p>
+          {% endif %}
+          {% if form.participants.errors %}
+            {{ form.participants.errors }}
+          {% endif %}
+        </div>
+
+        <div class="actions-row">
+          <button type="submit" class="button" id="submit-create-meeting">Create Meeting</button>
+          <a href="{% url 'department_dashboard' dept_id=department.id %}" class="button btn-secondary">Cancel</a>
+        </div>
+      </form>
+    </div>
+  </main>
+</body>
+</html>
