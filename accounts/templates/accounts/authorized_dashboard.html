@@ -11,8 +11,12 @@
     h1{font-size:2rem;margin:0;}
     main{flex:1;padding:2rem;}
     .card{background:rgba(255,255,255,0.08);border-radius:8px;padding:1.5rem;margin-top:1rem;backdrop-filter:blur(4px);}
-    a.button{display:inline-block;background:#4fd1c5;color:#1a1a40;padding:0.5rem 1rem;border-radius:4px;margin-top:0.5rem;text-decoration:none;transition:background .2s;}
-    a.button:hover{background:#81e6d9;}
+    a.button, button.button{display:inline-block;background:#4fd1c5;color:#1a1a40;padding:0.5rem 1rem;border-radius:4px;margin-top:0.5rem;text-decoration:none;transition:background .2s;font-family:inherit;}
+    a.button:hover, button.button:hover{background:#81e6d9;}
+    .status-badge {display:inline-block;padding:0.2rem 0.5rem;border-radius:4px;font-size:0.8rem;font-weight:600;}
+    .status-draft {background:rgba(246,173,85,0.2);color:#f6ad55;}
+    .status-finished {background:rgba(79,209,197,0.2);color:#4fd1c5;}
+    .status-other {background:rgba(160,174,192,0.2);color:#cbd5e0;}
   </style>
 </head>
 <body>
@@ -53,20 +57,33 @@
           <tr style="border-bottom:1px solid rgba(255,255,255,0.06);">
             <td style="padding:0.75rem 0.5rem;"><strong>{{ meeting.title }}</strong></td>
             <td style="padding:0.75rem 0.5rem;">
-              <span style="display:inline-block; padding:0.2rem 0.5rem; border-radius:4px; font-size:0.8rem; font-weight:600;
-                {% if meeting.status == 'Draft' %}background:rgba(246,173,85,0.2); color:#f6ad55;
-                {% elif meeting.status == 'Finished' %}background:rgba(79,209,197,0.2); color:#4fd1c5;
-                {% else %}background:rgba(160,174,192,0.2); color:#cbd5e0;{% endif %}">
-                {{ meeting.get_status_display }}
-              </span>
+              {% if meeting.status == 'Draft' %}
+                <span class="status-badge status-draft">
+                  {{ meeting.get_status_display }}
+                </span>
+              {% elif meeting.status == 'Finished' %}
+                <span class="status-badge status-finished">
+                  {{ meeting.get_status_display }}
+                </span>
+              {% else %}
+                <span class="status-badge status-other">
+                  {{ meeting.get_status_display }}
+                </span>
+              {% endif %}
             </td>
             <td style="padding:0.75rem 0.5rem; font-size:0.85rem; color:#c4c4f0;">{{ meeting.created_at|date:"M d, Y H:i" }}</td>
             <td style="padding:0.75rem 0.5rem; font-size:0.85rem;">{{ meeting.attendees.count }} assigned</td>
             <td style="padding:0.75rem 0.5rem;">
               {% if meeting.status == 'Draft' %}
+                <a href="{% url 'edit_meeting' meeting.id %}" class="button" style="padding:0.35rem 0.7rem; font-size:0.8rem; margin:0 0.25rem 0 0;">Edit</a>
+                <a href="{% url 'review_meeting' meeting.id %}" class="button" style="padding:0.35rem 0.7rem; font-size:0.8rem; background:rgba(255,255,255,0.15); color:#e0e0ff; margin:0 0.25rem 0 0;">Review</a>
                 <a href="{% url 'assign_participants' meeting.id %}" class="button" style="padding:0.35rem 0.7rem; font-size:0.8rem; margin:0 0.25rem 0 0;">Assign Participants</a>
-                <a href="{% url 'lock_meeting' meeting.id %}" class="button" style="padding:0.35rem 0.7rem; font-size:0.8rem; background:#f6ad55; margin:0;">Lock for Signing</a>
+                <form method="post" action="{% url 'lock_meeting' meeting.id %}" style="display:inline;" onsubmit="return confirm('Lock this meeting for signing?');">
+                  {% csrf_token %}
+                  <button type="submit" class="button" style="padding:0.35rem 0.7rem; font-size:0.8rem; background:#f6ad55; color:#1a1a40; margin:0; border:none; border-radius:4px; cursor:pointer; font-family:inherit; font-weight:600;">Lock for Signing</button>
+                </form>
               {% elif meeting.status == 'Finished' %}
+                <a href="{% url 'review_meeting' meeting.id %}" class="button" style="padding:0.35rem 0.7rem; font-size:0.8rem; background:rgba(255,255,255,0.15); color:#e0e0ff; margin:0 0.25rem 0 0;">View</a>
                 <a href="{% url 'projector_qr_view' meeting.id %}" class="button" style="padding:0.35rem 0.7rem; font-size:0.8rem; margin:0;">Projector QR</a>
               {% endif %}
             </td>

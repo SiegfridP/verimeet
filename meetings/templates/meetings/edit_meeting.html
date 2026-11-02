@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Edit Draft Minutes – {{ meeting.title }} – VeriMeet</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: 'Inter', sans-serif;
+      background: linear-gradient(135deg, #0d0d2b, #1a1a40);
+      color: #e0e0ff;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      background: rgba(255, 255, 255, 0.08);
+      padding: 1.25rem 2rem;
+      backdrop-filter: blur(10px);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    header h1 { font-size: 1.5rem; margin: 0; font-weight: 600; }
+    header .header-badges {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .dept-badge {
+      background: rgba(79, 209, 197, 0.2);
+      color: #4fd1c5;
+      padding: 0.35rem 0.75rem;
+      border-radius: 9999px;
+      font-size: 0.875rem;
+      font-weight: 500;
+    }
+    .status-badge-draft {
+      background: rgba(246, 173, 85, 0.2);
+      color: #f6ad55;
+      padding: 0.35rem 0.75rem;
+      border-radius: 9999px;
+      font-size: 0.875rem;
+      font-weight: 600;
+    }
+    main { flex: 1; padding: 2rem; max-width: 800px; margin: 0 auto; width: 100%; }
+    .card {
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 12px;
+      padding: 2rem;
+      backdrop-filter: blur(8px);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+    }
+    .form-group {
+      margin-bottom: 1.5rem;
+    }
+    label {
+      display: block;
+      font-weight: 500;
+      margin-bottom: 0.4rem;
+      font-size: 0.95rem;
+      color: #c4c4f0;
+    }
+    .help-text {
+      font-size: 0.8rem;
+      color: #9a9ac8;
+      margin-top: 0.25rem;
+    }
+    input[type="text"], textarea {
+      width: 100%;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 8px;
+      padding: 0.75rem 1rem;
+      color: #ffffff;
+      font-family: inherit;
+      font-size: 0.95rem;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    input[type="text"]:focus, textarea:focus {
+      outline: none;
+      border-color: #4fd1c5;
+      box-shadow: 0 0 0 3px rgba(79, 209, 197, 0.25);
+    }
+    .errorlist {
+      color: #fc8181;
+      list-style: none;
+      padding: 0;
+      margin: 0.35rem 0 0 0;
+      font-size: 0.85rem;
+    }
+    .alert-error {
+      background: rgba(229, 62, 62, 0.2);
+      border: 1px solid #e53e3e;
+      color: #feb2b2;
+      padding: 0.75rem 1rem;
+      border-radius: 8px;
+      margin-bottom: 1.25rem;
+      font-size: 0.9rem;
+    }
+    .info-box {
+      background: rgba(79, 209, 197, 0.1);
+      border: 1px solid rgba(79, 209, 197, 0.25);
+      border-radius: 8px;
+      padding: 1rem;
+      margin-bottom: 1.5rem;
+      font-size: 0.9rem;
+      color: #cbd5e0;
+    }
+    .info-box strong { color: #81e6d9; }
+    .button {
+      display: inline-block;
+      background: #4fd1c5;
+      color: #0d0d2b;
+      font-weight: 600;
+      padding: 0.75rem 1.5rem;
+      border-radius: 8px;
+      border: none;
+      cursor: pointer;
+      font-size: 0.95rem;
+      transition: background 0.2s, transform 0.1s;
+      text-decoration: none;
+    }
+    .button:hover { background: #81e6d9; }
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.1);
+      color: #e0e0ff;
+      margin-left: 0.5rem;
+    }
+    .btn-secondary:hover { background: rgba(255, 255, 255, 0.18); }
+    .actions-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.75rem;
+      margin-top: 2rem;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Edit Draft Minutes</h1>
+    <div class="header-badges">
+      <span class="dept-badge">{{ department.name }}</span>
+      <span class="status-badge-draft">Status: {{ meeting.get_status_display }}</span>
+    </div>
+  </header>
+  <main>
+    <div class="card">
+      {% if form.non_field_errors %}
+        <div class="alert-error">
+          {{ form.non_field_errors }}
+        </div>
+      {% endif %}
+
+      <div class="info-box">
+        <strong>Draft Mode:</strong> You are editing a draft meeting. All changes remain editable until the document is explicitly reviewed and finalized for signing. Existing participant assignments ({{ meeting.attendees.count }} assigned) are preserved.
+      </div>
+
+      <form method="post" id="edit-meeting-form">
+        {% csrf_token %}
+
+        <div class="form-group">
+          <label for="id_title">Meeting Title / Subject <span style="color:#fc8181;">*</span></label>
+          {{ form.title }}
+          <div class="help-text">Descriptive title or subject for this assembly or meeting.</div>
+          {% if form.title.errors %}
+            {{ form.title.errors }}
+          {% endif %}
+        </div>
+
+        <div class="form-group">
+          <label for="id_minutes_content">Agenda & Minutes Content</label>
+          {{ form.minutes_content }}
+          <div class="help-text">Document agenda, discussion notes, resolutions, and draft minutes text.</div>
+          {% if form.minutes_content.errors %}
+            {{ form.minutes_content.errors }}
+          {% endif %}
+        </div>
+
+        <div class="actions-row">
+          <button type="submit" class="button" id="btn-save-meeting">Save Changes</button>
+          <a href="{% url 'review_meeting' meeting.id %}" class="button btn-secondary" id="btn-review-meeting">Review & Preview</a>
+          <a href="{% url 'assign_participants' meeting.id %}" class="button btn-secondary" id="btn-assign-participants">Assign Participants</a>
+          <a href="{% url 'department_dashboard' dept_id=department.id %}" class="button btn-secondary">Cancel</a>
+        </div>
+      </form>
+    </div>
+  </main>
+</body>
+</html>

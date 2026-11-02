@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Review Minutes – {{ meeting.title }} – VeriMeet</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: 'Inter', sans-serif;
+      background: linear-gradient(135deg, #0d0d2b, #1a1a40);
+      color: #e0e0ff;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      background: rgba(255, 255, 255, 0.08);
+      padding: 1.25rem 2rem;
+      backdrop-filter: blur(10px);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    header h1 { font-size: 1.5rem; margin: 0; font-weight: 600; }
+    header .header-badges {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .dept-badge {
+      background: rgba(79, 209, 197, 0.2);
+      color: #4fd1c5;
+      padding: 0.35rem 0.75rem;
+      border-radius: 9999px;
+      font-size: 0.875rem;
+      font-weight: 500;
+    }
+    .badge-draft {
+      background: rgba(246, 173, 85, 0.25);
+      border: 1px solid #f6ad55;
+      color: #f6ad55;
+      padding: 0.35rem 0.75rem;
+      border-radius: 9999px;
+      font-size: 0.875rem;
+      font-weight: 600;
+    }
+    .badge-finished {
+      background: rgba(79, 209, 197, 0.25);
+      border: 1px solid #4fd1c5;
+      color: #4fd1c5;
+      padding: 0.35rem 0.75rem;
+      border-radius: 9999px;
+      font-size: 0.875rem;
+      font-weight: 600;
+    }
+    .badge-archived {
+      background: rgba(160, 174, 192, 0.25);
+      border: 1px solid #cbd5e0;
+      color: #cbd5e0;
+      padding: 0.35rem 0.75rem;
+      border-radius: 9999px;
+      font-size: 0.875rem;
+      font-weight: 600;
+    }
+    main { flex: 1; padding: 2rem; max-width: 900px; margin: 0 auto; width: 100%; }
+    .card {
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 12px;
+      padding: 2rem;
+      backdrop-filter: blur(8px);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+      margin-bottom: 1.5rem;
+    }
+    .section-title {
+      font-size: 1.15rem;
+      font-weight: 600;
+      color: #ffffff;
+      margin: 0 0 1rem 0;
+      padding-bottom: 0.5rem;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    .meta-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem;
+      margin-bottom: 0.5rem;
+    }
+    .meta-item {
+      display: flex;
+      flex-direction: column;
+    }
+    .meta-label {
+      font-size: 0.8rem;
+      color: #9a9ac8;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.25rem;
+    }
+    .meta-value {
+      font-size: 0.95rem;
+      color: #e0e0ff;
+      font-weight: 500;
+    }
+    .minutes-preview {
+      background: rgba(0, 0, 0, 0.25);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 8px;
+      padding: 1.25rem;
+      color: #f0f0ff;
+      line-height: 1.6;
+      font-size: 0.95rem;
+      min-height: 120px;
+      white-space: pre-wrap;
+    }
+    .participant-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+    .participant-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.6rem 0.75rem;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      margin-bottom: 0.5rem;
+    }
+    .participant-name {
+      font-weight: 500;
+      color: #e0e0ff;
+    }
+    .participant-email {
+      font-size: 0.85rem;
+      color: #9a9ac8;
+      margin-left: 0.5rem;
+    }
+    .participant-status {
+      font-size: 0.8rem;
+      padding: 0.2rem 0.5rem;
+      border-radius: 4px;
+      font-weight: 600;
+    }
+    .status-signed {
+      background: rgba(79, 209, 197, 0.2);
+      color: #4fd1c5;
+    }
+    .status-pending {
+      background: rgba(246, 173, 85, 0.2);
+      color: #f6ad55;
+    }
+    .notice-box {
+      background: rgba(246, 173, 85, 0.1);
+      border: 1px solid rgba(246, 173, 85, 0.3);
+      border-radius: 8px;
+      padding: 1rem;
+      margin-bottom: 1.5rem;
+      font-size: 0.9rem;
+      color: #fbd38d;
+    }
+    .button {
+      display: inline-block;
+      background: #4fd1c5;
+      color: #0d0d2b;
+      font-weight: 600;
+      padding: 0.75rem 1.5rem;
+      border-radius: 8px;
+      border: none;
+      cursor: pointer;
+      font-size: 0.95rem;
+      transition: background 0.2s, transform 0.1s;
+      text-decoration: none;
+    }
+    .button:hover { background: #81e6d9; }
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.1);
+      color: #e0e0ff;
+    }
+    .btn-secondary:hover { background: rgba(255, 255, 255, 0.18); }
+    .btn-finalize {
+      background: #f6ad55;
+      color: #1a1a40;
+    }
+    .btn-finalize:hover { background: #ed8936; }
+    .actions-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.75rem;
+      margin-top: 1rem;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Review Meeting Minutes</h1>
+    <div class="header-badges">
+      <span class="dept-badge">{{ department.name }}</span>
+      {% if meeting.status == 'Draft' %}
+        <span class="badge-draft">DRAFT (Review Mode — Not Finalized)</span>
+      {% elif meeting.status == 'Finished' %}
+        <span class="badge-finished">FINISHED (Locked for Signing)</span>
+      {% else %}
+        <span class="badge-archived">{{ meeting.get_status_display }}</span>
+      {% endif %}
+    </div>
+  </header>
+  <main>
+    {% if meeting.status == 'Draft' %}
+      <div class="notice-box">
+        <strong>Review Mode Notice:</strong> This meeting document is currently a <strong>Draft</strong>. Review all agenda notes, minutes text, and assigned signers. Once finalized, the document will become permanently <strong>immutable</strong> and locked for digital signing.
+      </div>
+    {% endif %}
+
+    <div class="card">
+      <h2 class="section-title">Meeting Overview</h2>
+      <div class="meta-grid">
+        <div class="meta-item">
+          <span class="meta-label">Title / Subject</span>
+          <span class="meta-value" style="font-size:1.1rem; color:#ffffff;">{{ meeting.title }}</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Department</span>
+          <span class="meta-value">{{ department.name }}</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Current Status</span>
+          <span class="meta-value">{{ meeting.get_status_display }}</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Created At</span>
+          <span class="meta-value">{{ meeting.created_at|date:"M d, Y H:i" }}</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Last Updated</span>
+          <span class="meta-value">{{ meeting.updated_at|date:"M d, Y H:i" }}</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 class="section-title">Minutes Content / Agenda</h2>
+      {% if meeting.minutes_content %}
+        <div class="minutes-preview">{{ meeting.minutes_content }}</div>
+      {% else %}
+        <div class="minutes-preview" style="color:#9a9ac8; font-style:italic;">No minutes or agenda content recorded for this meeting.</div>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      <h2 class="section-title">Assigned Participants & Intended Signers ({{ attendees|length }})</h2>
+      {% if attendees %}
+        <ul class="participant-list">
+          {% for att in attendees %}
+            <li class="participant-item">
+              <div>
+                <span class="participant-name">{{ att.user.username }}</span>
+                {% if att.user.email %}
+                  <span class="participant-email">({{ att.user.email }})</span>
+                {% endif %}
+              </div>
+              <div>
+                {% if att.has_signed %}
+                  <span class="participant-status status-signed">Signed {{ att.signed_at|date:"M d, H:i" }}</span>
+                {% else %}
+                  <span class="participant-status status-pending">Pending Signature</span>
+                {% endif %}
+              </div>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p style="color:#9a9ac8; font-size:0.9rem; margin:0;">No participants currently assigned to this meeting.</p>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      <h2 class="section-title">Actions</h2>
+      <div class="actions-row">
+        {% if meeting.status == 'Draft' %}
+          <a href="{% url 'edit_meeting' meeting.id %}" class="button" id="btn-edit-from-review">Edit Minutes</a>
+          <a href="{% url 'assign_participants' meeting.id %}" class="button btn-secondary" id="btn-assign-from-review">Manage Participants</a>
+          <form method="post" action="{% url 'finalize_meeting' meeting.id %}" style="display:inline;" onsubmit="return confirm('Are you sure you want to finalize this meeting document? Once finalized, the document will become permanently immutable and locked for digital signing.');">
+            {% csrf_token %}
+            <button type="submit" class="button btn-finalize" id="btn-finalize-meeting">Finalize & Lock for Signing</button>
+          </form>
+        {% elif meeting.status == 'Finished' %}
+          <a href="{% url 'projector_qr_view' meeting.id %}" class="button" id="btn-qr-from-review">Display Projector QR</a>
+        {% endif %}
+        <a href="{% url 'department_dashboard' dept_id=department.id %}" class="button btn-secondary">Back to Dashboard</a>
+      </div>
+    </div>
+  </main>
+</body>
+</html>

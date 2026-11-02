@@ -1,4 +1,5 @@
 from django.db import models
+from django.core.exceptions import ValidationError
 from accounts.models import Department, User
 
 class Meeting(models.Model):
@@ -17,6 +18,44 @@ class Meeting(models.Model):
 
     def __str__(self):
         return f"{self.title} ({self.department.name})"
+
+    def clean(self):
+        super().clean()
+        if not self.pk:
+            return
+
+        orig = Meeting.objects.filter(pk=self.pk).values(
+            'status', 'title', 'minutes_content', 'department_id'
+        ).first()
+        if not orig:
+            return
+
+        # Content immutability for finalized or archived meetings
+        if orig['status'] in ('Finished', 'Archived'):
+            if (
+                self.title != orig['title']
+                or self.minutes_content != orig['minutes_content']
+                or self.department_id != orig['department_id']
+            ):
+                raise ValidationError("Document content is immutable once finalized or archived.")
+
+        # Irreversible status transition rules
+        orig_status = orig['status']
+        new_status = self.status
+        if orig_status == 'Draft':
+            if new_status not in ('Draft', 'Finished'):
+                raise ValidationError("Invalid status transition from Draft.")
+        elif orig_status == 'Finished':
+            if new_status not in ('Finished', 'Archived'):
+                raise ValidationError("Invalid status transition from Finished.")
+        elif orig_status == 'Archived':
+            if new_status != 'Archived':
+                raise ValidationError("Archived meetings cannot change status.")
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            self.full_clean()
+        super().save(*args, **kwargs)
 
 class Attendance(models.Model):
     meeting = models.ForeignKey(Meeting, on_delete=models.CASCADE, related_name='attendees')

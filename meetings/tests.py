@@ -151,17 +151,23 @@ class MeetingRoutingAndSecurityTests(TestCase):
         self.assertEqual(r_admin_ok.status_code, 200)
 
     def test_lock_meeting_authorization_and_redirect(self):
-        """Lock meeting requires AP and redirects to department dashboard."""
+        """Lock meeting requires AP, rejects GET (405), and finalizes on POST redirecting to department dashboard."""
         url_lock = reverse('lock_meeting', args=[self.draft_meeting.id])
 
         # Officer -> 403 Forbidden
         self.client.force_login(self.officer_user)
-        r_forbidden = self.client.get(url_lock)
+        r_forbidden = self.client.post(url_lock)
         self.assertEqual(r_forbidden.status_code, 403)
 
-        # AP -> locks meeting and redirects to department_dashboard
+        # AP GET -> 405 Method Not Allowed (GET never locks/finalizes)
         self.client.force_login(self.ap_user)
-        r_lock = self.client.get(url_lock)
+        r_get = self.client.get(url_lock)
+        self.assertEqual(r_get.status_code, 405)
+        self.draft_meeting.refresh_from_db()
+        self.assertEqual(self.draft_meeting.status, 'Draft')
+
+        # AP POST -> locks meeting and redirects to department_dashboard
+        r_lock = self.client.post(url_lock)
         self.assertRedirects(r_lock, reverse('department_dashboard', args=[self.dept.id]))
 
         self.draft_meeting.refresh_from_db()
@@ -557,3 +563,462 @@ class MeetingCreationAndAssignmentTests(TestCase):
         self.assertNotContains(r_officer, 'Assign Participants')
         self.assertNotContains(r_officer, 'Lock for Signing')
 
+
+
+class Batch04DraftEditingReviewFinalizationTests(TestCase):
+    def setUp(self):
+        self.dept = Department.objects.create(name='Physics', contact_email='physics@example.com')
+        self.other_dept = Department.objects.create(name='Chemistry', contact_email='chem@example.com')
+
+        self.global_admin = User.objects.create_user(
+            username='global_admin',
+            password='password123',
+            is_admin=True
+        )
+
+        self.ap_user = User.objects.create_user(
+            username='ap_physics',
+            password='password123'
+        )
+        Membership.objects.create(user=self.ap_user, department=self.dept, role='AP')
+
+        self.other_ap = User.objects.create_user(
+            username='ap_chem',
+            password='password123'
+        )
+        Membership.objects.create(user=self.other_ap, department=self.other_dept, role='AP')
+
+        self.officer = User.objects.create_user(
+            username='officer_physics',
+            password='password123'
+        )
+        Membership.objects.create(user=self.officer, department=self.dept, role='O')
+
+        self.draft_meeting = Meeting.objects.create(
+            department=self.dept,
+            title='Initial Draft Title',
+            minutes_content='Initial draft minutes content.',
+            status='Draft'
+        )
+
+        self.finished_meeting = Meeting.objects.create(
+            department=self.dept,
+            title='Finalized Meeting Title',
+            minutes_content='Finalized immutable minutes content.',
+            status='Finished'
+        )
+
+    def test_ap_can_get_and_post_edit_draft_meeting(self):
+        """Authorized AP can load draft edit form and save updated content."""
+        self.client.force_login(self.ap_user)
+        url_edit = reverse('edit_meeting', args=[self.draft_meeting.id])
+
+        # GET loads form with current data
+        r_get = self.client.get(url_edit)
+        self.assertEqual(r_get.status_code, 200)
+        self.assertContains(r_get, 'Initial Draft Title')
+        self.assertContains(r_get, 'Initial draft minutes content.')
+
+        # POST updates data
+        r_post = self.client.post(url_edit, {
+            'title': 'Updated Draft Title',
+            'minutes_content': 'Updated discussion notes and action items.',
+        })
+        self.assertRedirects(r_post, reverse('department_dashboard', args=[self.dept.id]))
+
+        self.draft_meeting.refresh_from_db()
+        self.assertEqual(self.draft_meeting.title, 'Updated Draft Title')
+        self.assertEqual(self.draft_meeting.minutes_content, 'Updated discussion notes and action items.')
+        self.assertEqual(self.draft_meeting.status, 'Draft')
+
+        # Check AuditLog
+        log = AuditLog.objects.filter(meeting=self.draft_meeting, user=self.ap_user).last()
+        self.assertIsNotNone(log)
+        self.assertIn('Edited draft meeting minutes', log.action)
+
+    def test_edit_draft_preserves_department_and_assignments(self):
+        """Editing draft preserves department and existing participant assignments."""
+        Attendance.objects.create(meeting=self.draft_meeting, user=self.officer)
+        self.client.force_login(self.ap_user)
+        url_edit = reverse('edit_meeting', args=[self.draft_meeting.id])
+
+        # Attempt to tamper department
+        self.client.post(url_edit, {
+            'title': 'Safe Title',
+            'minutes_content': 'Safe content.',
+            'department': self.other_dept.id,
+        })
+
+        self.draft_meeting.refresh_from_db()
+        self.assertEqual(self.draft_meeting.department, self.dept)
+        self.assertTrue(self.draft_meeting.attendees.filter(user=self.officer).exists())
+
+    def test_invalid_edit_submission_rejected(self):
+        """Empty title is rejected and meeting content remains unmodified."""
+        self.client.force_login(self.ap_user)
+        url_edit = reverse('edit_meeting', args=[self.draft_meeting.id])
+
+        r = self.client.post(url_edit, {
+            'title': '   ',
+            'minutes_content': 'Some content.',
+        })
+        self.assertEqual(r.status_code, 200)
+        self.assertFormError(r.context['form'], 'title', 'Meeting title is required.')
+
+        self.draft_meeting.refresh_from_db()
+        self.assertEqual(self.draft_meeting.title, 'Initial Draft Title')
+
+    def test_edit_permissions_enforced(self):
+        """Officers and AP from other departments cannot edit Draft meetings."""
+        url_edit = reverse('edit_meeting', args=[self.draft_meeting.id])
+
+        # Officer -> 403 Forbidden
+        self.client.force_login(self.officer)
+        r_officer = self.client.get(url_edit)
+        self.assertEqual(r_officer.status_code, 403)
+        r_officer_post = self.client.post(url_edit, {'title': 'Hacked Title'})
+        self.assertEqual(r_officer_post.status_code, 403)
+
+        # Other Dept AP -> 403 Forbidden
+        self.client.force_login(self.other_ap)
+        r_other = self.client.get(url_edit)
+        self.assertEqual(r_other.status_code, 403)
+        r_other_post = self.client.post(url_edit, {'title': 'Other AP Title'})
+        self.assertEqual(r_other_post.status_code, 403)
+
+        # Global Admin -> permitted
+        self.client.force_login(self.global_admin)
+        r_admin = self.client.get(url_edit)
+        self.assertEqual(r_admin.status_code, 200)
+
+    def test_cannot_edit_finished_or_archived_meeting(self):
+        """Finished or Archived meeting returns 403 on edit GET and POST."""
+        url_edit = reverse('edit_meeting', args=[self.finished_meeting.id])
+        self.client.force_login(self.ap_user)
+
+        r_get = self.client.get(url_edit)
+        self.assertEqual(r_get.status_code, 403)
+
+        r_post = self.client.post(url_edit, {'title': 'Tampered Finalized Title'})
+        self.assertEqual(r_post.status_code, 403)
+
+        self.finished_meeting.refresh_from_db()
+        self.assertEqual(self.finished_meeting.title, 'Finalized Meeting Title')
+
+    def test_review_draft_meeting(self):
+        """Review view renders read-only preview and does not alter meeting content."""
+        Attendance.objects.create(meeting=self.draft_meeting, user=self.officer)
+        url_review = reverse('review_meeting', args=[self.draft_meeting.id])
+
+        # AP can view preview
+        self.client.force_login(self.ap_user)
+        r = self.client.get(url_review)
+        self.assertEqual(r.status_code, 200)
+        self.assertContains(r, 'Review Meeting Minutes')
+        self.assertContains(r, 'Initial Draft Title')
+        self.assertContains(r, 'Initial draft minutes content.')
+        self.assertContains(r, self.officer.username)
+        self.assertContains(r, 'Finalize & Lock for Signing')
+
+        # Reviewing is read-only
+        self.draft_meeting.refresh_from_db()
+        self.assertEqual(self.draft_meeting.status, 'Draft')
+
+        # Officer is forbidden
+        self.client.force_login(self.officer)
+        r_officer = self.client.get(url_review)
+        self.assertEqual(r_officer.status_code, 403)
+
+        # Other Dept AP is forbidden
+        self.client.force_login(self.other_ap)
+        r_other = self.client.get(url_review)
+        self.assertEqual(r_other.status_code, 403)
+
+    def test_finalize_meeting_draft_to_finished(self):
+        """Authorized AP finalizes meeting via POST, transitioning status to Finished."""
+        url_finalize = reverse('finalize_meeting', args=[self.draft_meeting.id])
+        self.client.force_login(self.ap_user)
+
+        r = self.client.post(url_finalize)
+        self.assertRedirects(r, reverse('department_dashboard', args=[self.dept.id]))
+
+        self.draft_meeting.refresh_from_db()
+        self.assertEqual(self.draft_meeting.status, 'Finished')
+
+        log = AuditLog.objects.filter(meeting=self.draft_meeting, user=self.ap_user).last()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.action, 'Finalized document for signing')
+
+    def test_finalize_get_request_rejected(self):
+        """GET request to finalize endpoint returns 405 and does not change status."""
+        url_finalize = reverse('finalize_meeting', args=[self.draft_meeting.id])
+        self.client.force_login(self.ap_user)
+
+        r = self.client.get(url_finalize)
+        self.assertEqual(r.status_code, 405)
+
+        self.draft_meeting.refresh_from_db()
+        self.assertEqual(self.draft_meeting.status, 'Draft')
+
+    def test_finalize_permissions(self):
+        """Officers and AP from other departments cannot finalize meetings."""
+        url_finalize = reverse('finalize_meeting', args=[self.draft_meeting.id])
+
+        # Officer -> 403 Forbidden
+        self.client.force_login(self.officer)
+        r_officer = self.client.post(url_finalize)
+        self.assertEqual(r_officer.status_code, 403)
+        self.draft_meeting.refresh_from_db()
+        self.assertEqual(self.draft_meeting.status, 'Draft')
+
+        # Other Dept AP -> 403 Forbidden
+        self.client.force_login(self.other_ap)
+        r_other = self.client.post(url_finalize)
+        self.assertEqual(r_other.status_code, 403)
+        self.draft_meeting.refresh_from_db()
+        self.assertEqual(self.draft_meeting.status, 'Draft')
+
+    def test_cannot_re_finalize_finished_or_archived(self):
+        """Attempting to finalize an already Finished meeting returns 403."""
+        url_finalize = reverse('finalize_meeting', args=[self.finished_meeting.id])
+        self.client.force_login(self.ap_user)
+
+        r = self.client.post(url_finalize)
+        self.assertEqual(r.status_code, 403)
+
+    def test_model_level_immutability_on_finished_meeting(self):
+        """Model-level validation prevents altering document content of Finished meetings."""
+        from django.core.exceptions import ValidationError
+
+        self.finished_meeting.title = 'Altered In Code'
+        with self.assertRaises(ValidationError):
+            self.finished_meeting.save()
+
+        self.finished_meeting.refresh_from_db()
+        self.assertEqual(self.finished_meeting.title, 'Finalized Meeting Title')
+
+        # Allowed post-finalization operations:
+        # 1. Adding attendance
+        att = Attendance.objects.create(meeting=self.finished_meeting, user=self.officer)
+        self.assertIsNotNone(att.id)
+
+        # 2. Updating attendance signature / annotation
+        att.annotation = 'Approved with notes.'
+        att.has_signed = True
+        att.save()
+        att.refresh_from_db()
+        self.assertTrue(att.has_signed)
+
+        # 3. Adding audit logs
+        log = AuditLog.objects.create(
+            department=self.dept,
+            meeting=self.finished_meeting,
+            user=self.ap_user,
+            action="Verified signature"
+        )
+        self.assertIsNotNone(log.id)
+
+        # 4. Status transition to Archived
+        self.finished_meeting.status = 'Archived'
+        self.finished_meeting.save(update_fields=['status', 'updated_at'])
+        self.finished_meeting.refresh_from_db()
+        self.assertEqual(self.finished_meeting.status, 'Archived')
+
+    def test_django_admin_readonly_fields_for_finished(self):
+        """Django admin marks content fields as readonly for Finished/Archived meetings."""
+        from meetings.admin import MeetingAdmin
+        from django.contrib.admin.sites import AdminSite
+
+        admin = MeetingAdmin(Meeting, AdminSite())
+        ro_finished = admin.get_readonly_fields(None, self.finished_meeting)
+        self.assertIn('title', ro_finished)
+        self.assertIn('minutes_content', ro_finished)
+        self.assertIn('department', ro_finished)
+        self.assertIn('status', ro_finished)
+
+        ro_draft = admin.get_readonly_fields(None, self.draft_meeting)
+        self.assertNotIn('title', ro_draft)
+        self.assertNotIn('minutes_content', ro_draft)
+        self.assertIn('status', ro_draft)
+
+    def test_authorized_dashboard_status_badges_and_css_classes(self):
+        """Dashboard renders Draft, Finished, and fallback status badges with CSS classes."""
+        archived_meeting = Meeting.objects.create(
+            department=self.dept,
+            title='Archived Annual Assembly',
+            minutes_content='Archived historical notes.',
+            status='Archived'
+        )
+        self.client.force_login(self.ap_user)
+        r = self.client.get(reverse('department_dashboard', args=[self.dept.id]))
+        self.assertEqual(r.status_code, 200)
+
+        # Confirm CSS classes are declared in <style>
+        self.assertContains(r, '.status-badge')
+        self.assertContains(r, '.status-draft')
+        self.assertContains(r, '.status-finished')
+        self.assertContains(r, '.status-other')
+
+        # Confirm meeting badge elements and display values
+        self.assertContains(r, '<span class="status-badge status-draft">')
+        self.assertContains(r, '<span class="status-badge status-finished">')
+        self.assertContains(r, '<span class="status-badge status-other">')
+        self.assertContains(r, self.draft_meeting.get_status_display())
+        self.assertContains(r, self.finished_meeting.get_status_display())
+        self.assertContains(r, archived_meeting.get_status_display())
+
+    def test_lock_meeting_consistency_with_finalize_meeting(self):
+        """lock_meeting endpoint requires POST, enforces AP authorization, and updates status atomically."""
+        url_lock = reverse('lock_meeting', args=[self.draft_meeting.id])
+
+        # 1. GET is rejected with 405 Method Not Allowed
+        self.client.force_login(self.ap_user)
+        r_get = self.client.get(url_lock)
+        self.assertEqual(r_get.status_code, 405)
+        self.draft_meeting.refresh_from_db()
+        self.assertEqual(self.draft_meeting.status, 'Draft')
+
+        # 2. Officer cannot lock/finalize
+        self.client.force_login(self.officer)
+        r_officer = self.client.post(url_lock)
+        self.assertEqual(r_officer.status_code, 403)
+        self.draft_meeting.refresh_from_db()
+        self.assertEqual(self.draft_meeting.status, 'Draft')
+
+        # 3. Other Department AP cannot lock/finalize
+        self.client.force_login(self.other_ap)
+        r_other = self.client.post(url_lock)
+        self.assertEqual(r_other.status_code, 403)
+        self.draft_meeting.refresh_from_db()
+        self.assertEqual(self.draft_meeting.status, 'Draft')
+
+        # 4. AP from correct department locks/finalizes successfully via POST
+        self.client.force_login(self.ap_user)
+        r_post = self.client.post(url_lock)
+        self.assertRedirects(r_post, reverse('department_dashboard', args=[self.dept.id]))
+        self.draft_meeting.refresh_from_db()
+        self.assertEqual(self.draft_meeting.status, 'Finished')
+
+        # Verify audit log was created
+        log = AuditLog.objects.filter(meeting=self.draft_meeting, user=self.ap_user).last()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.action, 'Finalized document for signing')
+
+        # 5. Cannot re-lock/finalize already Finished meeting
+        r_re_lock = self.client.post(url_lock)
+        self.assertEqual(r_re_lock.status_code, 403)
+
+    def test_immutability_all_protected_fields_on_finished_meeting(self):
+        """Finalized meetings cannot have title, minutes_content, or department changed via any save pathway."""
+        from django.core.exceptions import ValidationError
+        from meetings.forms import MeetingEditForm
+
+        # Attempt to change title
+        self.finished_meeting.title = "Hacked Title"
+        with self.assertRaises(ValidationError):
+            self.finished_meeting.clean()
+        with self.assertRaises(ValidationError):
+            self.finished_meeting.save()
+        self.finished_meeting.refresh_from_db()
+        self.assertEqual(self.finished_meeting.title, 'Finalized Meeting Title')
+
+        # Attempt to change minutes_content
+        self.finished_meeting.minutes_content = "Tampered minutes content."
+        with self.assertRaises(ValidationError):
+            self.finished_meeting.clean()
+        with self.assertRaises(ValidationError):
+            self.finished_meeting.save()
+        self.finished_meeting.refresh_from_db()
+        self.assertEqual(self.finished_meeting.minutes_content, 'Finalized immutable minutes content.')
+
+        # Attempt to change department
+        self.finished_meeting.department = self.other_dept
+        with self.assertRaises(ValidationError):
+            self.finished_meeting.clean()
+        with self.assertRaises(ValidationError):
+            self.finished_meeting.save()
+        self.finished_meeting.refresh_from_db()
+        self.assertEqual(self.finished_meeting.department, self.dept)
+
+        # Verify MeetingEditForm rejects modifying a finished meeting
+        form = MeetingEditForm(
+            data={'title': 'Form Tampered', 'minutes_content': 'Form Content'},
+            instance=self.finished_meeting
+        )
+        self.assertFalse(form.is_valid())
+        self.assertIn("Cannot edit a locked or finalized meeting.", form.non_field_errors())
+
+    def test_status_transition_draft_to_archived_raises(self):
+        """Model validation raises ValidationError when transitioning Draft → Archived (forbidden)."""
+        from django.core.exceptions import ValidationError
+
+        # draft_meeting is currently 'Draft' — attempting to jump directly to 'Archived' must fail.
+        self.draft_meeting.status = 'Archived'
+        with self.assertRaises(ValidationError):
+            self.draft_meeting.clean()
+        with self.assertRaises(ValidationError):
+            self.draft_meeting.save()
+
+        # Confirm the persisted status is still 'Draft'.
+        self.draft_meeting.refresh_from_db()
+        self.assertEqual(self.draft_meeting.status, 'Draft')
+
+    def test_status_transition_archived_to_draft_raises(self):
+        """Model validation raises ValidationError when transitioning Archived → Draft (forbidden)."""
+        from django.core.exceptions import ValidationError
+
+        # Establish a valid Archived starting state via legitimate model transitions:
+        # Draft → Finished → Archived using normal .save().
+        archived_meeting = Meeting.objects.create(
+            department=self.dept,
+            title='Archived Transition Test Meeting',
+            minutes_content='Minutes content for archive test.',
+            status='Draft'
+        )
+        archived_meeting.status = 'Finished'
+        archived_meeting.save()
+        archived_meeting.status = 'Archived'
+        archived_meeting.save()
+        archived_meeting.refresh_from_db()
+        self.assertEqual(archived_meeting.status, 'Archived')
+
+        # Attempting Archived → Draft must raise ValidationError.
+        archived_meeting.status = 'Draft'
+        with self.assertRaises(ValidationError):
+            archived_meeting.clean()
+        with self.assertRaises(ValidationError):
+            archived_meeting.save()
+
+        # Confirm the persisted status is still 'Archived'.
+        archived_meeting.refresh_from_db()
+        self.assertEqual(archived_meeting.status, 'Archived')
+
+    def test_status_transition_archived_to_finished_raises(self):
+        """Model validation raises ValidationError when transitioning Archived → Finished (forbidden)."""
+        from django.core.exceptions import ValidationError
+
+        # Establish a valid Archived starting state via legitimate model transitions:
+        # Draft → Finished → Archived using normal .save().
+        archived_meeting = Meeting.objects.create(
+            department=self.dept,
+            title='Archived Revert Test Meeting',
+            minutes_content='Minutes content for revert test.',
+            status='Draft'
+        )
+        archived_meeting.status = 'Finished'
+        archived_meeting.save()
+        archived_meeting.status = 'Archived'
+        archived_meeting.save()
+        archived_meeting.refresh_from_db()
+        self.assertEqual(archived_meeting.status, 'Archived')
+
+        # Attempting Archived → Finished must raise ValidationError.
+        archived_meeting.status = 'Finished'
+        with self.assertRaises(ValidationError):
+            archived_meeting.clean()
+        with self.assertRaises(ValidationError):
+            archived_meeting.save()
+
+        # Confirm the persisted status is still 'Archived'.
+        archived_meeting.refresh_from_db()
+        self.assertEqual(archived_meeting.status, 'Archived')

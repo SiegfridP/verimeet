@@ -2,13 +2,13 @@ import hmac
 import time
 from django.shortcuts import render, get_object_or_404, redirect
 from django.contrib.auth.decorators import login_required
-from django.http import HttpResponseForbidden, HttpResponse, HttpResponseBadRequest
+from django.http import HttpResponseForbidden, HttpResponse, HttpResponseBadRequest, HttpResponseNotAllowed
 from django.utils import timezone
 from django.contrib import messages
 from django.db import transaction
 from .models import Meeting, Attendance, AuditLog
 from .crypto import generate_hmac_qr_token, sign_document_data
-from .forms import MeetingForm, AssignParticipantsForm
+from .forms import MeetingForm, AssignParticipantsForm, MeetingEditForm
 from accounts.models import Membership, Department, User
 from accounts.views import is_global_admin, has_membership
 
@@ -68,21 +68,54 @@ def officer_dashboard(request):
 # Compatibility alias
 student_dashboard = officer_dashboard
 
+def _finalize_meeting_internal(request, meeting_id):
+    """
+    Shared implementation for finalizing/locking a Draft meeting to 'Finished'.
+    Enforces server-side authorization (Global Admin or AP of meeting's department),
+    POST method requirement (rejects GET), Draft status integrity, atomic transition
+    with row-level locking against concurrent requests, and audit logging.
+    """
+    # Method check first: Finalization MUST be submitted via POST.
+    # GET requests must never finalize or lock a meeting.
+    if request.method != 'POST':
+        return HttpResponseNotAllowed(['POST'], "Finalization requires a POST request.")
+
+    with transaction.atomic():
+        # Lock the row to prevent concurrent finalization of the same meeting.
+        meeting = get_object_or_404(Meeting.objects.select_for_update(), id=meeting_id)
+        department = meeting.department
+
+        # Server-side authorization check: Global Admin or AP of the department.
+        if not is_global_admin(request.user) and not has_membership(request.user, department, role='AP'):
+            return HttpResponseForbidden("You are not authorized to finalize meetings for this department.")
+
+        # Integrity check: Meeting must be currently in Draft status.
+        # Finished or Archived cannot be finalized again.
+        if meeting.status != 'Draft':
+            return HttpResponseForbidden("Only Draft meetings can be finalized.")
+
+        meeting.status = 'Finished'
+        meeting.save(update_fields=['status', 'updated_at'])
+
+        AuditLog.objects.create(
+            department=department,
+            meeting=meeting,
+            user=request.user,
+            action="Finalized document for signing"
+        )
+
+    messages.success(request, f"Meeting '{meeting.title}' has been finalized and locked for signing.")
+    return redirect('department_dashboard', dept_id=department.id)
+
+
 @login_required
 def lock_meeting(request, meeting_id):
-    """Authorized Personnel locks meeting from Draft to Finished."""
-    meeting = get_object_or_404(Meeting, id=meeting_id)
-    if not is_global_admin(request.user) and not has_membership(request.user, meeting.department, role='AP'):
-        return HttpResponseForbidden()
-    
-    if meeting.status == 'Draft':
-        meeting.status = 'Finished'
-        meeting.save()
-        AuditLog.objects.create(
-            department=meeting.department, meeting=meeting, user=request.user,
-            action="Locked document for signing"
-        )
-    return redirect('department_dashboard', dept_id=meeting.department_id)
+    """
+    Compatibility endpoint for locking/finalizing a meeting.
+    Delegates to the shared finalization implementation to enforce identical authorization,
+    method restrictions (POST only), Draft-status check, and audit logging.
+    """
+    return _finalize_meeting_internal(request, meeting_id)
 
 @login_required
 def projector_qr_view(request, meeting_id):
@@ -91,13 +124,13 @@ def projector_qr_view(request, meeting_id):
     can_access = is_global_admin(request.user) or has_membership(request.user, meeting.department, role='AP')
     if not can_access or meeting.status != 'Finished':
         return HttpResponseForbidden()
-    
+
     timestamp = str(int(time.time()))
     sig = generate_hmac_qr_token(meeting_id, timestamp)
-    
+
     # The URL the QR code will point to
     signing_url = f"{request.scheme}://{request.get_host()}/meetings/{meeting_id}/sign/?t={timestamp}&sig={sig}"
-    
+
     return render(request, 'meetings/qr_projector.html', {'signing_url': signing_url})
 
 @login_required
@@ -112,14 +145,14 @@ def sign_meeting(request, meeting_id):
     received_sig = request.GET.get('sig')
     if not timestamp or not received_sig:
         return HttpResponseForbidden("Missing security token.")
-    
+
     try:
         ts = int(timestamp)
         now = int(time.time())
         token_age = now - ts
         if token_age < 0 or token_age > 3600:
             return HttpResponseForbidden("Invalid or expired QR code.")
-        
+
         expected_sig = generate_hmac_qr_token(meeting_id, timestamp)
         if not hmac.compare_digest(expected_sig, received_sig):
             return HttpResponseForbidden("Invalid or expired QR code.")
@@ -134,23 +167,23 @@ def sign_meeting(request, meeting_id):
 
     if attendance.has_signed:
         return HttpResponseForbidden("You have already signed this document.")
-    
+
     if request.method == 'POST':
         annotation = request.POST.get('annotation', '')
-        
+
         # Core Cryptography: Combine minutes and annotation for the hash payload
         payload_to_hash = f"{meeting.minutes_content}\n---ANNOTATION---\n{annotation}"
-        
+
         # Sign it with the user's private key
         digital_sig = sign_document_data(request.user.private_key, payload_to_hash)
-        
+
         # Update database
         attendance.annotation = annotation
         attendance.has_signed = True
         attendance.cryptographic_signature = digital_sig
         attendance.signed_at = timezone.now()
         attendance.save()
-        
+
         AuditLog.objects.create(
             department=meeting.department, meeting=meeting, user=request.user,
             action=f"Signed document with annotation"
@@ -293,4 +326,81 @@ def assign_participants(request, meeting_id):
         'form': form,
         'meeting': meeting,
         'department': department,
-    })
+    })
+
+
+@login_required
+def edit_meeting(request, meeting_id):
+    """
+    Authorized Personnel edits an existing Draft meeting within their authorized department.
+    Enforces that finalized or locked meetings cannot be modified.
+    """
+    meeting = get_object_or_404(Meeting, id=meeting_id)
+    department = meeting.department
+
+    # Server-side authorization check: Global Admin or AP of the department
+    if not is_global_admin(request.user) and not has_membership(request.user, department, role='AP'):
+        return HttpResponseForbidden("You are not authorized to edit meetings for this department.")
+
+    # Integrity check: cannot edit finalized or locked documents
+    if meeting.status != 'Draft':
+        return HttpResponseForbidden("Cannot edit a locked or finalized meeting.")
+
+    if request.method == 'POST':
+        form = MeetingEditForm(request.POST, instance=meeting)
+        if form.is_valid():
+            with transaction.atomic():
+                updated_meeting = form.save(commit=False)
+                # Guarantee that department association and Draft status are preserved
+                updated_meeting.department = department
+                updated_meeting.status = 'Draft'
+                updated_meeting.save()
+
+                AuditLog.objects.create(
+                    department=department,
+                    meeting=meeting,
+                    user=request.user,
+                    action=f"Edited draft meeting minutes for '{updated_meeting.title[:50]}'"
+                )
+
+            messages.success(request, f"Meeting '{updated_meeting.title}' updated successfully.")
+            return redirect('department_dashboard', dept_id=department.id)
+    else:
+        form = MeetingEditForm(instance=meeting)
+
+    return render(request, 'meetings/edit_meeting.html', {
+        'form': form,
+        'meeting': meeting,
+        'department': department,
+    })
+
+
+@login_required
+def review_meeting(request, meeting_id):
+    """
+    Read-only preview of meeting minutes before or after finalization.
+    Does not modify meeting or document content.
+    """
+    meeting = get_object_or_404(Meeting, id=meeting_id)
+    department = meeting.department
+
+    # Server-side authorization check: Global Admin or AP of the department
+    if not is_global_admin(request.user) and not has_membership(request.user, department, role='AP'):
+        return HttpResponseForbidden("You are not authorized to review meetings for this department.")
+
+    attendees = meeting.attendees.select_related('user').all()
+
+    return render(request, 'meetings/review_meeting.html', {
+        'meeting': meeting,
+        'department': department,
+        'attendees': attendees,
+    })
+
+
+@login_required
+def finalize_meeting(request, meeting_id):
+    """
+    Authorized Personnel explicitly finalizes a Draft meeting, locking it to 'Finished'.
+    Requires POST request. Rejects GET and prevents duplicate finalization.
+    """
+    return _finalize_meeting_internal(request, meeting_id)

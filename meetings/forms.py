@@ -111,3 +111,41 @@ class AssignParticipantsForm(forms.Form):
                 if not is_member:
                     raise forms.ValidationError(f"User {user} is not an eligible member of {self.department.name}.")
         return participants
+
+
+class MeetingEditForm(forms.ModelForm):
+    class Meta:
+        model = Meeting
+        fields = ['title', 'minutes_content']
+        labels = {
+            'title': 'Meeting Title / Subject',
+            'minutes_content': 'Agenda / Minutes Content',
+        }
+        widgets = {
+            'title': forms.TextInput(attrs={
+                'placeholder': 'e.g. Regular Departmental Assembly',
+                'id': 'id_title',
+            }),
+            'minutes_content': forms.Textarea(attrs={
+                'placeholder': 'Meeting agenda, notes, or minutes content...',
+                'rows': 8,
+                'id': 'id_minutes_content',
+            }),
+        }
+        error_messages = {
+            'title': {
+                'required': 'Meeting title is required.',
+            }
+        }
+
+    def clean_title(self):
+        title = self.cleaned_data.get('title', '').strip()
+        if not title:
+            raise forms.ValidationError("Meeting title is required.")
+        return title
+
+    def clean(self):
+        cleaned_data = super().clean()
+        if self.instance and self.instance.pk and self.instance.status in ('Finished', 'Archived'):
+            raise forms.ValidationError("Cannot edit a locked or finalized meeting.")
+        return cleaned_data
