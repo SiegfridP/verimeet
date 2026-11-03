@@ -1022,3 +1022,816 @@ class Batch04DraftEditingReviewFinalizationTests(TestCase):
         # Confirm the persisted status is still 'Archived'.
         archived_meeting.refresh_from_db()
         self.assertEqual(archived_meeting.status, 'Archived')
+
+
+# ---------------------------------------------------------------------------
+# Batch 05 — Digital Signature Lifecycle Tests
+# ---------------------------------------------------------------------------
+
+class Batch05CryptographicUnitTests(TestCase):
+    """Unit tests for the crypto utility functions in meetings/crypto.py."""
+
+    def setUp(self):
+        from meetings.crypto import generate_ecdsa_keypair, encrypt_private_key
+        self.priv_pem, self.pub_pem = generate_ecdsa_keypair()
+        self.encrypted_priv = encrypt_private_key(self.priv_pem)
+
+    # ------------------------------------------------------------------
+    # Key generation
+    # ------------------------------------------------------------------
+
+    def test_generate_keypair_returns_pem_strings(self):
+        """generate_ecdsa_keypair() returns non-empty PEM strings for both keys."""
+        self.assertIsInstance(self.priv_pem, str)
+        self.assertIsInstance(self.pub_pem, str)
+        self.assertIn('PRIVATE KEY', self.priv_pem)
+        self.assertIn('PUBLIC KEY', self.pub_pem)
+
+    def test_generated_private_key_is_secp256r1(self):
+        """The generated private key uses the SECP256R1 curve."""
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+        private_key = serialization.load_pem_private_key(
+            self.priv_pem.encode('utf-8'), password=None
+        )
+        self.assertIsInstance(private_key.curve, ec.SECP256R1)
+
+    def test_generated_public_key_matches_private_key(self):
+        """The public key derived from the private key matches the returned public key."""
+        from cryptography.hazmat.primitives import serialization
+        private_key = serialization.load_pem_private_key(
+            self.priv_pem.encode('utf-8'), password=None
+        )
+        derived_pub_pem = private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        ).decode('utf-8')
+        self.assertEqual(derived_pub_pem, self.pub_pem)
+
+    # ------------------------------------------------------------------
+    # Encryption / decryption round-trip
+    # ------------------------------------------------------------------
+
+    def test_encrypt_decrypt_roundtrip(self):
+        """encrypt_private_key / decrypt_private_key round-trip recovers the original PEM."""
+        from meetings.crypto import decrypt_private_key
+        recovered = decrypt_private_key(self.encrypted_priv)
+        self.assertEqual(recovered, self.priv_pem)
+
+    def test_decrypt_with_wrong_key_raises(self):
+        """Decrypting with a mismatched Fernet key raises RuntimeError."""
+        import os, base64
+        from cryptography.fernet import Fernet
+        from meetings.crypto import decrypt_private_key
+        # Encrypt with a different Fernet key
+        other_key = Fernet.generate_key().decode('utf-8')
+        token_with_other_key = Fernet(other_key.encode()).encrypt(b'dummy').decode('utf-8')
+
+        # Attempting to decrypt with the env key should fail
+        with self.assertRaises(RuntimeError):
+            decrypt_private_key(token_with_other_key)
+
+    def test_decrypt_malformed_token_raises(self):
+        """decrypt_private_key raises RuntimeError for a clearly invalid token."""
+        from meetings.crypto import decrypt_private_key
+        with self.assertRaises(RuntimeError):
+            decrypt_private_key('not-a-valid-fernet-token')
+
+    # ------------------------------------------------------------------
+    # ECDSA signing
+    # ------------------------------------------------------------------
+
+    def test_sign_document_data_returns_hex_string(self):
+        """sign_document_data() returns a non-empty hex string."""
+        from meetings.crypto import sign_document_data
+        sig = sign_document_data(self.encrypted_priv, 'test payload')
+        self.assertIsInstance(sig, str)
+        self.assertTrue(len(sig) > 0)
+        # Must be valid hexadecimal
+        bytes.fromhex(sig)  # raises ValueError if not hex
+
+    def test_sign_document_data_is_valid_ecdsa_signature(self):
+        """The signature produced by sign_document_data() verifies with the corresponding public key."""
+        from meetings.crypto import sign_document_data, verify_document_signature
+        payload = 'The quick brown fox'
+        sig = sign_document_data(self.encrypted_priv, payload)
+        self.assertTrue(verify_document_signature(self.pub_pem, payload, sig))
+
+    def test_sign_different_payloads_produce_different_signatures(self):
+        """Two distinct payloads produce distinct signatures (probabilistic ECDSA)."""
+        from meetings.crypto import sign_document_data
+        sig1 = sign_document_data(self.encrypted_priv, 'payload one')
+        sig2 = sign_document_data(self.encrypted_priv, 'payload two')
+        self.assertNotEqual(sig1, sig2)
+
+    # ------------------------------------------------------------------
+    # Signature verification — valid path
+    # ------------------------------------------------------------------
+
+    def test_verify_valid_signature_returns_true(self):
+        """verify_document_signature() returns True for a correct key/payload/signature triple."""
+        from meetings.crypto import sign_document_data, verify_document_signature
+        payload = 'canonical meeting payload'
+        sig = sign_document_data(self.encrypted_priv, payload)
+        self.assertTrue(verify_document_signature(self.pub_pem, payload, sig))
+
+    # ------------------------------------------------------------------
+    # Signature verification — invalid / tampered paths
+    # ------------------------------------------------------------------
+
+    def test_verify_tampered_payload_returns_false(self):
+        """A valid signature does not verify against a modified payload."""
+        from meetings.crypto import sign_document_data, verify_document_signature
+        payload = 'original content'
+        sig = sign_document_data(self.encrypted_priv, payload)
+        self.assertFalse(verify_document_signature(self.pub_pem, 'tampered content', sig))
+
+    def test_verify_wrong_public_key_returns_false(self):
+        """A valid signature does not verify against a different public key."""
+        from meetings.crypto import (
+            generate_ecdsa_keypair, encrypt_private_key,
+            sign_document_data, verify_document_signature,
+        )
+        payload = 'document text'
+        sig = sign_document_data(self.encrypted_priv, payload)
+
+        _, other_pub_pem = generate_ecdsa_keypair()
+        self.assertFalse(verify_document_signature(other_pub_pem, payload, sig))
+
+    def test_verify_modified_signature_returns_false(self):
+        """A byte-modified signature is rejected."""
+        from meetings.crypto import sign_document_data, verify_document_signature
+        payload = 'document'
+        sig_hex = sign_document_data(self.encrypted_priv, payload)
+        # Flip a nibble in the middle of the hex string
+        mid = len(sig_hex) // 2
+        bad_char = '0' if sig_hex[mid] != '0' else '1'
+        tampered_hex = sig_hex[:mid] + bad_char + sig_hex[mid + 1:]
+        self.assertFalse(verify_document_signature(self.pub_pem, payload, tampered_hex))
+
+    def test_verify_malformed_signature_hex_returns_false(self):
+        """Malformed (non-hex) signature string returns False without raising."""
+        from meetings.crypto import verify_document_signature
+        self.assertFalse(verify_document_signature(self.pub_pem, 'payload', 'not-hex!!'))
+
+    def test_verify_malformed_public_key_returns_false(self):
+        """A malformed public key returns False without raising."""
+        from meetings.crypto import sign_document_data, verify_document_signature
+        sig = sign_document_data(self.encrypted_priv, 'payload')
+        self.assertFalse(verify_document_signature('not-a-pem', 'payload', sig))
+
+    def test_verify_empty_inputs_return_false(self):
+        """Any empty argument to verify_document_signature returns False."""
+        from meetings.crypto import sign_document_data, verify_document_signature
+        sig = sign_document_data(self.encrypted_priv, 'payload')
+        self.assertFalse(verify_document_signature('', 'payload', sig))
+        self.assertFalse(verify_document_signature(self.pub_pem, '', sig))
+        self.assertFalse(verify_document_signature(self.pub_pem, 'payload', ''))
+
+
+class Batch05DocumentIntegrityTests(TestCase):
+    """Tests that the canonical payload binds meeting identity, department, title,
+    minutes content, and annotation, and that legacy payload verification is supported."""
+
+    def setUp(self):
+        from meetings.crypto import generate_ecdsa_keypair, encrypt_private_key
+        self.dept = Department.objects.create(name='Integrity Dept', contact_email='i@example.com')
+        self.other_dept = Department.objects.create(name='Other Integrity Dept', contact_email='oi@example.com')
+        self.ap = User.objects.create_user(username='integrity_ap', password='pw')
+        Membership.objects.create(user=self.ap, department=self.dept, role='AP')
+        self.officer = User.objects.create_user(username='integrity_officer', password='pw')
+        Membership.objects.create(user=self.officer, department=self.dept, role='O')
+
+        # Give the officer a fresh ECDSA key pair so we control it
+        priv_pem, pub_pem = generate_ecdsa_keypair()
+        encrypted_priv = encrypt_private_key(priv_pem)
+        User.objects.filter(pk=self.officer.pk).update(
+            private_key=encrypted_priv, public_key=pub_pem
+        )
+        self.officer.refresh_from_db()
+
+        self.meeting = Meeting.objects.create(
+            department=self.dept,
+            title='Integrity Meeting',
+            minutes_content='These are the finalized minutes.',
+            status='Finished',
+        )
+        self.attendance = Attendance.objects.create(
+            meeting=self.meeting, user=self.officer, has_signed=False
+        )
+
+    def _sign_attendance(self, annotation=''):
+        """Helper: sign the attendance record programmatically using canonical payload."""
+        from meetings.crypto import sign_document_data
+        from meetings.views import _build_signing_payload
+        payload = _build_signing_payload(self.meeting, annotation)
+        sig = sign_document_data(self.officer.private_key, payload)
+        self.attendance.annotation = annotation
+        self.attendance.has_signed = True
+        self.attendance.cryptographic_signature = sig
+        self.attendance.save()
+
+    def _sign_legacy_attendance(self, annotation=''):
+        """Helper: sign the attendance record programmatically using legacy payload."""
+        from meetings.crypto import sign_document_data
+        from meetings.views import _build_legacy_signing_payload
+        payload = _build_legacy_signing_payload(self.meeting, annotation)
+        sig = sign_document_data(self.officer.private_key, payload)
+        self.attendance.annotation = annotation
+        self.attendance.has_signed = True
+        self.attendance.cryptographic_signature = sig
+        self.attendance.save()
+
+    def test_signature_verifies_against_original_payload(self):
+        """A canonical signature recorded at signing time verifies correctly against the same payload."""
+        from meetings.crypto import verify_document_signature
+        from meetings.views import _build_signing_payload
+
+        annotation = 'My annotation'
+        self._sign_attendance(annotation)
+        self.attendance.refresh_from_db()
+
+        payload = _build_signing_payload(self.meeting, annotation)
+        self.assertTrue(
+            verify_document_signature(
+                self.officer.public_key,
+                payload,
+                self.attendance.cryptographic_signature,
+            )
+        )
+
+    def test_signature_does_not_verify_for_different_meeting_id(self):
+        """A signature bound to meeting A does not verify when the meeting ID is different
+        (i.e., identical minutes in a second meeting cannot reuse the signature)."""
+        from meetings.crypto import verify_document_signature
+        from meetings.views import _build_signing_payload
+
+        annotation = ''
+        self._sign_attendance(annotation)
+        self.attendance.refresh_from_db()
+
+        # Create a second meeting with the same content but a different pk.
+        second_meeting = Meeting.objects.create(
+            department=self.dept,
+            title='Integrity Meeting',
+            minutes_content='These are the finalized minutes.',
+            status='Finished',
+        )
+        wrong_payload = _build_signing_payload(second_meeting, annotation)
+        self.assertFalse(
+            verify_document_signature(
+                self.officer.public_key,
+                wrong_payload,
+                self.attendance.cryptographic_signature,
+            )
+        )
+
+    def test_signature_fails_if_department_tampered(self):
+        """A signature bound to department A fails verification if the department ID is altered."""
+        from meetings.crypto import verify_document_signature
+
+        annotation = ''
+        self._sign_attendance(annotation)
+        self.attendance.refresh_from_db()
+
+        tampered_payload = (
+            f"meeting_id:{self.meeting.id}\n"
+            f"department_id:{self.other_dept.id}\n"
+            f"title:{self.meeting.title}\n"
+            f"{self.meeting.minutes_content}\n"
+            f"---ANNOTATION---\n"
+            f"{annotation}"
+        )
+        self.assertFalse(
+            verify_document_signature(
+                self.officer.public_key,
+                tampered_payload,
+                self.attendance.cryptographic_signature,
+            )
+        )
+
+    def test_signature_fails_if_title_tampered(self):
+        """A signature bound to meeting title fails verification if the title is altered."""
+        from meetings.crypto import verify_document_signature
+
+        annotation = ''
+        self._sign_attendance(annotation)
+        self.attendance.refresh_from_db()
+
+        tampered_payload = (
+            f"meeting_id:{self.meeting.id}\n"
+            f"department_id:{self.meeting.department_id}\n"
+            f"title:Tampered Meeting Title\n"
+            f"{self.meeting.minutes_content}\n"
+            f"---ANNOTATION---\n"
+            f"{annotation}"
+        )
+        self.assertFalse(
+            verify_document_signature(
+                self.officer.public_key,
+                tampered_payload,
+                self.attendance.cryptographic_signature,
+            )
+        )
+
+    def test_signature_fails_if_minutes_content_tampered(self):
+        """A tampered minutes_content value invalidates the stored signature."""
+        from meetings.crypto import verify_document_signature
+
+        annotation = ''
+        self._sign_attendance(annotation)
+        self.attendance.refresh_from_db()
+
+        tampered_payload = (
+            f"meeting_id:{self.meeting.id}\n"
+            f"department_id:{self.meeting.department_id}\n"
+            f"title:{self.meeting.title}\n"
+            f"TAMPERED CONTENT\n"
+            f"---ANNOTATION---\n"
+            f"{annotation}"
+        )
+        self.assertFalse(
+            verify_document_signature(
+                self.officer.public_key,
+                tampered_payload,
+                self.attendance.cryptographic_signature,
+            )
+        )
+
+    def test_signature_fails_if_annotation_tampered(self):
+        """A modified annotation string invalidates the stored signature."""
+        from meetings.crypto import verify_document_signature
+        from meetings.views import _build_signing_payload
+
+        self._sign_attendance('Original Note')
+        self.attendance.refresh_from_db()
+
+        altered_payload = _build_signing_payload(self.meeting, 'Altered Note')
+        self.assertFalse(
+            verify_document_signature(
+                self.officer.public_key,
+                altered_payload,
+                self.attendance.cryptographic_signature,
+            )
+        )
+
+    def test_legacy_signature_verifiable_with_legacy_payload(self):
+        """Existing/legacy signatures created without meeting ID headers remain verifiable
+        via _build_legacy_signing_payload()."""
+        from meetings.crypto import verify_document_signature
+        from meetings.views import _build_legacy_signing_payload, _build_signing_payload
+
+        annotation = 'Legacy Note'
+        self._sign_legacy_attendance(annotation)
+        self.attendance.refresh_from_db()
+
+        # Does NOT verify under canonical meeting-bound payload
+        canonical_payload = _build_signing_payload(self.meeting, annotation)
+        self.assertFalse(
+            verify_document_signature(
+                self.officer.public_key,
+                canonical_payload,
+                self.attendance.cryptographic_signature,
+            )
+        )
+
+        # DOES verify under legacy payload
+        legacy_payload = _build_legacy_signing_payload(self.meeting, annotation)
+        self.assertTrue(
+            verify_document_signature(
+                self.officer.public_key,
+                legacy_payload,
+                self.attendance.cryptographic_signature,
+            )
+        )
+
+    def test_signing_does_not_alter_meeting_content(self):
+        """Signing via _sign_attendance does not modify the meeting's title,
+        minutes_content, or department."""
+        self._sign_attendance('Some note')
+        self.meeting.refresh_from_db()
+        self.assertEqual(self.meeting.title, 'Integrity Meeting')
+        self.assertEqual(self.meeting.minutes_content, 'These are the finalized minutes.')
+        self.assertEqual(self.meeting.department, self.dept)
+        self.assertEqual(self.meeting.status, 'Finished')
+
+
+class Batch05SigningWorkflowTests(TestCase):
+    """Integration tests for the sign_meeting view and its cryptographic output."""
+
+    def setUp(self):
+        self.client = Client()
+        from meetings.crypto import generate_ecdsa_keypair, encrypt_private_key
+
+        self.dept = Department.objects.create(name='Workflow Dept', contact_email='w@example.com')
+
+        self.ap = User.objects.create_user(username='workflow_ap', password='pw')
+        Membership.objects.create(user=self.ap, department=self.dept, role='AP')
+
+        # Officer with a fresh known key pair
+        self.officer = User.objects.create_user(username='workflow_officer', password='pw')
+        Membership.objects.create(user=self.officer, department=self.dept, role='O')
+        priv_pem, pub_pem = generate_ecdsa_keypair()
+        encrypted_priv = encrypt_private_key(priv_pem)
+        User.objects.filter(pk=self.officer.pk).update(
+            private_key=encrypted_priv, public_key=pub_pem
+        )
+        self.officer.refresh_from_db()
+
+        self.other_dept = Department.objects.create(name='Other Dept', contact_email='o@example.com')
+        self.other_officer = User.objects.create_user(username='other_officer', password='pw')
+        Membership.objects.create(user=self.other_officer, department=self.other_dept, role='O')
+
+        self.unassigned = User.objects.create_user(username='unassigned_officer', password='pw')
+        Membership.objects.create(user=self.unassigned, department=self.dept, role='O')
+
+        self.finished_meeting = Meeting.objects.create(
+            department=self.dept,
+            title='Workflow Meeting',
+            minutes_content='Final minutes here.',
+            status='Finished',
+        )
+        self.draft_meeting = Meeting.objects.create(
+            department=self.dept,
+            title='Draft Meeting',
+            minutes_content='Draft content.',
+            status='Draft',
+        )
+
+        self.attendance = Attendance.objects.create(
+            meeting=self.finished_meeting, user=self.officer, has_signed=False
+        )
+
+    def _valid_url(self, meeting_id):
+        ts = str(int(time.time()))
+        sig = generate_hmac_qr_token(meeting_id, ts)
+        return reverse('sign_meeting', args=[meeting_id]), ts, sig
+
+    # ------------------------------------------------------------------
+    # Successful signing — cryptographic correctness
+    # ------------------------------------------------------------------
+
+    def test_successful_sign_produces_valid_ecdsa_signature(self):
+        """After a successful sign_meeting POST, the stored signature verifies against
+        the signer's public key and the canonical payload."""
+        from meetings.crypto import verify_document_signature
+        from meetings.views import _build_signing_payload
+
+        self.client.force_login(self.officer)
+        url, ts, sig = self._valid_url(self.finished_meeting.id)
+        annotation = 'Confirmed by officer.'
+
+        r = self.client.post(f"{url}?t={ts}&sig={sig}", data={'annotation': annotation})
+        self.assertRedirects(r, reverse('department_dashboard', args=[self.dept.id]))
+
+        self.attendance.refresh_from_db()
+        self.assertTrue(self.attendance.has_signed)
+        self.assertIsNotNone(self.attendance.cryptographic_signature)
+
+        payload = _build_signing_payload(self.finished_meeting, annotation)
+        self.officer.refresh_from_db()
+        self.assertTrue(
+            verify_document_signature(
+                self.officer.public_key,
+                payload,
+                self.attendance.cryptographic_signature,
+            ),
+            "Stored cryptographic_signature must verify against signer's public key.",
+        )
+
+    def test_signing_does_not_change_meeting_content(self):
+        """sign_meeting must not alter title, minutes_content, department, or status."""
+        self.client.force_login(self.officer)
+        url, ts, sig = self._valid_url(self.finished_meeting.id)
+        self.client.post(f"{url}?t={ts}&sig={sig}", data={'annotation': 'note'})
+
+        self.finished_meeting.refresh_from_db()
+        self.assertEqual(self.finished_meeting.title, 'Workflow Meeting')
+        self.assertEqual(self.finished_meeting.minutes_content, 'Final minutes here.')
+        self.assertEqual(self.finished_meeting.department, self.dept)
+        self.assertEqual(self.finished_meeting.status, 'Finished')
+
+    # ------------------------------------------------------------------
+    # Authorization enforcement
+    # ------------------------------------------------------------------
+
+    def test_draft_meeting_cannot_be_signed(self):
+        """sign_meeting returns 403 for a Draft meeting regardless of token validity."""
+        Attendance.objects.create(meeting=self.draft_meeting, user=self.officer)
+        self.client.force_login(self.officer)
+        url, ts, sig = self._valid_url(self.draft_meeting.id)
+        r = self.client.get(f"{url}?t={ts}&sig={sig}")
+        self.assertEqual(r.status_code, 403)
+
+    def test_unassigned_officer_cannot_sign(self):
+        """An officer not listed in Attendance for the meeting is denied."""
+        self.client.force_login(self.unassigned)
+        url, ts, sig = self._valid_url(self.finished_meeting.id)
+        r = self.client.get(f"{url}?t={ts}&sig={sig}")
+        self.assertEqual(r.status_code, 403)
+        self.assertFalse(
+            Attendance.objects.filter(meeting=self.finished_meeting, user=self.unassigned).exists()
+        )
+
+    def test_cross_department_officer_cannot_sign(self):
+        """An officer from another department is denied."""
+        self.client.force_login(self.other_officer)
+        url, ts, sig = self._valid_url(self.finished_meeting.id)
+        r = self.client.get(f"{url}?t={ts}&sig={sig}")
+        self.assertEqual(r.status_code, 403)
+
+    def test_duplicate_signing_rejected(self):
+        """An officer who already signed cannot sign again."""
+        self.attendance.has_signed = True
+        self.attendance.cryptographic_signature = 'already_signed'
+        self.attendance.save()
+
+        self.client.force_login(self.officer)
+        url, ts, sig = self._valid_url(self.finished_meeting.id)
+        r = self.client.get(f"{url}?t={ts}&sig={sig}")
+        self.assertEqual(r.status_code, 403)
+        self.assertIn(b'already signed', r.content)
+
+    def test_has_signed_false_when_crypto_would_fail(self):
+        """If the signing user has no private key set, the view returns a controlled
+        400 error and does not persist has_signed=True on the attendance record."""
+        # Remove the private key so signing will fail.
+        User.objects.filter(pk=self.officer.pk).update(private_key=None)
+        self.officer.refresh_from_db()
+
+        self.client.force_login(self.officer)
+        url, ts, sig = self._valid_url(self.finished_meeting.id)
+        r = self.client.post(f"{url}?t={ts}&sig={sig}", data={'annotation': 'x'})
+        # Should return controlled 400 Bad Request error.
+        self.assertEqual(r.status_code, 400)
+
+        self.attendance.refresh_from_db()
+        self.assertFalse(self.attendance.has_signed)
+        self.assertIsNone(self.attendance.cryptographic_signature)
+
+    def test_concurrent_duplicate_signing_conditional_update_prevents_overwrite(self):
+        """Simulate a race condition where a stale Attendance instance attempts to sign
+        after another concurrent request has already persisted a signature.
+        Demonstrates that the atomic conditional update affects 0 rows, preserves the
+        original signature and timestamp, and creates no duplicate AuditLog."""
+        from django.db import transaction
+        from django.utils import timezone
+
+        # 1. Retrieve an Attendance instance while has_signed=False (stale instance)
+        stale_attendance = Attendance.objects.get(pk=self.attendance.pk)
+        self.assertFalse(stale_attendance.has_signed)
+
+        # 2. Simulate another concurrent request winning the race and successfully signing
+        first_sig = 'first_concurrent_signature_hex'
+        first_annotation = 'First signer note'
+        first_signed_at = timezone.now()
+        with transaction.atomic():
+            Attendance.objects.filter(pk=self.attendance.pk, has_signed=False).update(
+                annotation=first_annotation,
+                has_signed=True,
+                cryptographic_signature=first_sig,
+                signed_at=first_signed_at,
+            )
+            AuditLog.objects.create(
+                department=self.dept,
+                meeting=self.finished_meeting,
+                user=self.officer,
+                action="Signed document with annotation"
+            )
+
+        initial_audit_count = AuditLog.objects.filter(meeting=self.finished_meeting, user=self.officer).count()
+        self.assertEqual(initial_audit_count, 1)
+
+        # 3. Second concurrent request attempts conditional update using stale instance
+        second_sig = 'second_concurrent_signature_hex'
+        second_annotation = 'Second signer note'
+        with transaction.atomic():
+            updated = Attendance.objects.filter(
+                pk=stale_attendance.pk,
+                has_signed=False
+            ).update(
+                annotation=second_annotation,
+                has_signed=True,
+                cryptographic_signature=second_sig,
+                signed_at=timezone.now()
+            )
+
+            # 4. Assert that the update affects zero rows
+            self.assertEqual(updated, 0)
+
+            # Conditional check in view: only create AuditLog if updated == 1
+            if updated > 0:
+                AuditLog.objects.create(
+                    department=self.dept,
+                    meeting=self.finished_meeting,
+                    user=self.officer,
+                    action="Signed document with annotation"
+                )
+
+        # 5. Assert that the original signature, annotation, and timestamp remain unchanged
+        self.attendance.refresh_from_db()
+        self.assertTrue(self.attendance.has_signed)
+        self.assertEqual(self.attendance.cryptographic_signature, first_sig)
+        self.assertEqual(self.attendance.annotation, first_annotation)
+        self.assertEqual(self.attendance.signed_at, first_signed_at)
+
+        # 6. Assert that no second AuditLog entry was created
+        final_audit_count = AuditLog.objects.filter(meeting=self.finished_meeting, user=self.officer).count()
+        self.assertEqual(final_audit_count, 1)
+
+    def test_sign_meeting_concurrent_post_rejected_by_conditional_update(self):
+        """Integration test: if a concurrent request signs between initial read and update,
+        sign_meeting() returns 403 Forbidden and does not overwrite the record or create a duplicate log."""
+        from unittest.mock import patch
+        from django.utils import timezone
+
+        self.client.force_login(self.officer)
+        url, ts, sig = self._valid_url(self.finished_meeting.id)
+
+        original_filter = Attendance.objects.filter
+
+        # Patch Attendance.objects.filter in meetings.views to simulate another request
+        # completing the signature right before the conditional update runs
+        def simulate_race_filter(*args, **kwargs):
+            if kwargs.get('has_signed') is False and kwargs.get('pk') == self.attendance.pk:
+                # Mark as already signed in the database right before the update executes
+                original_filter(pk=self.attendance.pk).update(
+                    has_signed=True,
+                    cryptographic_signature='race_winner_sig',
+                    annotation='Race Winner',
+                    signed_at=timezone.now()
+                )
+            return original_filter(*args, **kwargs)
+
+        with patch('meetings.views.Attendance.objects.filter', side_effect=simulate_race_filter):
+            r = self.client.post(f"{url}?t={ts}&sig={sig}", data={'annotation': 'Second Request'})
+            self.assertEqual(r.status_code, 403)
+            self.assertIn(b'already signed', r.content)
+
+        # Verify record was not overwritten
+        self.attendance.refresh_from_db()
+        self.assertEqual(self.attendance.cryptographic_signature, 'race_winner_sig')
+        self.assertEqual(self.attendance.annotation, 'Race Winner')
+
+
+class Batch05VerifySignatureViewTests(TestCase):
+    """Integration tests for the verify_signature internal endpoint, covering
+    both canonical and legacy backward-compatible verification."""
+
+    def setUp(self):
+        self.client = Client()
+        import json
+        from meetings.crypto import generate_ecdsa_keypair, encrypt_private_key, sign_document_data
+        from meetings.views import _build_signing_payload, _build_legacy_signing_payload
+
+        self.dept = Department.objects.create(name='Verify Dept', contact_email='v@example.com')
+        self.other_dept = Department.objects.create(name='Other Verify Dept', contact_email='ov@example.com')
+
+        self.ap = User.objects.create_user(username='verify_ap', password='pw')
+        Membership.objects.create(user=self.ap, department=self.dept, role='AP')
+
+        self.global_admin = User.objects.create_user(username='verify_admin', password='pw', is_admin=True)
+
+        self.officer = User.objects.create_user(username='verify_officer', password='pw')
+        Membership.objects.create(user=self.officer, department=self.dept, role='O')
+        priv_pem, pub_pem = generate_ecdsa_keypair()
+        encrypted_priv = encrypt_private_key(priv_pem)
+        User.objects.filter(pk=self.officer.pk).update(
+            private_key=encrypted_priv, public_key=pub_pem
+        )
+        self.officer.refresh_from_db()
+
+        self.other_ap = User.objects.create_user(username='other_ap', password='pw')
+        Membership.objects.create(user=self.other_ap, department=self.other_dept, role='AP')
+
+        self.meeting = Meeting.objects.create(
+            department=self.dept,
+            title='Verify Meeting',
+            minutes_content='Minutes to verify.',
+            status='Finished',
+        )
+
+        # 1. Canonical meeting-bound signature
+        annotation = 'Verified note.'
+        payload = _build_signing_payload(self.meeting, annotation)
+        sig = sign_document_data(self.officer.private_key, payload)
+        self.attendance = Attendance.objects.create(
+            meeting=self.meeting,
+            user=self.officer,
+            annotation=annotation,
+            has_signed=True,
+            cryptographic_signature=sig,
+        )
+
+        # 2. Legacy signature (signed with legacy payload: minutes + annotation)
+        legacy_officer = User.objects.create_user(username='legacy_officer', password='pw')
+        Membership.objects.create(user=legacy_officer, department=self.dept, role='O')
+        l_priv, l_pub = generate_ecdsa_keypair()
+        l_enc = encrypt_private_key(l_priv)
+        User.objects.filter(pk=legacy_officer.pk).update(
+            private_key=l_enc, public_key=l_pub
+        )
+        legacy_officer.refresh_from_db()
+        self.legacy_officer = legacy_officer
+
+        legacy_ann = 'Legacy annotation.'
+        legacy_payload = _build_legacy_signing_payload(self.meeting, legacy_ann)
+        legacy_sig = sign_document_data(self.legacy_officer.private_key, legacy_payload)
+        self.legacy_attendance = Attendance.objects.create(
+            meeting=self.meeting,
+            user=self.legacy_officer,
+            annotation=legacy_ann,
+            has_signed=True,
+            cryptographic_signature=legacy_sig,
+        )
+
+    def _url(self, att_id=None):
+        target_id = att_id if att_id is not None else self.attendance.id
+        return reverse('verify_signature', args=[self.meeting.id, target_id])
+
+    # ------------------------------------------------------------------
+    # Authorization
+    # ------------------------------------------------------------------
+
+    def test_unauthenticated_redirected_to_login(self):
+        r = self.client.get(self._url())
+        self.assertEqual(r.status_code, 302)
+
+    def test_officer_cannot_access_verify_endpoint(self):
+        self.client.force_login(self.officer)
+        r = self.client.get(self._url())
+        self.assertEqual(r.status_code, 403)
+
+    def test_ap_from_other_department_cannot_verify(self):
+        self.client.force_login(self.other_ap)
+        r = self.client.get(self._url())
+        self.assertEqual(r.status_code, 403)
+
+    def test_ap_in_department_can_verify(self):
+        self.client.force_login(self.ap)
+        r = self.client.get(self._url())
+        self.assertEqual(r.status_code, 200)
+
+    def test_global_admin_can_verify(self):
+        self.client.force_login(self.global_admin)
+        r = self.client.get(self._url())
+        self.assertEqual(r.status_code, 200)
+
+    # ------------------------------------------------------------------
+    # Verification correctness (Canonical and Legacy)
+    # ------------------------------------------------------------------
+
+    def test_canonical_signature_returns_true_with_canonical_format(self):
+        """The endpoint returns valid=true, format=canonical, meeting_bound=true for new signatures."""
+        import json
+        self.client.force_login(self.ap)
+        r = self.client.get(self._url())
+        self.assertEqual(r.status_code, 200)
+        data = json.loads(r.content)
+        self.assertTrue(data['valid'])
+        self.assertEqual(data['format'], 'canonical')
+        self.assertFalse(data['is_legacy'])
+        self.assertTrue(data['meeting_bound'])
+        self.assertEqual(data['meeting_id'], self.meeting.id)
+        self.assertEqual(data['attendance_id'], self.attendance.id)
+        self.assertEqual(data['signer'], self.officer.username)
+
+    def test_legacy_signature_returns_true_with_legacy_format(self):
+        """The endpoint returns valid=true, format=legacy, is_legacy=true, meeting_bound=false for legacy signatures."""
+        import json
+        self.client.force_login(self.ap)
+        url = self._url(self.legacy_attendance.id)
+        r = self.client.get(url)
+        self.assertEqual(r.status_code, 200)
+        data = json.loads(r.content)
+        self.assertTrue(data['valid'])
+        self.assertEqual(data['format'], 'legacy')
+        self.assertTrue(data['is_legacy'])
+        self.assertFalse(data['meeting_bound'])
+        self.assertIn('note', data)
+        self.assertEqual(data['attendance_id'], self.legacy_attendance.id)
+        self.assertEqual(data['signer'], self.legacy_officer.username)
+
+    def test_tampered_signature_returns_false(self):
+        """Storing a corrupted signature causes the endpoint to return valid=false."""
+        import json
+        self.attendance.cryptographic_signature = 'deadbeef'
+        self.attendance.save()
+
+        self.client.force_login(self.ap)
+        r = self.client.get(self._url())
+        data = json.loads(r.content)
+        self.assertFalse(data['valid'])
+        self.assertIsNone(data['format'])
+
+    def test_unsigned_attendance_returns_false(self):
+        """An attendance record that has not been signed returns valid=false."""
+        import json
+        unsigned = Attendance.objects.create(
+            meeting=self.meeting, user=self.ap, has_signed=False
+        )
+        url = reverse('verify_signature', args=[self.meeting.id, unsigned.id])
+        self.client.force_login(self.ap)
+        r = self.client.get(url)
+        data = json.loads(r.content)
+        self.assertFalse(data['valid'])

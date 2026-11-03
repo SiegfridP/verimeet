@@ -7,7 +7,7 @@ from django.utils import timezone
 from django.contrib import messages
 from django.db import transaction
 from .models import Meeting, Attendance, AuditLog
-from .crypto import generate_hmac_qr_token, sign_document_data
+from .crypto import generate_hmac_qr_token, sign_document_data, verify_document_signature
 from .forms import MeetingForm, AssignParticipantsForm, MeetingEditForm
 from accounts.models import Membership, Department, User
 from accounts.views import is_global_admin, has_membership
@@ -171,26 +171,73 @@ def sign_meeting(request, meeting_id):
     if request.method == 'POST':
         annotation = request.POST.get('annotation', '')
 
-        # Core Cryptography: Combine minutes and annotation for the hash payload
-        payload_to_hash = f"{meeting.minutes_content}\n---ANNOTATION---\n{annotation}"
+        if not request.user.private_key:
+            return HttpResponseBadRequest("Digital signature key is unavailable. Please contact your administrator.")
 
-        # Sign it with the user's private key
-        digital_sig = sign_document_data(request.user.private_key, payload_to_hash)
+        # Build canonical payload using the single source of truth function
+        payload_to_sign = _build_signing_payload(meeting, annotation)
 
-        # Update database
-        attendance.annotation = annotation
-        attendance.has_signed = True
-        attendance.cryptographic_signature = digital_sig
-        attendance.signed_at = timezone.now()
-        attendance.save()
+        # Sign with the user's encrypted private key.
+        # Any cryptographic failure must NOT leave a false has_signed=True record.
+        try:
+            digital_sig = sign_document_data(request.user.private_key, payload_to_sign)
+        except Exception:
+            return HttpResponseBadRequest("Cryptographic signing could not be completed. Please contact your administrator.")
 
-        AuditLog.objects.create(
-            department=meeting.department, meeting=meeting, user=request.user,
-            action=f"Signed document with annotation"
-        )
+        # Atomically persist the signature and audit record only if still unsigned.
+        # This conditional update guarantees that concurrent requests cannot both succeed.
+        with transaction.atomic():
+            updated = Attendance.objects.filter(
+                pk=attendance.pk,
+                has_signed=False
+            ).update(
+                annotation=annotation,
+                has_signed=True,
+                cryptographic_signature=digital_sig,
+                signed_at=timezone.now()
+            )
+
+            if updated == 0:
+                return HttpResponseForbidden("You have already signed this document.")
+
+            AuditLog.objects.create(
+                department=meeting.department,
+                meeting=meeting,
+                user=request.user,
+                action="Signed document with annotation"
+            )
         return redirect('department_dashboard', dept_id=meeting.department_id)
 
     return render(request, 'meetings/sign_document.html', {'meeting': meeting})
+
+
+def _build_signing_payload(meeting, annotation: str = '') -> str:
+    """Return the canonical meeting-bound signing payload.
+
+    Binds the meeting ID, department ID, meeting title, finalized minutes content,
+    and signer annotation into a deterministic byte sequence for signing and verification.
+    """
+    minutes = meeting.minutes_content or ''
+    ann = annotation or ''
+    return (
+        f"meeting_id:{meeting.id}\n"
+        f"department_id:{meeting.department_id}\n"
+        f"title:{meeting.title}\n"
+        f"{minutes}\n"
+        f"---ANNOTATION---\n"
+        f"{ann}"
+    )
+
+
+def _build_legacy_signing_payload(meeting, annotation: str = '') -> str:
+    """Return the original legacy signing payload format.
+
+    Preserves backward compatibility for signatures generated before
+    meeting-bound canonical payloads were introduced.
+    """
+    minutes = meeting.minutes_content or ''
+    ann = annotation or ''
+    return f"{minutes}\n---ANNOTATION---\n{ann}"
 
 
 @login_required
@@ -404,3 +451,94 @@ def finalize_meeting(request, meeting_id):
     Requires POST request. Rejects GET and prevents duplicate finalization.
     """
     return _finalize_meeting_internal(request, meeting_id)
+
+
+@login_required
+def verify_signature(request, meeting_id, attendance_id):
+    """Internal signature verification endpoint (Batch 05).
+
+    Access control:
+    - Global Admin: may verify any meeting's signatures.
+    - Authorized Personnel (AP): may verify signatures within their own department only.
+    - Officers: not permitted.
+
+    Supports:
+    1. Canonical meeting-bound format (meeting_id, department_id, title, content, annotation).
+    2. Legacy format (minutes_content + annotation) for backward compatibility.
+    Distinguishes them explicitly in the response without falsely attributing meeting-bound
+    integrity to legacy signatures.
+    """
+    import json
+
+    meeting = get_object_or_404(Meeting, id=meeting_id)
+    department = meeting.department
+
+    # Authorization: Global Admin or AP of the meeting's department.
+    if not is_global_admin(request.user) and not has_membership(request.user, department, role='AP'):
+        return HttpResponseForbidden("You are not authorized to verify signatures for this department.")
+
+    attendance = get_object_or_404(Attendance, id=attendance_id, meeting=meeting)
+
+    signer = attendance.user
+    stored_signature = attendance.cryptographic_signature
+    public_key_pem = signer.public_key if signer else None
+
+    if not attendance.has_signed or not stored_signature:
+        result = {
+            'valid': False,
+            'reason': 'No signature on record for this attendance entry.',
+            'format': None,
+            'is_legacy': False,
+            'meeting_bound': False,
+            'meeting_id': meeting.id,
+            'attendance_id': attendance.id,
+            'signer': signer.username if signer else None,
+        }
+        return HttpResponse(json.dumps(result, indent=2), content_type='application/json')
+
+    # 1. Attempt verification with the canonical meeting-bound payload.
+    canonical_payload = _build_signing_payload(meeting, attendance.annotation or '')
+    if verify_document_signature(public_key_pem, canonical_payload, stored_signature):
+        result = {
+            'valid': True,
+            'format': 'canonical',
+            'is_legacy': False,
+            'meeting_bound': True,
+            'meeting_id': meeting.id,
+            'department_id': meeting.department_id,
+            'attendance_id': attendance.id,
+            'signer': signer.username if signer else None,
+            'signed_at': attendance.signed_at.isoformat() if attendance.signed_at else None,
+        }
+        return HttpResponse(json.dumps(result, indent=2), content_type='application/json')
+
+    # 2. Backward compatibility: Attempt verification with the legacy payload.
+    legacy_payload = _build_legacy_signing_payload(meeting, attendance.annotation or '')
+    if verify_document_signature(public_key_pem, legacy_payload, stored_signature):
+        result = {
+            'valid': True,
+            'format': 'legacy',
+            'is_legacy': True,
+            'meeting_bound': False,
+            'meeting_id': meeting.id,
+            'department_id': meeting.department_id,
+            'attendance_id': attendance.id,
+            'signer': signer.username if signer else None,
+            'signed_at': attendance.signed_at.isoformat() if attendance.signed_at else None,
+            'note': 'Signature verified using legacy format without meeting ID, department, or title binding.',
+        }
+        return HttpResponse(json.dumps(result, indent=2), content_type='application/json')
+
+    # 3. Neither payload format verified.
+    result = {
+        'valid': False,
+        'format': None,
+        'is_legacy': False,
+        'meeting_bound': False,
+        'meeting_id': meeting.id,
+        'attendance_id': attendance.id,
+        'signer': signer.username if signer else None,
+        'signed_at': attendance.signed_at.isoformat() if attendance.signed_at else None,
+        'reason': 'Signature verification failed for both canonical and legacy payload formats.',
+    }
+    return HttpResponse(json.dumps(result, indent=2), content_type='application/json')

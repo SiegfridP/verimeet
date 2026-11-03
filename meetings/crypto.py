@@ -60,7 +60,14 @@ def generate_ecdsa_keypair():
     return priv_pem, pub_pem
 
 def sign_document_data(encrypted_private_key: str, document_text: str) -> str:
-    """Signs the document text using the user's decrypted private key."""
+    """Signs the document text using the user's decrypted private key.
+
+    The cryptography library applies SHA-256 internally as part of
+    ec.ECDSA(hashes.SHA256()) before producing the ECDSA signature.
+
+    Returns:
+        Hex-encoded DER ECDSA signature string.
+    """
     try:
         private_key_pem = decrypt_private_key(encrypted_private_key)
     except Exception as exc:
@@ -76,6 +83,51 @@ def sign_document_data(encrypted_private_key: str, document_text: str) -> str:
     )
     return signature.hex()
 
+
+def verify_document_signature(public_key_pem: str, document_text: str, signature_hex: str) -> bool:
+    """Verifies an ECDSA signature produced by sign_document_data().
+
+    Uses the same algorithm (ec.ECDSA(hashes.SHA256())) and encoding
+    (hex-encoded DER) as the signing function so that signatures produced
+    by the existing sign_meeting workflow can be verified without
+    any re-encoding step.
+
+    Args:
+        public_key_pem:  PEM-encoded ECDSA public key (from User.public_key).
+        document_text:   The exact canonical payload that was passed to
+                         sign_document_data() at signing time.
+        signature_hex:   The hex string stored in
+                         Attendance.cryptographic_signature.
+
+    Returns:
+        True  – signature is cryptographically valid for the given key and payload.
+        False – signature is invalid, tampered, or does not match the payload/key.
+
+    Never raises on bad input: malformed keys, malformed hex, wrong-curve keys,
+    and invalid signatures all return False.
+    """
+    if not public_key_pem or not document_text or not signature_hex:
+        return False
+
+    try:
+        public_key = serialization.load_pem_public_key(public_key_pem.encode('utf-8'))
+    except Exception:
+        return False
+
+    try:
+        signature_bytes = bytes.fromhex(signature_hex)
+    except (ValueError, TypeError):
+        return False
+
+    try:
+        public_key.verify(
+            signature_bytes,
+            document_text.encode('utf-8'),
+            ec.ECDSA(hashes.SHA256())
+        )
+        return True
+    except Exception:
+        return False
 
 
 def generate_hmac_qr_token(meeting_id, timestamp):
