@@ -149,3 +149,47 @@ class MeetingEditForm(forms.ModelForm):
         if self.instance and self.instance.pk and self.instance.status in ('Finished', 'Archived'):
             raise forms.ValidationError("Cannot edit a locked or finalized meeting.")
         return cleaned_data
+
+
+MAX_ANNOTATION_LENGTH = 2000
+
+
+class AttendanceStatusUpdateForm(forms.Form):
+    status = forms.ChoiceField(
+        choices=Attendance.ATTENDANCE_STATUS_CHOICES,
+        required=True,
+        error_messages={
+            'required': 'Attendance status is required.',
+            'invalid_choice': 'Select a valid attendance status.',
+        }
+    )
+
+    def clean_status(self):
+        status = self.cleaned_data.get('status')
+        valid_statuses = [choice[0] for choice in Attendance.ATTENDANCE_STATUS_CHOICES]
+        if status not in valid_statuses:
+            raise forms.ValidationError("Select a valid attendance status.")
+        return status
+
+
+class SignMeetingForm(forms.Form):
+    annotation = forms.CharField(
+        widget=forms.Textarea(attrs={
+            'rows': 4,
+            'placeholder': 'Add an optional annotation, concurrence note, or comment...',
+            'maxlength': str(MAX_ANNOTATION_LENGTH),
+            'id': 'id_annotation',
+        }),
+        required=False,
+        max_length=MAX_ANNOTATION_LENGTH,
+        strip=False,
+        help_text=f"Optional annotation (max {MAX_ANNOTATION_LENGTH} characters). Permanently bound to your digital signature."
+    )
+
+    def clean_annotation(self):
+        annotation = self.cleaned_data.get('annotation', '')
+        if len(annotation) > MAX_ANNOTATION_LENGTH:
+            raise forms.ValidationError(
+                f"Annotation exceeds maximum allowed length of {MAX_ANNOTATION_LENGTH} characters."
+            )
+        return annotation

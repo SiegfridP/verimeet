@@ -1,1 +1,193 @@
-<h1>This is the sign document page</h1>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sign Document – {{ meeting.title }} – VeriMeet</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: 'Inter', sans-serif;
+      background: linear-gradient(135deg, #0d0d2b, #1a1a40);
+      color: #e0e0ff;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      background: rgba(255, 255, 255, 0.08);
+      padding: 1.25rem 2rem;
+      backdrop-filter: blur(10px);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    header h1 { font-size: 1.5rem; margin: 0; font-weight: 600; }
+    main {
+      flex: 1;
+      max-width: 900px;
+      width: 100%;
+      margin: 2rem auto;
+      padding: 0 1.5rem;
+    }
+    .card {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 12px;
+      padding: 1.75rem;
+      margin-bottom: 1.5rem;
+      backdrop-filter: blur(8px);
+    }
+    .badge-status {
+      display: inline-block;
+      padding: 0.3rem 0.65rem;
+      border-radius: 9999px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .status-attended { background: rgba(79, 209, 197, 0.2); border: 1px solid #4fd1c5; color: #4fd1c5; }
+    .status-late { background: rgba(246, 173, 85, 0.2); border: 1px solid #f6ad55; color: #f6ad55; }
+    .status-absent { background: rgba(252, 129, 129, 0.2); border: 1px solid #fc8181; color: #fc8181; }
+    .status-finished { background: rgba(79, 209, 197, 0.2); border: 1px solid #4fd1c5; color: #4fd1c5; }
+    .minutes-content {
+      background: rgba(0, 0, 0, 0.3);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 8px;
+      padding: 1.25rem;
+      white-space: pre-wrap;
+      font-family: inherit;
+      line-height: 1.6;
+      color: #e2e8f0;
+      max-height: 350px;
+      overflow-y: auto;
+    }
+    textarea {
+      width: 100%;
+      background: rgba(13, 13, 43, 0.9);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 8px;
+      color: #ffffff;
+      padding: 0.85rem;
+      font-family: inherit;
+      font-size: 0.95rem;
+      line-height: 1.5;
+      resize: vertical;
+    }
+    textarea:focus {
+      outline: none;
+      border-color: #4fd1c5;
+      box-shadow: 0 0 0 2px rgba(79, 209, 197, 0.3);
+    }
+    .form-group {
+      margin-bottom: 1.25rem;
+    }
+    label {
+      display: block;
+      margin-bottom: 0.5rem;
+      font-weight: 600;
+      color: #ffffff;
+      font-size: 0.95rem;
+    }
+    .help-text {
+      font-size: 0.8rem;
+      color: #a0aec0;
+      margin-top: 0.35rem;
+    }
+    .char-count {
+      float: right;
+      font-size: 0.8rem;
+      color: #a0aec0;
+    }
+    button[type="submit"] {
+      background: #4fd1c5;
+      color: #1a1a40;
+      border: none;
+      border-radius: 6px;
+      padding: 0.75rem 1.5rem;
+      font-size: 1rem;
+      font-weight: 700;
+      font-family: inherit;
+      cursor: pointer;
+      transition: background 0.15s ease;
+    }
+    button[type="submit"]:hover {
+      background: #81e6d9;
+    }
+    .security-notice {
+      background: rgba(79, 209, 197, 0.08);
+      border: 1px solid rgba(79, 209, 197, 0.3);
+      border-radius: 8px;
+      padding: 1rem;
+      font-size: 0.85rem;
+      color: #81e6d9;
+      margin-bottom: 1.25rem;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Digital Signature & Annotation</h1>
+    <span class="badge-status status-finished">FINISHED (LOCKED)</span>
+  </header>
+  <main>
+    <div class="card">
+      <h2 style="margin: 0 0 0.5rem 0; font-size: 1.35rem; color: #ffffff;">{{ meeting.title }}</h2>
+      <p style="margin: 0 0 1rem 0; color: #a0aec0; font-size: 0.9rem;">
+        Department: <strong>{{ meeting.department.name }}</strong> &bull;
+        Your Attendance Status:
+        {% if attendance.status == 'Attended' %}
+          <span class="badge-status status-attended">Attended</span>
+        {% elif attendance.status == 'Late' %}
+          <span class="badge-status status-late">Late</span>
+        {% else %}
+          <span class="badge-status status-absent">Absent</span>
+        {% endif %}
+      </p>
+
+      <h3 style="font-size: 1rem; color: #ffffff; margin-bottom: 0.5rem;">Meeting Minutes Content</h3>
+      <div class="minutes-content">
+        {% if meeting.minutes_content %}
+          {{ meeting.minutes_content }}
+        {% else %}
+          <em>No minutes content recorded.</em>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 style="font-size: 1.15rem; color: #ffffff; margin-top: 0;">Submit Digital Signature</h3>
+      <div class="security-notice">
+        Signing this document creates an immutable ECDSA cryptographic signature bound to the meeting title, department, finalized minutes, and your optional annotation. Once signed, your signature and annotation cannot be modified or withdrawn.
+      </div>
+
+      <form method="post" action="{% url 'sign_meeting' meeting.id %}">
+        {% csrf_token %}
+        <input type="hidden" name="t" value="{{ timestamp }}" />
+        <input type="hidden" name="sig" value="{{ sig }}" />
+
+        <div class="form-group">
+          <label for="id_annotation">
+            Annotation or Concurrence Note (Optional)
+            <span class="char-count" id="char-counter">0 / 2000</span>
+          </label>
+          <textarea
+            name="annotation"
+            id="id_annotation"
+            rows="4"
+            maxlength="2000"
+            placeholder="Add an optional comment, dissent, clarification, or concurrence remark..."
+            oninput="document.getElementById('char-counter').textContent = this.value.length + ' / 2000';"
+          ></textarea>
+          <div class="help-text">Maximum 2000 characters. Leave blank if signing without annotations.</div>
+        </div>
+
+        <button type="submit" id="btn-sign-submit">Sign Document with Digital Signature</button>
+      </form>
+    </div>
+  </main>
+</body>
+</html>

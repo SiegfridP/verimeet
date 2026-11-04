@@ -8,7 +8,14 @@ from django.contrib import messages
 from django.db import transaction
 from .models import Meeting, Attendance, AuditLog
 from .crypto import generate_hmac_qr_token, sign_document_data, verify_document_signature
-from .forms import MeetingForm, AssignParticipantsForm, MeetingEditForm
+from .forms import (
+    MeetingForm,
+    AssignParticipantsForm,
+    MeetingEditForm,
+    AttendanceStatusUpdateForm,
+    SignMeetingForm,
+    MAX_ANNOTATION_LENGTH,
+)
 from accounts.models import Membership, Department, User
 from accounts.views import is_global_admin, has_membership
 
@@ -141,8 +148,8 @@ def sign_meeting(request, meeting_id):
         return HttpResponseForbidden()
 
     # 1. Verify the HMAC token from the URL to ensure they scanned the QR
-    timestamp = request.GET.get('t')
-    received_sig = request.GET.get('sig')
+    timestamp = request.GET.get('t') or request.POST.get('t')
+    received_sig = request.GET.get('sig') or request.POST.get('sig')
     if not timestamp or not received_sig:
         return HttpResponseForbidden("Missing security token.")
 
@@ -168,8 +175,16 @@ def sign_meeting(request, meeting_id):
     if attendance.has_signed:
         return HttpResponseForbidden("You have already signed this document.")
 
+    # 3. Attendance status eligibility check: only 'Attended' or 'Late' can sign
+    if attendance.status not in ('Attended', 'Late'):
+        return HttpResponseForbidden("Your attendance must be recorded as Attended or Late before you can sign.")
+
     if request.method == 'POST':
         annotation = request.POST.get('annotation', '')
+        if len(annotation) > MAX_ANNOTATION_LENGTH:
+            return HttpResponseBadRequest(
+                f"Annotation exceeds maximum allowed length of {MAX_ANNOTATION_LENGTH} characters."
+            )
 
         if not request.user.private_key:
             return HttpResponseBadRequest("Digital signature key is unavailable. Please contact your administrator.")
@@ -184,12 +199,13 @@ def sign_meeting(request, meeting_id):
         except Exception:
             return HttpResponseBadRequest("Cryptographic signing could not be completed. Please contact your administrator.")
 
-        # Atomically persist the signature and audit record only if still unsigned.
-        # This conditional update guarantees that concurrent requests cannot both succeed.
+        # Atomically persist the signature and audit record only if still unsigned and eligible.
+        # This conditional update guarantees that concurrent requests or revoked attendance status cannot succeed.
         with transaction.atomic():
             updated = Attendance.objects.filter(
                 pk=attendance.pk,
-                has_signed=False
+                has_signed=False,
+                status__in=['Attended', 'Late']
             ).update(
                 annotation=annotation,
                 has_signed=True,
@@ -198,7 +214,10 @@ def sign_meeting(request, meeting_id):
             )
 
             if updated == 0:
-                return HttpResponseForbidden("You have already signed this document.")
+                current = Attendance.objects.filter(pk=attendance.pk).first()
+                if current and current.has_signed:
+                    return HttpResponseForbidden("You have already signed this document.")
+                return HttpResponseForbidden("Your attendance must be recorded as Attended or Late before you can sign.")
 
             AuditLog.objects.create(
                 department=meeting.department,
@@ -208,7 +227,14 @@ def sign_meeting(request, meeting_id):
             )
         return redirect('department_dashboard', dept_id=meeting.department_id)
 
-    return render(request, 'meetings/sign_document.html', {'meeting': meeting})
+    form = SignMeetingForm()
+    return render(request, 'meetings/sign_document.html', {
+        'meeting': meeting,
+        'attendance': attendance,
+        'form': form,
+        'timestamp': timestamp,
+        'sig': received_sig,
+    })
 
 
 def _build_signing_payload(meeting, annotation: str = '') -> str:
@@ -542,3 +568,118 @@ def verify_signature(request, meeting_id, attendance_id):
         'reason': 'Signature verification failed for both canonical and legacy payload formats.',
     }
     return HttpResponse(json.dumps(result, indent=2), content_type='application/json')
+
+
+@login_required
+def meeting_attendance(request, meeting_id):
+    """
+    Authorized Personnel views attendance records and assigned participants
+    for a meeting within their authorized department.
+    """
+    meeting = get_object_or_404(Meeting, id=meeting_id)
+    department = meeting.department
+
+    # Server-side authorization check: Global Admin or AP of the department
+    if not is_global_admin(request.user) and not has_membership(request.user, department, role='AP'):
+        return HttpResponseForbidden("You are not authorized to view or manage attendance for this department.")
+
+    # Allow AP to update attendance status directly via POST if attendance_id and status are provided
+    if request.method == 'POST':
+        attendance_id = request.POST.get('attendance_id')
+        attendance = get_object_or_404(Attendance, id=attendance_id, meeting=meeting)
+
+        form = AttendanceStatusUpdateForm(request.POST)
+        if not form.is_valid():
+            return HttpResponseBadRequest("Invalid attendance status.")
+
+        cleaned_status = form.cleaned_data['status']
+        old_status = attendance.status
+        if old_status != cleaned_status:
+            attendance.status = cleaned_status
+            attendance.status_updated_at = timezone.now()
+            attendance.save(update_fields=['status', 'status_updated_at'])
+
+            AuditLog.objects.create(
+                department=department,
+                meeting=meeting,
+                user=request.user,
+                action=f"Changed attendance for {attendance.user.username} from {old_status} to {cleaned_status}"
+            )
+            messages.success(request, f"Updated attendance for {attendance.user.username} to {cleaned_status}.")
+        return redirect('meeting_attendance', meeting_id=meeting.id)
+
+    attendees = meeting.attendees.select_related('user').order_by('user__username')
+
+    return render(request, 'meetings/attendance.html', {
+        'meeting': meeting,
+        'department': department,
+        'attendees': attendees,
+        'status_choices': Attendance.ATTENDANCE_STATUS_CHOICES,
+    })
+
+
+@login_required
+def update_attendance_status(request, meeting_id, attendance_id):
+    """
+    Dedicated endpoint for updating an attendee's attendance status.
+    Requires POST. Server-side validation and audit logging enforced.
+    """
+    if request.method != 'POST':
+        return HttpResponseNotAllowed(['POST'], "Attendance status update requires a POST request.")
+
+    meeting = get_object_or_404(Meeting, id=meeting_id)
+    department = meeting.department
+
+    if not is_global_admin(request.user) and not has_membership(request.user, department, role='AP'):
+        return HttpResponseForbidden("You are not authorized to manage attendance for this department.")
+
+    attendance = get_object_or_404(Attendance, id=attendance_id, meeting=meeting)
+
+    form = AttendanceStatusUpdateForm(request.POST)
+    if not form.is_valid():
+        return HttpResponseBadRequest("Invalid attendance status.")
+
+    new_status = form.cleaned_data['status']
+    old_status = attendance.status
+
+    if old_status != new_status:
+        attendance.status = new_status
+        attendance.status_updated_at = timezone.now()
+        attendance.save(update_fields=['status', 'status_updated_at'])
+
+        AuditLog.objects.create(
+            department=department,
+            meeting=meeting,
+            user=request.user,
+            action=f"Changed attendance for {attendance.user.username} from {old_status} to {new_status}"
+        )
+        messages.success(request, f"Updated attendance for {attendance.user.username} to {new_status}.")
+
+    return redirect('meeting_attendance', meeting_id=meeting.id)
+
+
+@login_required
+def my_attendance(request, meeting_id):
+    """
+    Officer view to inspect their personal attendance record and status for a meeting.
+    Officers cannot view other attendees' private details or edit records.
+    """
+    meeting = get_object_or_404(Meeting, id=meeting_id)
+    department = meeting.department
+
+    if not user_in_department(request.user, meeting):
+        return HttpResponseForbidden("You do not belong to this department.")
+
+    try:
+        attendance = Attendance.objects.get(meeting=meeting, user=request.user)
+    except Attendance.DoesNotExist:
+        return HttpResponseForbidden("You are not an assigned participant for this meeting.")
+
+    if request.method == 'POST':
+        return HttpResponseForbidden("Officers are not permitted to modify attendance records.")
+
+    return render(request, 'meetings/my_attendance.html', {
+        'meeting': meeting,
+        'department': department,
+        'attendance': attendance,
+    })

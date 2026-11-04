@@ -77,6 +77,7 @@
               {% if meeting.status == 'Draft' %}
                 <a href="{% url 'edit_meeting' meeting.id %}" class="button" style="padding:0.35rem 0.7rem; font-size:0.8rem; margin:0 0.25rem 0 0;">Edit</a>
                 <a href="{% url 'review_meeting' meeting.id %}" class="button" style="padding:0.35rem 0.7rem; font-size:0.8rem; background:rgba(255,255,255,0.15); color:#e0e0ff; margin:0 0.25rem 0 0;">Review</a>
+                <a href="{% url 'meeting_attendance' meeting.id %}" class="button" style="padding:0.35rem 0.7rem; font-size:0.8rem; background:rgba(79,209,197,0.25); color:#81e6d9; margin:0 0.25rem 0 0;">Attendance</a>
                 <a href="{% url 'assign_participants' meeting.id %}" class="button" style="padding:0.35rem 0.7rem; font-size:0.8rem; margin:0 0.25rem 0 0;">Assign Participants</a>
                 <form method="post" action="{% url 'lock_meeting' meeting.id %}" style="display:inline;" onsubmit="return confirm('Lock this meeting for signing?');">
                   {% csrf_token %}
@@ -84,6 +85,7 @@
                 </form>
               {% elif meeting.status == 'Finished' %}
                 <a href="{% url 'review_meeting' meeting.id %}" class="button" style="padding:0.35rem 0.7rem; font-size:0.8rem; background:rgba(255,255,255,0.15); color:#e0e0ff; margin:0 0.25rem 0 0;">View</a>
+                <a href="{% url 'meeting_attendance' meeting.id %}" class="button" style="padding:0.35rem 0.7rem; font-size:0.8rem; background:rgba(79,209,197,0.25); color:#81e6d9; margin:0 0.25rem 0 0;">Attendance</a>
                 <a href="{% url 'projector_qr_view' meeting.id %}" class="button" style="padding:0.35rem 0.7rem; font-size:0.8rem; margin:0;">Projector QR</a>
               {% endif %}
             </td>

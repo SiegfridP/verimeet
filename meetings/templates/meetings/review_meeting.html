@@ -155,6 +155,21 @@
       background: rgba(246, 173, 85, 0.2);
       color: #f6ad55;
     }
+    .status-attended {
+      background: rgba(79, 209, 197, 0.2);
+      color: #4fd1c5;
+      border: 1px solid #4fd1c5;
+    }
+    .status-late {
+      background: rgba(246, 173, 85, 0.2);
+      color: #f6ad55;
+      border: 1px solid #f6ad55;
+    }
+    .status-absent {
+      background: rgba(252, 129, 129, 0.2);
+      color: #fc8181;
+      border: 1px solid #fc8181;
+    }
     .notice-box {
       background: rgba(246, 173, 85, 0.1);
       border: 1px solid rgba(246, 173, 85, 0.3);
@@ -265,11 +280,22 @@
                   <span class="participant-email">({{ att.user.email }})</span>
                 {% endif %}
               </div>
-              <div>
+              <div style="display: flex; align-items: center; gap: 0.5rem;">
+                <span class="participant-status
+                  {% if att.status == 'Attended' %}status-attended
+                  {% elif att.status == 'Late' %}status-late
+                  {% else %}status-absent{% endif %}">
+                  {{ att.status }}
+                </span>
+
                 {% if att.has_signed %}
-                  <span class="participant-status status-signed">Signed {{ att.signed_at|date:"M d, H:i" }}</span>
+                  <span class="participant-status status-signed">
+                    Signed {{ att.signed_at|date:"M d, H:i" }}
+                  </span>
                 {% else %}
-                  <span class="participant-status status-pending">Pending Signature</span>
+                  <span class="participant-status status-pending">
+                    Pending Signature
+                  </span>
                 {% endif %}
               </div>
             </li>
@@ -286,11 +312,13 @@
         {% if meeting.status == 'Draft' %}
           <a href="{% url 'edit_meeting' meeting.id %}" class="button" id="btn-edit-from-review">Edit Minutes</a>
           <a href="{% url 'assign_participants' meeting.id %}" class="button btn-secondary" id="btn-assign-from-review">Manage Participants</a>
+          <a href="{% url 'meeting_attendance' meeting.id %}" class="button btn-secondary" id="btn-attendance-from-review">Manage Attendance</a>
           <form method="post" action="{% url 'finalize_meeting' meeting.id %}" style="display:inline;" onsubmit="return confirm('Are you sure you want to finalize this meeting document? Once finalized, the document will become permanently immutable and locked for digital signing.');">
             {% csrf_token %}
             <button type="submit" class="button btn-finalize" id="btn-finalize-meeting">Finalize & Lock for Signing</button>
           </form>
         {% elif meeting.status == 'Finished' %}
+          <a href="{% url 'meeting_attendance' meeting.id %}" class="button btn-secondary" id="btn-attendance-from-review">Manage Attendance</a>
           <a href="{% url 'projector_qr_view' meeting.id %}" class="button" id="btn-qr-from-review">Display Projector QR</a>
         {% endif %}
         <a href="{% url 'department_dashboard' dept_id=department.id %}" class="button btn-secondary">Back to Dashboard</a>

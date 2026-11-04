@@ -62,7 +62,8 @@ class MeetingRoutingAndSecurityTests(TestCase):
         self.attendance = Attendance.objects.create(
             meeting=self.finished_meeting,
             user=self.officer_user,
-            has_signed=False
+            has_signed=False,
+            status='Attended',
         )
 
     def test_admin_dashboard_restrictions(self):
@@ -1459,7 +1460,7 @@ class Batch05SigningWorkflowTests(TestCase):
         )
 
         self.attendance = Attendance.objects.create(
-            meeting=self.finished_meeting, user=self.officer, has_signed=False
+            meeting=self.finished_meeting, user=self.officer, has_signed=False, status='Attended'
         )
 
     def _valid_url(self, meeting_id):
@@ -1835,3 +1836,527 @@ class Batch05VerifySignatureViewTests(TestCase):
         r = self.client.get(url)
         data = json.loads(r.content)
         self.assertFalse(data['valid'])
+
+
+class Batch06AttendanceAndAnnotationTests(TestCase):
+    """Targeted tests for Batch 06: Attendance records, annotations, and role-based permissions."""
+
+    def setUp(self):
+        from meetings.crypto import generate_ecdsa_keypair, encrypt_private_key
+
+        self.dept = Department.objects.create(name='Dept 06', contact_email='dept06@example.com')
+        self.other_dept = Department.objects.create(name='Other Dept 06', contact_email='other06@example.com')
+
+        # Authorized Personnel for Dept 06
+        self.ap = User.objects.create_user(username='ap_user_06', password='pw')
+        Membership.objects.create(user=self.ap, department=self.dept, role='AP')
+
+        # Authorized Personnel for Other Dept
+        self.other_ap = User.objects.create_user(username='other_ap_06', password='pw')
+        Membership.objects.create(user=self.other_ap, department=self.other_dept, role='AP')
+
+        # Global Admin
+        self.admin = User.objects.create_user(username='admin_user_06', password='pw', is_admin=True)
+
+        # Officer 1 in Dept 06 with ECDSA key pair
+        self.officer1 = User.objects.create_user(username='officer1_06', password='pw')
+        Membership.objects.create(user=self.officer1, department=self.dept, role='O')
+        priv1, pub1 = generate_ecdsa_keypair()
+        User.objects.filter(pk=self.officer1.pk).update(
+            private_key=encrypt_private_key(priv1), public_key=pub1
+        )
+        self.officer1.refresh_from_db()
+
+        # Officer 2 in Dept 06 with ECDSA key pair
+        self.officer2 = User.objects.create_user(username='officer2_06', password='pw')
+        Membership.objects.create(user=self.officer2, department=self.dept, role='O')
+        priv2, pub2 = generate_ecdsa_keypair()
+        User.objects.filter(pk=self.officer2.pk).update(
+            private_key=encrypt_private_key(priv2), public_key=pub2
+        )
+        self.officer2.refresh_from_db()
+
+        # Officer in Other Dept
+        self.other_officer = User.objects.create_user(username='other_officer_06', password='pw')
+        Membership.objects.create(user=self.other_officer, department=self.other_dept, role='O')
+
+        # Unassigned Officer in Dept 06
+        self.unassigned_officer = User.objects.create_user(username='unassigned_06', password='pw')
+        Membership.objects.create(user=self.unassigned_officer, department=self.dept, role='O')
+
+        # Finished Meeting in Dept 06
+        self.meeting = Meeting.objects.create(
+            department=self.dept,
+            title='Executive Assembly 06',
+            minutes_content='Important minutes content for assembly 06.',
+            status='Finished',
+        )
+
+        # Assigned Attendance records
+        self.att1 = Attendance.objects.create(
+            meeting=self.meeting,
+            user=self.officer1,
+            status='Absent',
+        )
+        self.att2 = Attendance.objects.create(
+            meeting=self.meeting,
+            user=self.officer2,
+            status='Absent',
+        )
+
+    # 1. AP Attendance View
+    def test_ap_can_view_department_meeting_attendance(self):
+        """Authorized Personnel can view attendance records for meetings in their department."""
+        self.client.force_login(self.ap)
+        url = reverse('meeting_attendance', args=[self.meeting.id])
+        r = self.client.get(url)
+        self.assertEqual(r.status_code, 200)
+        self.assertContains(r, 'Executive Assembly 06')
+        self.assertContains(r, self.officer1.username)
+        self.assertContains(r, self.officer2.username)
+
+    def test_other_department_ap_cannot_view_attendance(self):
+        """Authorized Personnel cannot view attendance for another department's meeting."""
+        self.client.force_login(self.other_ap)
+        url = reverse('meeting_attendance', args=[self.meeting.id])
+        r = self.client.get(url)
+        self.assertEqual(r.status_code, 403)
+
+    def test_global_admin_can_view_attendance(self):
+        """Global Admin can view attendance for any department's meeting."""
+        self.client.force_login(self.admin)
+        url = reverse('meeting_attendance', args=[self.meeting.id])
+        r = self.client.get(url)
+        self.assertEqual(r.status_code, 200)
+
+    def test_officer_cannot_view_ap_attendance_page(self):
+        """Officers are strictly forbidden from viewing the AP attendance management page."""
+        self.client.force_login(self.officer1)
+        url = reverse('meeting_attendance', args=[self.meeting.id])
+        r = self.client.get(url)
+        self.assertEqual(r.status_code, 403)
+
+    # 2. AP Updating Attendance Status
+    def test_ap_updates_attendance_status_to_attended(self):
+        """AP updates an officer's attendance to 'Attended' with timestamp and audit logging."""
+        self.client.force_login(self.ap)
+        url = reverse('update_attendance_status', args=[self.meeting.id, self.att1.id])
+        r = self.client.post(url, {'status': 'Attended'})
+        self.assertEqual(r.status_code, 302)
+
+        self.att1.refresh_from_db()
+        self.assertEqual(self.att1.status, 'Attended')
+        self.assertIsNotNone(self.att1.status_updated_at)
+
+        # AuditLog recorded
+        audit = AuditLog.objects.filter(meeting=self.meeting, user=self.ap).order_by('-timestamp').first()
+        self.assertIsNotNone(audit)
+        self.assertIn('Absent to Attended', audit.action)
+
+    def test_ap_updates_attendance_status_to_late_and_absent(self):
+        """AP can set status to 'Late' and revert to 'Absent'."""
+        self.client.force_login(self.ap)
+        url = reverse('update_attendance_status', args=[self.meeting.id, self.att1.id])
+
+        # Set to Late
+        r = self.client.post(url, {'status': 'Late'})
+        self.assertEqual(r.status_code, 302)
+        self.att1.refresh_from_db()
+        self.assertEqual(self.att1.status, 'Late')
+
+        # Revert to Absent
+        r = self.client.post(url, {'status': 'Absent'})
+        self.assertEqual(r.status_code, 302)
+        self.att1.refresh_from_db()
+        self.assertEqual(self.att1.status, 'Absent')
+
+    def test_invalid_attendance_status_rejected(self):
+        """Invalid attendance status values are rejected with 400 Bad Request."""
+        self.client.force_login(self.ap)
+        url = reverse('update_attendance_status', args=[self.meeting.id, self.att1.id])
+        r = self.client.post(url, {'status': 'InvalidChoice'})
+        self.assertEqual(r.status_code, 400)
+        self.att1.refresh_from_db()
+        self.assertEqual(self.att1.status, 'Absent')
+
+    def test_update_attendance_status_rejects_get(self):
+        """GET requests to update_attendance_status are rejected with 405 Method Not Allowed."""
+        self.client.force_login(self.ap)
+        url = reverse('update_attendance_status', args=[self.meeting.id, self.att1.id])
+        r = self.client.get(url)
+        self.assertEqual(r.status_code, 405)
+
+    def test_officer_cannot_update_attendance_status(self):
+        """Officers cannot update attendance records via update_attendance_status."""
+        self.client.force_login(self.officer1)
+        url = reverse('update_attendance_status', args=[self.meeting.id, self.att1.id])
+        r = self.client.post(url, {'status': 'Attended'})
+        self.assertEqual(r.status_code, 403)
+        self.att1.refresh_from_db()
+        self.assertEqual(self.att1.status, 'Absent')
+
+    def test_other_dept_ap_cannot_update_attendance_status(self):
+        """AP from another department cannot update attendance records."""
+        self.client.force_login(self.other_ap)
+        url = reverse('update_attendance_status', args=[self.meeting.id, self.att1.id])
+        r = self.client.post(url, {'status': 'Attended'})
+        self.assertEqual(r.status_code, 403)
+        self.att1.refresh_from_db()
+        self.assertEqual(self.att1.status, 'Absent')
+
+    # 3. Officer Personal Attendance View
+    def test_officer_can_view_own_attendance_record(self):
+        """Officers can view their personal attendance record via my_attendance."""
+        self.client.force_login(self.officer1)
+        url = reverse('my_attendance', args=[self.meeting.id])
+        r = self.client.get(url)
+        self.assertEqual(r.status_code, 200)
+        self.assertContains(r, 'Executive Assembly 06')
+        self.assertContains(r, self.officer1.username)
+        self.assertNotContains(r, self.officer2.username)
+
+    def test_officer_cannot_modify_via_my_attendance_post(self):
+        """Officers cannot POST to my_attendance to alter records (returns 403)."""
+        self.client.force_login(self.officer1)
+        url = reverse('my_attendance', args=[self.meeting.id])
+        r = self.client.post(url, {'status': 'Attended'})
+        self.assertEqual(r.status_code, 403)
+
+    def test_unassigned_officer_cannot_view_my_attendance(self):
+        """Unassigned officers cannot view my_attendance for a meeting they are not part of."""
+        self.client.force_login(self.unassigned_officer)
+        url = reverse('my_attendance', args=[self.meeting.id])
+        r = self.client.get(url)
+        self.assertEqual(r.status_code, 403)
+
+    def test_other_dept_officer_cannot_view_my_attendance(self):
+        """Officers from other departments cannot view my_attendance."""
+        self.client.force_login(self.other_officer)
+        url = reverse('my_attendance', args=[self.meeting.id])
+        r = self.client.get(url)
+        self.assertEqual(r.status_code, 403)
+
+    # 4. Duplicate Attendance Record Prevention
+    def test_duplicate_attendance_record_prevented(self):
+        """Database enforces unique_together on (meeting, user), preventing duplicate attendances."""
+        from django.db import IntegrityError
+        with self.assertRaises(IntegrityError):
+            Attendance.objects.create(meeting=self.meeting, user=self.officer1)
+
+    # 5. Annotations and Signing Workflow
+    def test_officer_signs_with_valid_annotation(self):
+        """Eligible officer marked Attended can sign document with an optional annotation within length limits."""
+        import time
+        from meetings.crypto import generate_hmac_qr_token, verify_document_signature
+        from meetings.views import _build_signing_payload
+
+        # Mark officer as Attended
+        self.att1.status = 'Attended'
+        self.att1.save()
+
+        timestamp = str(int(time.time()))
+        sig = generate_hmac_qr_token(self.meeting.id, timestamp)
+
+        self.client.force_login(self.officer1)
+        url = reverse('sign_meeting', args=[self.meeting.id])
+        annotation_text = "I concur with item 3 subject to budget confirmation."
+
+        r = self.client.post(f"{url}?t={timestamp}&sig={sig}", {
+            'annotation': annotation_text,
+            't': timestamp,
+            'sig': sig,
+        })
+        self.assertEqual(r.status_code, 302)
+
+        self.att1.refresh_from_db()
+        self.assertTrue(self.att1.has_signed)
+        self.assertEqual(self.att1.annotation, annotation_text)
+        self.assertIsNotNone(self.att1.cryptographic_signature)
+        self.assertIsNotNone(self.att1.signed_at)
+
+        # Verify signature with annotation payload
+        payload = _build_signing_payload(self.meeting, annotation_text)
+        self.assertTrue(
+            verify_document_signature(
+                self.officer1.public_key,
+                payload,
+                self.att1.cryptographic_signature,
+            )
+        )
+
+    def test_officer_marked_late_can_sign_successfully(self):
+        """Eligible officer marked Late can sign document successfully."""
+        import time
+        from meetings.crypto import generate_hmac_qr_token, verify_document_signature
+        from meetings.views import _build_signing_payload
+
+        # Mark officer as Late
+        self.att1.status = 'Late'
+        self.att1.save()
+
+        timestamp = str(int(time.time()))
+        sig = generate_hmac_qr_token(self.meeting.id, timestamp)
+
+        self.client.force_login(self.officer1)
+        url = reverse('sign_meeting', args=[self.meeting.id])
+        r = self.client.post(f"{url}?t={timestamp}&sig={sig}", {
+            'annotation': 'Attended late due to schedule conflict',
+            't': timestamp,
+            'sig': sig,
+        })
+        self.assertEqual(r.status_code, 302)
+
+        self.att1.refresh_from_db()
+        self.assertTrue(self.att1.has_signed)
+        self.assertIsNotNone(self.att1.cryptographic_signature)
+
+    def test_officer_marked_absent_receives_403(self):
+        """Officers marked Absent cannot sign (GET or POST) and receive HTTP 403."""
+        import time
+        from meetings.crypto import generate_hmac_qr_token
+
+        # Ensure officer is Absent
+        self.att1.status = 'Absent'
+        self.att1.save()
+
+        timestamp = str(int(time.time()))
+        sig = generate_hmac_qr_token(self.meeting.id, timestamp)
+
+        self.client.force_login(self.officer1)
+        url = reverse('sign_meeting', args=[self.meeting.id])
+
+        # GET request blocked
+        r_get = self.client.get(f"{url}?t={timestamp}&sig={sig}")
+        self.assertEqual(r_get.status_code, 403)
+        self.assertIn(b'Attended or Late', r_get.content)
+
+        # POST request blocked
+        r_post = self.client.post(f"{url}?t={timestamp}&sig={sig}", {
+            'annotation': 'Attempted note',
+            't': timestamp,
+            'sig': sig,
+        })
+        self.assertEqual(r_post.status_code, 403)
+        self.assertIn(b'Attended or Late', r_post.content)
+
+        self.att1.refresh_from_db()
+        self.assertFalse(self.att1.has_signed)
+        self.assertIsNone(self.att1.cryptographic_signature)
+
+    def test_officer_with_default_absent_and_null_timestamp_receives_403(self):
+        """Newly assigned officer with default Absent status and NULL status_updated_at is rejected."""
+        import time
+        from meetings.crypto import generate_hmac_qr_token
+
+        self.assertEqual(self.att2.status, 'Absent')
+        self.assertIsNone(self.att2.status_updated_at)
+
+        timestamp = str(int(time.time()))
+        sig = generate_hmac_qr_token(self.meeting.id, timestamp)
+
+        self.client.force_login(self.officer2)
+        url = reverse('sign_meeting', args=[self.meeting.id])
+        r = self.client.post(f"{url}?t={timestamp}&sig={sig}", {'annotation': 'Note'})
+        self.assertEqual(r.status_code, 403)
+        self.assertIn(b'Attended or Late', r.content)
+
+        self.att2.refresh_from_db()
+        self.assertFalse(self.att2.has_signed)
+
+    def test_rejected_absent_signing_does_not_modify_signature_or_create_auditlog(self):
+        """Rejected signing for absent officer does not modify signature fields or write signing AuditLog."""
+        import time
+        from meetings.crypto import generate_hmac_qr_token
+
+        self.att1.status = 'Absent'
+        self.att1.save()
+
+        initial_audit_count = AuditLog.objects.filter(meeting=self.meeting).count()
+
+        timestamp = str(int(time.time()))
+        sig = generate_hmac_qr_token(self.meeting.id, timestamp)
+
+        self.client.force_login(self.officer1)
+        url = reverse('sign_meeting', args=[self.meeting.id])
+        r = self.client.post(f"{url}?t={timestamp}&sig={sig}", {'annotation': 'Note'})
+        self.assertEqual(r.status_code, 403)
+
+        self.att1.refresh_from_db()
+        self.assertFalse(self.att1.has_signed)
+        self.assertIsNone(self.att1.cryptographic_signature)
+        self.assertIsNone(self.att1.signed_at)
+
+        # AuditLog count should be completely unchanged
+        final_audit_count = AuditLog.objects.filter(meeting=self.meeting).count()
+        self.assertEqual(final_audit_count, initial_audit_count)
+
+    def test_conditional_update_rejects_if_status_becomes_absent_before_update(self):
+        """If attendance becomes Absent between initial read and database update, conditional update rejects."""
+        import time
+        from unittest.mock import patch
+        from meetings.crypto import generate_hmac_qr_token
+
+        self.att1.status = 'Attended'
+        self.att1.save()
+
+        timestamp = str(int(time.time()))
+        sig = generate_hmac_qr_token(self.meeting.id, timestamp)
+
+        self.client.force_login(self.officer1)
+        url = reverse('sign_meeting', args=[self.meeting.id])
+
+        original_filter = Attendance.objects.filter
+
+        # Simulate race condition: attendance status is changed to Absent right before conditional update
+        def race_attendance_revocation(*args, **kwargs):
+            if kwargs.get('has_signed') is False and kwargs.get('pk') == self.att1.pk:
+                original_filter(pk=self.att1.pk).update(status='Absent')
+            return original_filter(*args, **kwargs)
+
+        with patch('meetings.views.Attendance.objects.filter', side_effect=race_attendance_revocation):
+            r = self.client.post(f"{url}?t={timestamp}&sig={sig}", {'annotation': 'Race Note'})
+            self.assertEqual(r.status_code, 403)
+            self.assertIn(b'Attended or Late', r.content)
+
+        self.att1.refresh_from_db()
+        self.assertFalse(self.att1.has_signed)
+        self.assertIsNone(self.att1.cryptographic_signature)
+
+    def test_annotation_exceeding_length_limit_is_rejected(self):
+        """Annotations exceeding 2000 characters are rejected with 400 Bad Request."""
+        import time
+        from meetings.crypto import generate_hmac_qr_token
+
+        self.att1.status = 'Attended'
+        self.att1.save()
+
+        timestamp = str(int(time.time()))
+        sig = generate_hmac_qr_token(self.meeting.id, timestamp)
+
+        self.client.force_login(self.officer1)
+        url = reverse('sign_meeting', args=[self.meeting.id])
+        too_long_annotation = 'x' * 2001
+
+        r = self.client.post(f"{url}?t={timestamp}&sig={sig}", {
+            'annotation': too_long_annotation,
+            't': timestamp,
+            'sig': sig,
+        })
+        self.assertEqual(r.status_code, 400)
+        self.att1.refresh_from_db()
+        self.assertFalse(self.att1.has_signed)
+        self.assertIsNone(self.att1.cryptographic_signature)
+
+    def test_annotation_is_immutable_once_signed(self):
+        """Once signed, an attendance record cannot be signed or annotated again."""
+        import time
+        from meetings.crypto import generate_hmac_qr_token
+
+        self.att1.status = 'Attended'
+        self.att1.save()
+
+        timestamp = str(int(time.time()))
+        sig = generate_hmac_qr_token(self.meeting.id, timestamp)
+
+        self.client.force_login(self.officer1)
+        url = reverse('sign_meeting', args=[self.meeting.id])
+
+        # Initial successful sign
+        r1 = self.client.post(f"{url}?t={timestamp}&sig={sig}", {
+            'annotation': 'Initial comment',
+            't': timestamp,
+            'sig': sig,
+        })
+        self.assertEqual(r1.status_code, 302)
+
+        # Attempt to overwrite with new annotation
+        r2 = self.client.post(f"{url}?t={timestamp}&sig={sig}", {
+            'annotation': 'Modified comment',
+            't': timestamp,
+            'sig': sig,
+        })
+        self.assertEqual(r2.status_code, 403)
+
+        self.att1.refresh_from_db()
+        self.assertEqual(self.att1.annotation, 'Initial comment')
+
+    def test_ineligible_officer_cannot_sign_or_annotate(self):
+        """Unassigned officers cannot submit annotations or signatures."""
+        import time
+        from meetings.crypto import generate_hmac_qr_token
+
+        timestamp = str(int(time.time()))
+        sig = generate_hmac_qr_token(self.meeting.id, timestamp)
+
+        self.client.force_login(self.unassigned_officer)
+        url = reverse('sign_meeting', args=[self.meeting.id])
+        r = self.client.post(f"{url}?t={timestamp}&sig={sig}", {
+            'annotation': 'Unauthorized comment',
+            't': timestamp,
+            'sig': sig,
+        })
+        self.assertEqual(r.status_code, 403)
+
+    # 6. Meeting Content Immutability
+    def test_attendance_and_annotation_do_not_alter_meeting_content(self):
+        """Neither attendance updates nor officer annotations modify the meeting title, minutes content, or department."""
+        import time
+        from meetings.crypto import generate_hmac_qr_token
+
+        original_title = self.meeting.title
+        original_minutes = self.meeting.minutes_content
+        original_dept = self.meeting.department
+
+        # 1. Update attendance
+        self.client.force_login(self.ap)
+        self.client.post(reverse('update_attendance_status', args=[self.meeting.id, self.att1.id]), {'status': 'Attended'})
+
+        # 2. Sign with annotation
+        timestamp = str(int(time.time()))
+        sig = generate_hmac_qr_token(self.meeting.id, timestamp)
+        self.client.force_login(self.officer1)
+        self.client.post(f"{reverse('sign_meeting', args=[self.meeting.id])}?t={timestamp}&sig={sig}", {
+            'annotation': 'My remarks',
+            't': timestamp,
+            'sig': sig,
+        })
+
+        self.meeting.refresh_from_db()
+        self.assertEqual(self.meeting.title, original_title)
+        self.assertEqual(self.meeting.minutes_content, original_minutes)
+        self.assertEqual(self.meeting.department, original_dept)
+        self.assertEqual(self.meeting.status, 'Finished')
+
+    # 7. Signature Validity Preserved After Attendance Status Change
+    def test_signature_remains_valid_if_attendance_status_changes(self):
+        """Because the ECDSA signing payload binds meeting content and annotation (not attendance status),
+        subsequent attendance status changes do not invalidate previously verified signatures."""
+        import time
+        from meetings.crypto import generate_hmac_qr_token, verify_document_signature
+        from meetings.views import _build_signing_payload
+
+        # Mark officer as Late so they can sign
+        self.att1.status = 'Late'
+        self.att1.save()
+
+        timestamp = str(int(time.time()))
+        sig = generate_hmac_qr_token(self.meeting.id, timestamp)
+        self.client.force_login(self.officer1)
+        self.client.post(f"{reverse('sign_meeting', args=[self.meeting.id])}?t={timestamp}&sig={sig}", {
+            'annotation': 'Important endorsement',
+            't': timestamp,
+            'sig': sig,
+        })
+
+        self.att1.refresh_from_db()
+        payload = _build_signing_payload(self.meeting, 'Important endorsement')
+        self.assertTrue(verify_document_signature(self.officer1.public_key, payload, self.att1.cryptographic_signature))
+
+        # AP marks attendance status as Attended
+        self.client.force_login(self.ap)
+        self.client.post(reverse('update_attendance_status', args=[self.meeting.id, self.att1.id]), {'status': 'Attended'})
+
+        # Verification still succeeds
+        self.att1.refresh_from_db()
+        self.assertEqual(self.att1.status, 'Attended')
+        self.assertTrue(verify_document_signature(self.officer1.public_key, payload, self.att1.cryptographic_signature))

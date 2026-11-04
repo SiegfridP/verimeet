@@ -14,5 +14,8 @@ urlpatterns = [
     path('<int:meeting_id>/lock/', views.lock_meeting, name='lock_meeting'),
     path('<int:meeting_id>/qr/', views.projector_qr_view, name='projector_qr_view'),
     path('<int:meeting_id>/sign/', views.sign_meeting, name='sign_meeting'),
+    path('<int:meeting_id>/attendance/', views.meeting_attendance, name='meeting_attendance'),
+    path('<int:meeting_id>/attendance/<int:attendance_id>/update/', views.update_attendance_status, name='update_attendance_status'),
     path('<int:meeting_id>/attendance/<int:attendance_id>/verify/', views.verify_signature, name='verify_signature'),
+    path('<int:meeting_id>/my-attendance/', views.my_attendance, name='my_attendance'),
 ]

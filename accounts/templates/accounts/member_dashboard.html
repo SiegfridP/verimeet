@@ -34,6 +34,7 @@
             <th style="padding:0.75rem 0.5rem;">Title</th>
             <th style="padding:0.75rem 0.5rem;">Status</th>
             <th style="padding:0.75rem 0.5rem;">Date</th>
+            <th style="padding:0.75rem 0.5rem;">Your Attendance</th>
           </tr>
         </thead>
         <tbody>
@@ -49,6 +50,22 @@
               </span>
             </td>
             <td style="padding:0.75rem 0.5rem; font-size:0.85rem; color:#c4c4f0;">{{ meeting.created_at|date:"M d, Y" }}</td>
+            <td style="padding:0.75rem 0.5rem; font-size:0.85rem;">
+              {% if meeting.user_attendance %}
+                <span style="display:inline-block; padding:0.2rem 0.5rem; border-radius:4px; font-size:0.8rem; font-weight:600;
+                  {% if meeting.user_attendance.status == 'Attended' %}background:rgba(79,209,197,0.2); color:#4fd1c5;
+                  {% elif meeting.user_attendance.status == 'Late' %}background:rgba(246,173,85,0.2); color:#f6ad55;
+                  {% else %}background:rgba(252,129,129,0.2); color:#fc8181;{% endif %}">
+                  {{ meeting.user_attendance.status }}
+                </span>
+                <a href="{% url 'my_attendance' meeting.id %}" style="color:#4fd1c5; text-decoration:none; margin-left:0.5rem;">View</a>
+                {% if meeting.user_attendance.has_signed %}
+                  <span style="color:#68d391; font-size:0.75rem; margin-left:0.25rem;">(Signed)</span>
+                {% endif %}
+              {% else %}
+                <span style="color:#a0aec0; font-size:0.8rem;">Not assigned</span>
+              {% endif %}
+            </td>
           </tr>
           {% endfor %}
         </tbody>

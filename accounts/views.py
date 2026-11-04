@@ -82,7 +82,18 @@ def department_dashboard(request, dept_id=None):
         else:
             return HttpResponseForbidden('No membership in this department')
 
-    meetings = department.meeting_set.all().order_by('-created_at') if hasattr(department, 'meeting_set') else []
+    if hasattr(department, 'meeting_set'):
+        meetings = list(department.meeting_set.all().order_by('-created_at'))
+        from meetings.models import Attendance
+        user_attendances = {
+            att.meeting_id: att for att in Attendance.objects.filter(
+                meeting__in=meetings, user=request.user
+            )
+        }
+        for m in meetings:
+            m.user_attendance = user_attendances.get(m.id)
+    else:
+        meetings = []
     user_memberships = Membership.objects.filter(user=request.user).select_related('department')
 
     if role == 'AP':
