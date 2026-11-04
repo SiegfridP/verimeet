@@ -1,6 +1,8 @@
 import hmac
 import hashlib
 import os
+import secrets
+import time
 from django.conf import settings
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives import serialization, hashes
@@ -130,9 +132,39 @@ def verify_document_signature(public_key_pem: str, document_text: str, signature
         return False
 
 
-def generate_hmac_qr_token(meeting_id, timestamp):
-    """Generates a secure HMAC-SHA256 token for the QR code."""
-    message = f"{meeting_id}:{timestamp}".encode('utf-8')
-    # Using Django's SECRET_KEY as the server's master key
+def generate_qr_session_token() -> str:
+    """Generates a cryptographically secure, unpredictable URL-safe token for a QR session."""
+    return secrets.token_urlsafe(32)
+
+
+def generate_hmac_qr_token(meeting_id, timestamp, purpose: str = None) -> str:
+    """Generates a secure HMAC-SHA256 token for the QR code.
+
+    If purpose is provided, binds the purpose into the HMAC message for
+    cryptographic purpose separation. Otherwise preserves legacy Batch 05 format.
+    """
+    if purpose:
+        message = f"{meeting_id}:{timestamp}:{purpose}".encode('utf-8')
+    else:
+        message = f"{meeting_id}:{timestamp}".encode('utf-8')
     secret = settings.SECRET_KEY.encode('utf-8')
     return hmac.new(secret, message, hashlib.sha256).hexdigest()
+
+
+def verify_hmac_qr_token(meeting_id, timestamp, received_sig, purpose: str = None, max_age: int = 3600) -> bool:
+    """Verifies an HMAC QR token with constant-time comparison, expiration, and purpose binding.
+
+    Returns True if the signature matches and timestamp is within the allowed window.
+    """
+    if not timestamp or not received_sig:
+        return False
+    try:
+        ts = int(timestamp)
+        now = int(time.time())
+        token_age = now - ts
+        if token_age < 0 or token_age > max_age:
+            return False
+        expected_sig = generate_hmac_qr_token(meeting_id, timestamp, purpose=purpose)
+        return hmac.compare_digest(expected_sig, received_sig)
+    except (ValueError, TypeError):
+        return False

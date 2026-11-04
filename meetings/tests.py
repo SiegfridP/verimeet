@@ -2,7 +2,7 @@ import time
 from django.test import TestCase, Client
 from django.urls import reverse
 from accounts.models import Department, User, Membership
-from meetings.models import Meeting, Attendance, AuditLog
+from meetings.models import Meeting, Attendance, AuditLog, QRSession, QRUsage
 from meetings.crypto import generate_hmac_qr_token
 
 class MeetingRoutingAndSecurityTests(TestCase):
@@ -2360,3 +2360,974 @@ class Batch06AttendanceAndAnnotationTests(TestCase):
         self.att1.refresh_from_db()
         self.assertEqual(self.att1.status, 'Attended')
         self.assertTrue(verify_document_signature(self.officer1.public_key, payload, self.att1.cryptographic_signature))
+
+
+
+class Batch07QRAttendanceAndSigningTests(TestCase):
+    """Targeted tests for Batch 07: QR Attendance, QR Signing, token lifecycle, and purpose separation."""
+
+    def setUp(self):
+        from meetings.crypto import generate_ecdsa_keypair, encrypt_private_key
+
+        self.dept = Department.objects.create(name='Dept 07', contact_email='dept07@example.com')
+        self.other_dept = Department.objects.create(name='Other Dept 07', contact_email='other07@example.com')
+
+        # Authorized Personnel for Dept 07
+        self.ap = User.objects.create_user(username='ap_user_07', password='pw')
+        Membership.objects.create(user=self.ap, department=self.dept, role='AP')
+
+        # Authorized Personnel for Other Dept
+        self.other_ap = User.objects.create_user(username='other_ap_07', password='pw')
+        Membership.objects.create(user=self.other_ap, department=self.other_dept, role='AP')
+
+        # Global Admin
+        self.admin = User.objects.create_user(username='admin_user_07', password='pw', is_admin=True)
+
+        # Assigned Officer 1 in Dept 07
+        self.officer1 = User.objects.create_user(username='officer1_07', password='pw')
+        Membership.objects.create(user=self.officer1, department=self.dept, role='O')
+        priv1, pub1 = generate_ecdsa_keypair()
+        User.objects.filter(pk=self.officer1.pk).update(
+            private_key=encrypt_private_key(priv1), public_key=pub1
+        )
+        self.officer1.refresh_from_db()
+
+        # Assigned Officer 2 in Dept 07
+        self.officer2 = User.objects.create_user(username='officer2_07', password='pw')
+        Membership.objects.create(user=self.officer2, department=self.dept, role='O')
+        priv2, pub2 = generate_ecdsa_keypair()
+        User.objects.filter(pk=self.officer2.pk).update(
+            private_key=encrypt_private_key(priv2), public_key=pub2
+        )
+        self.officer2.refresh_from_db()
+
+        # Unassigned Officer in Dept 07
+        self.unassigned_officer = User.objects.create_user(username='unassigned_07', password='pw')
+        Membership.objects.create(user=self.unassigned_officer, department=self.dept, role='O')
+
+        # Officer in Other Dept
+        self.other_officer = User.objects.create_user(username='other_officer_07', password='pw')
+        Membership.objects.create(user=self.other_officer, department=self.other_dept, role='O')
+
+        # Finished Meeting in Dept 07
+        self.meeting = Meeting.objects.create(
+            department=self.dept,
+            title='Executive Council Meeting 07',
+            minutes_content='Finalized minutes content for meeting 07.',
+            status='Finished',
+        )
+
+        # Draft Meeting in Dept 07
+        self.draft_meeting = Meeting.objects.create(
+            department=self.dept,
+            title='Draft Council Meeting 07',
+            minutes_content='Draft notes.',
+            status='Draft',
+        )
+
+        # Assigned Attendance records on Finished meeting
+        self.att1 = Attendance.objects.create(
+            meeting=self.meeting,
+            user=self.officer1,
+            status='Absent',
+        )
+        self.att2 = Attendance.objects.create(
+            meeting=self.meeting,
+            user=self.officer2,
+            status='Absent',
+        )
+
+        # Assigned Attendance on Draft meeting
+        self.draft_att1 = Attendance.objects.create(
+            meeting=self.draft_meeting,
+            user=self.officer1,
+            status='Absent',
+        )
+
+    # 1. QR Generation & Authorization
+    def test_ap_can_generate_attendance_qr_for_own_department(self):
+        """AP can generate an Attendance QR code for a meeting in their department."""
+        self.client.force_login(self.ap)
+        url = reverse('generate_attendance_qr', args=[self.meeting.id])
+        r = self.client.get(url)
+        self.assertEqual(r.status_code, 302)
+
+        session = QRSession.objects.filter(meeting=self.meeting, purpose='attendance').first()
+        self.assertIsNotNone(session)
+        self.assertEqual(session.created_by, self.ap)
+        self.assertTrue(session.is_active)
+        self.assertFalse(session.is_revoked)
+
+        # AuditLog recorded
+        audit = AuditLog.objects.filter(meeting=self.meeting, user=self.ap).last()
+        self.assertIn('Generated Attendance QR', audit.action)
+
+    def test_ap_can_generate_signing_qr_for_finished_meeting(self):
+        """AP can generate a Signing QR code for a Finished meeting in their department."""
+        self.client.force_login(self.ap)
+        url = reverse('generate_signing_qr', args=[self.meeting.id])
+        r = self.client.get(url)
+        self.assertEqual(r.status_code, 302)
+
+        session = QRSession.objects.filter(meeting=self.meeting, purpose='signing').first()
+        self.assertIsNotNone(session)
+        self.assertEqual(session.purpose, 'signing')
+        self.assertTrue(session.is_active)
+
+        # AuditLog recorded
+        audit = AuditLog.objects.filter(meeting=self.meeting, user=self.ap).last()
+        self.assertIn('Generated Signing QR', audit.action)
+
+    def test_signing_qr_blocked_on_draft_meeting(self):
+        """Signing QR code cannot be generated for a Draft meeting (returns 403)."""
+        self.client.force_login(self.ap)
+        url = reverse('generate_signing_qr', args=[self.draft_meeting.id])
+        r = self.client.get(url)
+        self.assertEqual(r.status_code, 403)
+        self.assertFalse(QRSession.objects.filter(meeting=self.draft_meeting, purpose='signing').exists())
+
+    def test_attendance_qr_allowed_on_draft_meeting(self):
+        """Attendance QR code can be generated for a Draft meeting."""
+        self.client.force_login(self.ap)
+        url = reverse('generate_attendance_qr', args=[self.draft_meeting.id])
+        r = self.client.get(url)
+        self.assertEqual(r.status_code, 302)
+        self.assertTrue(QRSession.objects.filter(meeting=self.draft_meeting, purpose='attendance').exists())
+
+    def test_other_dept_ap_cannot_generate_qr(self):
+        """AP from another department cannot generate QR codes (returns 403)."""
+        self.client.force_login(self.other_ap)
+        # Attendance QR
+        r1 = self.client.get(reverse('generate_attendance_qr', args=[self.meeting.id]))
+        self.assertEqual(r1.status_code, 403)
+        # Signing QR
+        r2 = self.client.get(reverse('generate_signing_qr', args=[self.meeting.id]))
+        self.assertEqual(r2.status_code, 403)
+
+    def test_global_admin_can_generate_qr_across_departments(self):
+        """Global Admin can generate QR codes for any department's meeting."""
+        self.client.force_login(self.admin)
+        r = self.client.get(reverse('generate_attendance_qr', args=[self.meeting.id]))
+        self.assertEqual(r.status_code, 302)
+        self.assertTrue(QRSession.objects.filter(meeting=self.meeting, purpose='attendance').exists())
+
+    def test_officer_cannot_generate_qr(self):
+        """Officers cannot access QR generation endpoints (returns 403)."""
+        self.client.force_login(self.officer1)
+        r1 = self.client.get(reverse('generate_attendance_qr', args=[self.meeting.id]))
+        self.assertEqual(r1.status_code, 403)
+        r2 = self.client.get(reverse('generate_signing_qr', args=[self.meeting.id]))
+        self.assertEqual(r2.status_code, 403)
+
+    # 2. QR Display & Revocation
+    def test_ap_can_view_qr_session(self):
+        """AP can view QR session details and target scan link."""
+        from django.utils import timezone
+        import datetime
+        from meetings.crypto import generate_qr_session_token
+
+        session = QRSession.objects.create(
+            meeting=self.meeting,
+            purpose='attendance',
+            token=generate_qr_session_token(),
+            created_by=self.ap,
+            expires_at=timezone.now() + datetime.timedelta(seconds=3600),
+        )
+        self.client.force_login(self.ap)
+        url = reverse('view_qr_session', args=[self.meeting.id, session.id])
+        r = self.client.get(url)
+        self.assertEqual(r.status_code, 200)
+        self.assertContains(r, 'Attendance')
+        self.assertContains(r, session.token)
+        self.assertContains(r, 'data:image/png;base64,')
+        self.assertContains(r, 'data:image/png;base64,')
+
+    def test_ap_can_revoke_qr_session(self):
+        """AP can revoke an active QR session via POST, making it unusable."""
+        from django.utils import timezone
+        import datetime
+        from meetings.crypto import generate_qr_session_token
+
+        session = QRSession.objects.create(
+            meeting=self.meeting,
+            purpose='attendance',
+            token=generate_qr_session_token(),
+            created_by=self.ap,
+            expires_at=timezone.now() + datetime.timedelta(seconds=3600),
+        )
+        self.client.force_login(self.ap)
+        url = reverse('revoke_qr_session', args=[self.meeting.id, session.id])
+
+        # GET is rejected with 405 Method Not Allowed
+        r_get = self.client.get(url)
+        self.assertEqual(r_get.status_code, 405)
+
+        # POST revokes session
+        r_post = self.client.post(url)
+        self.assertEqual(r_post.status_code, 302)
+
+        session.refresh_from_db()
+        self.assertTrue(session.is_revoked)
+        self.assertFalse(session.is_active)
+        self.assertIsNotNone(session.revoked_at)
+        self.assertEqual(session.revoked_by, self.ap)
+
+        # AuditLog recorded
+        audit = AuditLog.objects.filter(meeting=self.meeting, user=self.ap).last()
+        self.assertIn('Revoked', audit.action)
+
+    def test_officer_cannot_revoke_qr_session(self):
+        """Officers cannot revoke QR sessions (returns 403)."""
+        from django.utils import timezone
+        import datetime
+        from meetings.crypto import generate_qr_session_token
+
+        session = QRSession.objects.create(
+            meeting=self.meeting,
+            purpose='attendance',
+            token=generate_qr_session_token(),
+            created_by=self.ap,
+            expires_at=timezone.now() + datetime.timedelta(seconds=3600),
+        )
+        self.client.force_login(self.officer1)
+        url = reverse('revoke_qr_session', args=[self.meeting.id, session.id])
+        r = self.client.post(url)
+        self.assertEqual(r.status_code, 403)
+        session.refresh_from_db()
+        self.assertFalse(session.is_revoked)
+
+    # 3. QR Attendance Workflow
+    def test_assigned_officer_records_attendance_via_qr(self):
+        """Assigned Officer scans valid Attendance QR code; status becomes Attended with timestamp."""
+        from django.utils import timezone
+        import datetime
+        from meetings.crypto import generate_qr_session_token
+
+        session = QRSession.objects.create(
+            meeting=self.meeting,
+            purpose='attendance',
+            token=generate_qr_session_token(),
+            created_by=self.ap,
+            expires_at=timezone.now() + datetime.timedelta(seconds=3600),
+        )
+
+        self.client.force_login(self.officer1)
+        url = reverse('scan_attendance_qr', args=[self.meeting.id])
+        r = self.client.get(f"{url}?token={session.token}")
+        self.assertEqual(r.status_code, 200)
+        self.assertContains(r, 'Attendance Recorded')
+
+        self.att1.refresh_from_db()
+        self.assertEqual(self.att1.status, 'Attended')
+        self.assertIsNotNone(self.att1.status_updated_at)
+
+        # QRUsage recorded
+        self.assertTrue(QRUsage.objects.filter(qr_session=session, user=self.officer1).exists())
+
+        # AuditLog recorded without sensitive secrets
+        audit = AuditLog.objects.filter(meeting=self.meeting, user=self.officer1).last()
+        self.assertIsNotNone(audit)
+        self.assertIn('Recorded attendance via QR as Attended', audit.action)
+        self.assertNotIn(session.token, audit.action)
+
+    def test_unassigned_officer_cannot_record_qr_attendance(self):
+        """Unassigned Officer attempting to scan attendance QR receives 403."""
+        from django.utils import timezone
+        import datetime
+        from meetings.crypto import generate_qr_session_token
+
+        session = QRSession.objects.create(
+            meeting=self.meeting,
+            purpose='attendance',
+            token=generate_qr_session_token(),
+            created_by=self.ap,
+            expires_at=timezone.now() + datetime.timedelta(seconds=3600),
+        )
+
+        self.client.force_login(self.unassigned_officer)
+        url = reverse('scan_attendance_qr', args=[self.meeting.id])
+        r = self.client.get(f"{url}?token={session.token}")
+        self.assertEqual(r.status_code, 403)
+        self.assertIn(b'not an assigned participant', r.content)
+
+    def test_other_dept_officer_cannot_record_qr_attendance(self):
+        """Officer from another department receives 403."""
+        from django.utils import timezone
+        import datetime
+        from meetings.crypto import generate_qr_session_token
+
+        session = QRSession.objects.create(
+            meeting=self.meeting,
+            purpose='attendance',
+            token=generate_qr_session_token(),
+            created_by=self.ap,
+            expires_at=timezone.now() + datetime.timedelta(seconds=3600),
+        )
+
+        self.client.force_login(self.other_officer)
+        url = reverse('scan_attendance_qr', args=[self.meeting.id])
+        r = self.client.get(f"{url}?token={session.token}")
+        self.assertEqual(r.status_code, 403)
+        self.assertIn(b'do not belong to this department', r.content)
+
+    def test_expired_attendance_qr_rejected(self):
+        """Expired Attendance QR token is rejected with 403."""
+        from django.utils import timezone
+        import datetime
+        from meetings.crypto import generate_qr_session_token
+
+        # Expired in past
+        session = QRSession.objects.create(
+            meeting=self.meeting,
+            purpose='attendance',
+            token=generate_qr_session_token(),
+            created_by=self.ap,
+            expires_at=timezone.now() - datetime.timedelta(seconds=60),
+        )
+
+        self.client.force_login(self.officer1)
+        url = reverse('scan_attendance_qr', args=[self.meeting.id])
+        r = self.client.get(f"{url}?token={session.token}")
+        self.assertEqual(r.status_code, 403)
+        self.assertIn(b'expired', r.content)
+
+    def test_revoked_attendance_qr_rejected(self):
+        """Revoked Attendance QR token is rejected with 403."""
+        from django.utils import timezone
+        import datetime
+        from meetings.crypto import generate_qr_session_token
+
+        session = QRSession.objects.create(
+            meeting=self.meeting,
+            purpose='attendance',
+            token=generate_qr_session_token(),
+            created_by=self.ap,
+            expires_at=timezone.now() + datetime.timedelta(seconds=3600),
+            is_revoked=True,
+            revoked_at=timezone.now(),
+        )
+
+        self.client.force_login(self.officer1)
+        url = reverse('scan_attendance_qr', args=[self.meeting.id])
+        r = self.client.get(f"{url}?token={session.token}")
+        self.assertEqual(r.status_code, 403)
+        self.assertIn(b'revoked', r.content)
+
+    def test_invalid_or_missing_token_rejected(self):
+        """Missing or tampered QR token is rejected with 403."""
+        self.client.force_login(self.officer1)
+        url = reverse('scan_attendance_qr', args=[self.meeting.id])
+        # Missing
+        r1 = self.client.get(url)
+        self.assertEqual(r1.status_code, 403)
+        # Tampered
+        r2 = self.client.get(f"{url}?token=completely_fake_token_123")
+        self.assertEqual(r2.status_code, 403)
+
+    def test_repeated_attendance_scan_does_not_duplicate_event_or_audit(self):
+        """Repeated scan by same officer does not create duplicate record or duplicate audit event."""
+        from django.utils import timezone
+        import datetime
+        from meetings.crypto import generate_qr_session_token
+
+        session = QRSession.objects.create(
+            meeting=self.meeting,
+            purpose='attendance',
+            token=generate_qr_session_token(),
+            created_by=self.ap,
+            expires_at=timezone.now() + datetime.timedelta(seconds=3600),
+        )
+
+        self.client.force_login(self.officer1)
+        url = reverse('scan_attendance_qr', args=[self.meeting.id])
+
+        # 1st scan -> fresh recording
+        r1 = self.client.get(f"{url}?token={session.token}")
+        self.assertEqual(r1.status_code, 200)
+        audit_count_after_first = AuditLog.objects.filter(meeting=self.meeting).count()
+
+        # 2nd scan -> already recorded notification
+        r2 = self.client.get(f"{url}?token={session.token}")
+        self.assertEqual(r2.status_code, 200)
+        self.assertContains(r2, 'already recorded')
+
+        # Audit count remains identical
+        self.assertEqual(AuditLog.objects.filter(meeting=self.meeting).count(), audit_count_after_first)
+
+    def test_qr_attendance_cannot_overwrite_signed_attendance(self):
+        """An officer who already signed the document cannot have their attendance modified via QR."""
+        from django.utils import timezone
+        import datetime
+        from meetings.crypto import generate_qr_session_token
+
+        self.att1.status = 'Attended'
+        self.att1.has_signed = True
+        self.att1.cryptographic_signature = 'deadbeefcafe'
+        self.att1.signed_at = timezone.now()
+        self.att1.save()
+
+        session = QRSession.objects.create(
+            meeting=self.meeting,
+            purpose='attendance',
+            token=generate_qr_session_token(),
+            created_by=self.ap,
+            expires_at=timezone.now() + datetime.timedelta(seconds=3600),
+        )
+
+        self.client.force_login(self.officer1)
+        url = reverse('scan_attendance_qr', args=[self.meeting.id])
+        r = self.client.get(f"{url}?token={session.token}")
+        self.assertEqual(r.status_code, 403)
+        self.assertIn(b'already digitally signed', r.content)
+
+        # Signature remains unchanged
+        self.att1.refresh_from_db()
+        self.assertEqual(self.att1.cryptographic_signature, 'deadbeefcafe')
+        self.assertTrue(self.att1.has_signed)
+
+    def test_multiple_assigned_officers_can_scan_same_qr_session(self):
+        """Multiple officers can scan the same attendance QR code; one scan does not invalidate the session."""
+        from django.utils import timezone
+        import datetime
+        from meetings.crypto import generate_qr_session_token
+
+        session = QRSession.objects.create(
+            meeting=self.meeting,
+            purpose='attendance',
+            token=generate_qr_session_token(),
+            created_by=self.ap,
+            expires_at=timezone.now() + datetime.timedelta(seconds=3600),
+        )
+
+        # Officer 1 scans
+        self.client.force_login(self.officer1)
+        r1 = self.client.get(f"{reverse('scan_attendance_qr', args=[self.meeting.id])}?token={session.token}")
+        self.assertEqual(r1.status_code, 200)
+
+        # Officer 2 scans with same token
+        self.client.force_login(self.officer2)
+        r2 = self.client.get(f"{reverse('scan_attendance_qr', args=[self.meeting.id])}?token={session.token}")
+        self.assertEqual(r2.status_code, 200)
+
+        self.att1.refresh_from_db()
+        self.att2.refresh_from_db()
+        self.assertEqual(self.att1.status, 'Attended')
+        self.assertEqual(self.att2.status, 'Attended')
+        self.assertEqual(QRUsage.objects.filter(qr_session=session).count(), 2)
+
+    # 4. Purpose Separation
+    def test_attendance_token_cannot_authorize_signing(self):
+        """An Attendance QR token cannot be used to sign a document (returns 403)."""
+        from django.utils import timezone
+        import datetime
+        from meetings.crypto import generate_qr_session_token
+
+        self.att1.status = 'Attended'
+        self.att1.save()
+
+        att_session = QRSession.objects.create(
+            meeting=self.meeting,
+            purpose='attendance',
+            token=generate_qr_session_token(),
+            created_by=self.ap,
+            expires_at=timezone.now() + datetime.timedelta(seconds=3600),
+        )
+
+        self.client.force_login(self.officer1)
+        # Attempt to access signing page with attendance token
+        r_get = self.client.get(f"{reverse('sign_meeting', args=[self.meeting.id])}?token={att_session.token}")
+        self.assertEqual(r_get.status_code, 403)
+        self.assertIn(b'Attendance QR tokens cannot be used for signing', r_get.content)
+
+        # Attempt to post signature with attendance token
+        r_post = self.client.post(f"{reverse('sign_meeting', args=[self.meeting.id])}?token={att_session.token}", {
+            'annotation': 'Malicious attempt',
+            'token': att_session.token,
+        })
+        self.assertEqual(r_post.status_code, 403)
+        self.assertIn(b'Attendance QR tokens cannot be used for signing', r_post.content)
+
+        self.att1.refresh_from_db()
+        self.assertFalse(self.att1.has_signed)
+
+    def test_signing_token_cannot_record_attendance(self):
+        """A Signing QR token cannot be used to record attendance (returns 403)."""
+        from django.utils import timezone
+        import datetime
+        from meetings.crypto import generate_qr_session_token
+
+        sig_session = QRSession.objects.create(
+            meeting=self.meeting,
+            purpose='signing',
+            token=generate_qr_session_token(),
+            created_by=self.ap,
+            expires_at=timezone.now() + datetime.timedelta(seconds=3600),
+        )
+
+        self.client.force_login(self.officer1)
+        r = self.client.get(f"{reverse('scan_attendance_qr', args=[self.meeting.id])}?token={sig_session.token}")
+        self.assertEqual(r.status_code, 403)
+        self.assertIn(b'Signing QR tokens cannot be used to record attendance', r.content)
+
+        self.att1.refresh_from_db()
+        self.assertEqual(self.att1.status, 'Absent')
+
+    # 5. QR Signing Workflow
+    def test_eligible_attended_officer_signs_with_qr_token(self):
+        """Eligible officer marked Attended scans Signing QR and completes ECDSA signature."""
+        from django.utils import timezone
+        import datetime
+        from meetings.crypto import generate_qr_session_token, verify_document_signature
+        from meetings.views import _build_signing_payload
+
+        self.att1.status = 'Attended'
+        self.att1.status_updated_at = timezone.now()
+        self.att1.save()
+
+        sig_session = QRSession.objects.create(
+            meeting=self.meeting,
+            purpose='signing',
+            token=generate_qr_session_token(),
+            created_by=self.ap,
+            expires_at=timezone.now() + datetime.timedelta(seconds=3600),
+        )
+
+        self.client.force_login(self.officer1)
+        sign_url = reverse('sign_meeting', args=[self.meeting.id])
+
+        # GET signing page with token
+        r_get = self.client.get(f"{sign_url}?token={sig_session.token}")
+        self.assertEqual(r_get.status_code, 200)
+        self.assertContains(r_get, 'Submit Digital Signature')
+
+        # POST signature with annotation
+        annotation_text = 'Approved and concurred via QR signing.'
+        r_post = self.client.post(f"{sign_url}?token={sig_session.token}", {
+            'annotation': annotation_text,
+            'token': sig_session.token,
+        })
+        self.assertEqual(r_post.status_code, 302)
+
+        self.att1.refresh_from_db()
+        self.assertTrue(self.att1.has_signed)
+        self.assertEqual(self.att1.annotation, annotation_text)
+        self.assertIsNotNone(self.att1.cryptographic_signature)
+
+        # Cryptographically verify signature
+        payload = _build_signing_payload(self.meeting, annotation_text)
+        self.assertTrue(
+            verify_document_signature(
+                self.officer1.public_key,
+                payload,
+                self.att1.cryptographic_signature,
+            )
+        )
+
+        # QRUsage recorded
+        self.assertTrue(QRUsage.objects.filter(qr_session=sig_session, user=self.officer1).exists())
+
+    def test_eligible_late_officer_signs_with_qr_token(self):
+        """Eligible officer marked Late can sign with Signing QR token."""
+        from django.utils import timezone
+        import datetime
+        from meetings.crypto import generate_qr_session_token
+
+        self.att1.status = 'Late'
+        self.att1.status_updated_at = timezone.now()
+        self.att1.save()
+
+        sig_session = QRSession.objects.create(
+            meeting=self.meeting,
+            purpose='signing',
+            token=generate_qr_session_token(),
+            created_by=self.ap,
+            expires_at=timezone.now() + datetime.timedelta(seconds=3600),
+        )
+
+        self.client.force_login(self.officer1)
+        sign_url = reverse('sign_meeting', args=[self.meeting.id])
+        r = self.client.post(f"{sign_url}?token={sig_session.token}", {
+            'annotation': 'Late attendance remarks',
+            'token': sig_session.token,
+        })
+        self.assertEqual(r.status_code, 302)
+        self.att1.refresh_from_db()
+        self.assertTrue(self.att1.has_signed)
+
+    def test_absent_officer_cannot_sign_with_qr_token(self):
+        """Absent Officer receives HTTP 403 when attempting to sign via QR."""
+        from django.utils import timezone
+        import datetime
+        from meetings.crypto import generate_qr_session_token
+
+        self.att1.status = 'Absent'
+        self.att1.save()
+
+        sig_session = QRSession.objects.create(
+            meeting=self.meeting,
+            purpose='signing',
+            token=generate_qr_session_token(),
+            created_by=self.ap,
+            expires_at=timezone.now() + datetime.timedelta(seconds=3600),
+        )
+
+        self.client.force_login(self.officer1)
+        sign_url = reverse('sign_meeting', args=[self.meeting.id])
+        r_get = self.client.get(f"{sign_url}?token={sig_session.token}")
+        self.assertEqual(r_get.status_code, 403)
+        self.assertIn(b'Attended or Late', r_get.content)
+
+        r_post = self.client.post(f"{sign_url}?token={sig_session.token}", {
+            'annotation': 'Attempt',
+            'token': sig_session.token,
+        })
+        self.assertEqual(r_post.status_code, 403)
+        self.att1.refresh_from_db()
+        self.assertFalse(self.att1.has_signed)
+
+    def test_revoked_signing_qr_rejected(self):
+        """Revoked Signing QR token is rejected with 403."""
+        from django.utils import timezone
+        import datetime
+        from meetings.crypto import generate_qr_session_token
+
+        self.att1.status = 'Attended'
+        self.att1.save()
+
+        sig_session = QRSession.objects.create(
+            meeting=self.meeting,
+            purpose='signing',
+            token=generate_qr_session_token(),
+            created_by=self.ap,
+            expires_at=timezone.now() + datetime.timedelta(seconds=3600),
+            is_revoked=True,
+            revoked_at=timezone.now(),
+        )
+
+        self.client.force_login(self.officer1)
+        sign_url = reverse('sign_meeting', args=[self.meeting.id])
+        r = self.client.get(f"{sign_url}?token={sig_session.token}")
+        self.assertEqual(r.status_code, 403)
+        self.assertIn(b'revoked', r.content)
+
+    def test_multiple_officers_can_sign_with_same_signing_qr(self):
+        """Multiple assigned, attended officers can each sign using the same Signing QR session."""
+        from django.utils import timezone
+        import datetime
+        from meetings.crypto import generate_qr_session_token
+
+        self.att1.status = 'Attended'
+        self.att1.save()
+        self.att2.status = 'Attended'
+        self.att2.save()
+
+        sig_session = QRSession.objects.create(
+            meeting=self.meeting,
+            purpose='signing',
+            token=generate_qr_session_token(),
+            created_by=self.ap,
+            expires_at=timezone.now() + datetime.timedelta(seconds=3600),
+        )
+
+        sign_url = reverse('sign_meeting', args=[self.meeting.id])
+
+        # Officer 1 signs
+        self.client.force_login(self.officer1)
+        r1 = self.client.post(f"{sign_url}?token={sig_session.token}", {
+            'annotation': 'Officer 1 remarks',
+            'token': sig_session.token,
+        })
+        self.assertEqual(r1.status_code, 302)
+
+        # Officer 2 signs with same token
+        self.client.force_login(self.officer2)
+        r2 = self.client.post(f"{sign_url}?token={sig_session.token}", {
+            'annotation': 'Officer 2 remarks',
+            'token': sig_session.token,
+        })
+        self.assertEqual(r2.status_code, 302)
+
+        self.att1.refresh_from_db()
+        self.att2.refresh_from_db()
+        self.assertTrue(self.att1.has_signed)
+        self.assertTrue(self.att2.has_signed)
+        self.assertEqual(QRUsage.objects.filter(qr_session=sig_session).count(), 2)
+
+    def test_projector_qr_view_generates_and_displays_signing_qr_session(self):
+        """AP accessing projector_qr_view generates/retrieves active signing QRSession and renders it."""
+        self.client.force_login(self.ap)
+        url = reverse('projector_qr_view', args=[self.meeting.id])
+        r = self.client.get(url)
+        self.assertEqual(r.status_code, 200)
+        self.assertTemplateUsed(r, 'meetings/qr_projector.html')
+        self.assertContains(r, 'Digital Signing QR')
+
+        session = QRSession.objects.filter(meeting=self.meeting, purpose='signing').first()
+        self.assertIsNotNone(session)
+        self.assertContains(r, session.token)
+
+    # 6. HMAC Purpose-Separation Tests (Targeted Security Correction)
+    def test_hmac_attendance_purpose_token_accepted_for_attendance(self):
+        """Valid HMAC token with attendance purpose is accepted to record attendance."""
+        import time
+        from meetings.crypto import generate_hmac_qr_token
+
+        ts = str(int(time.time()))
+        sig = generate_hmac_qr_token(self.meeting.id, ts, purpose='attendance')
+
+        self.client.force_login(self.officer1)
+        url = reverse('scan_attendance_qr', args=[self.meeting.id])
+        r = self.client.get(f"{url}?t={ts}&sig={sig}&purpose=attendance")
+        self.assertEqual(r.status_code, 200)
+        self.assertContains(r, 'Attendance Recorded')
+
+        self.att1.refresh_from_db()
+        self.assertEqual(self.att1.status, 'Attended')
+        self.assertIsNotNone(self.att1.status_updated_at)
+
+    def test_hmac_signing_purpose_token_rejected_for_attendance(self):
+        """HMAC token with signing purpose is rejected by attendance scanning (returns 403)."""
+        import time
+        from meetings.crypto import generate_hmac_qr_token
+
+        ts = str(int(time.time()))
+        sig = generate_hmac_qr_token(self.meeting.id, ts, purpose='signing')
+
+        self.client.force_login(self.officer1)
+        url = reverse('scan_attendance_qr', args=[self.meeting.id])
+
+        # With explicit purpose=signing param
+        r1 = self.client.get(f"{url}?t={ts}&sig={sig}&purpose=signing")
+        self.assertEqual(r1.status_code, 403)
+        self.assertIn(b'Signing QR tokens cannot be used to record attendance', r1.content)
+
+        # Without purpose param (sig mismatch against attendance purpose)
+        r2 = self.client.get(f"{url}?t={ts}&sig={sig}")
+        self.assertEqual(r2.status_code, 403)
+        self.assertIn(b'Invalid or expired QR code', r2.content)
+
+        self.att1.refresh_from_db()
+        self.assertEqual(self.att1.status, 'Absent')
+
+    def test_hmac_purposeless_legacy_token_rejected_for_attendance(self):
+        """Purpose-less legacy HMAC signing token is rejected by attendance scanning (returns 403)."""
+        import time
+        from meetings.crypto import generate_hmac_qr_token
+
+        ts = str(int(time.time()))
+        sig = generate_hmac_qr_token(self.meeting.id, ts)
+
+        self.client.force_login(self.officer1)
+        url = reverse('scan_attendance_qr', args=[self.meeting.id])
+        r = self.client.get(f"{url}?t={ts}&sig={sig}")
+        self.assertEqual(r.status_code, 403)
+        self.assertIn(b'Invalid or expired QR code', r.content)
+
+        self.att1.refresh_from_db()
+        self.assertEqual(self.att1.status, 'Absent')
+
+    def test_hmac_purposeless_legacy_token_accepted_for_signing_workflow(self):
+        """Purpose-less legacy HMAC token from Batch 05 remains accepted by the signing path,
+        subject to meeting-status, assignment, and attendance requirements."""
+        import time
+        from django.utils import timezone
+        from meetings.crypto import generate_hmac_qr_token
+
+        self.att1.status = 'Attended'
+        self.att1.status_updated_at = timezone.now()
+        self.att1.save()
+
+        ts = str(int(time.time()))
+        sig = generate_hmac_qr_token(self.meeting.id, ts)
+
+        self.client.force_login(self.officer1)
+        url = reverse('sign_meeting', args=[self.meeting.id])
+
+        # GET signing page succeeds with legacy purpose-less token
+        r_get = self.client.get(f"{url}?t={ts}&sig={sig}")
+        self.assertEqual(r_get.status_code, 200)
+        self.assertContains(r_get, 'Submit Digital Signature')
+
+        # POST signature succeeds with legacy purpose-less token
+        r_post = self.client.post(f"{url}?t={ts}&sig={sig}", {
+            'annotation': 'Signed via legacy purpose-less HMAC token',
+            't': ts,
+            'sig': sig,
+        })
+        self.assertEqual(r_post.status_code, 302)
+
+        self.att1.refresh_from_db()
+        self.assertTrue(self.att1.has_signed)
+        self.assertEqual(self.att1.annotation, 'Signed via legacy purpose-less HMAC token')
+        self.assertIsNotNone(self.att1.cryptographic_signature)
+
+    # 7. Concurrency Regression Tests (Batch 07 Fix)
+    def test_concurrent_duplicate_attendance_scan_race_prevention(self):
+        """Regression test for F2/F9: Two competing scans by the same Officer cannot both succeed.
+
+        Simulates a race condition where Request 1 has passed pre-flight checks and entered
+        scan_attendance_qr, but before its QRUsage record is written, a concurrent Request 2
+        completes the scan entirely (recording attendance, QRUsage, and AuditLog).
+
+        Demonstrates that:
+          1. The losing request detects existing QRUsage and sets already_recorded=True.
+          2. No duplicate QRUsage row is created (unique_together enforced).
+          3. No duplicate AuditLog row is created (exactly 1 audit event for this scan).
+          4. Attendance remains Attended with unchanged status_updated_at.
+          5. Response returns 200 with 'already recorded' message.
+        """
+        from unittest.mock import patch
+        from django.utils import timezone
+        import datetime
+        from meetings.crypto import generate_qr_session_token
+
+        session = QRSession.objects.create(
+            meeting=self.meeting,
+            purpose='attendance',
+            token=generate_qr_session_token(),
+            created_by=self.ap,
+            expires_at=timezone.now() + datetime.timedelta(seconds=3600),
+        )
+
+        self.client.force_login(self.officer1)
+        url = reverse('scan_attendance_qr', args=[self.meeting.id])
+
+        original_get_or_create = QRUsage.objects.get_or_create
+
+        def simulate_race_get_or_create(*args, **kwargs):
+            # Concurrent Request 2 wins the race immediately before Request 1's get_or_create:
+            # 1. Create the unique QRUsage row
+            original_get_or_create(*args, **kwargs)
+            # 2. Update attendance
+            Attendance.objects.filter(pk=self.att1.pk, has_signed=False).update(
+                status='Attended',
+                status_updated_at=timezone.now(),
+            )
+            # 3. Create the single legitimate AuditLog entry
+            AuditLog.objects.create(
+                department=self.meeting.department,
+                meeting=self.meeting,
+                user=self.officer1,
+                action="Recorded attendance via QR as Attended"
+            )
+            # Now Request 1 executes its get_or_create: it finds the existing row and returns (obj, False)
+            return original_get_or_create(*args, **kwargs)
+
+        with patch('meetings.views.QRUsage.objects.get_or_create', side_effect=simulate_race_get_or_create):
+            r = self.client.get(f"{url}?token={session.token}")
+            self.assertEqual(r.status_code, 200)
+            self.assertContains(r, 'already recorded')
+
+        # Assertions on database consistency:
+        # Exactly one QRUsage record exists for this officer and QR session
+        self.assertEqual(QRUsage.objects.filter(qr_session=session, user=self.officer1).count(), 1)
+
+        # Exactly one AuditLog entry exists for this attendance scan (no duplicate log!)
+        audit_entries = AuditLog.objects.filter(
+            meeting=self.meeting,
+            user=self.officer1,
+            action="Recorded attendance via QR as Attended"
+        )
+        self.assertEqual(audit_entries.count(), 1)
+
+        # Attendance remains consistent and unsigned
+        self.att1.refresh_from_db()
+        self.assertEqual(self.att1.status, 'Attended')
+        self.assertFalse(self.att1.has_signed)
+
+    def test_concurrent_attendance_scan_integrity_error_handled_safely(self):
+        """Regression test for F2/F9: Low-level database IntegrityError from concurrent INSERT
+        is safely caught and rendered as an already_recorded response without duplicating state."""
+        from unittest.mock import patch
+        from django.db import IntegrityError
+        from django.utils import timezone
+        import datetime
+        from meetings.crypto import generate_qr_session_token
+
+        session = QRSession.objects.create(
+            meeting=self.meeting,
+            purpose='attendance',
+            token=generate_qr_session_token(),
+            created_by=self.ap,
+            expires_at=timezone.now() + datetime.timedelta(seconds=3600),
+        )
+
+        self.client.force_login(self.officer1)
+        url = reverse('scan_attendance_qr', args=[self.meeting.id])
+
+        # Simulate concurrent request completing scan first
+        QRUsage.objects.create(qr_session=session, user=self.officer1)
+        self.att1.status = 'Attended'
+        self.att1.status_updated_at = timezone.now()
+        self.att1.save()
+        AuditLog.objects.create(
+            department=self.meeting.department,
+            meeting=self.meeting,
+            user=self.officer1,
+            action="Recorded attendance via QR as Attended"
+        )
+        initial_audit_count = AuditLog.objects.filter(meeting=self.meeting, user=self.officer1).count()
+
+        # When competing request raises IntegrityError on race
+        with patch('meetings.views.QRUsage.objects.get_or_create', side_effect=IntegrityError("UNIQUE constraint failed")):
+            r = self.client.get(f"{url}?token={session.token}")
+            self.assertEqual(r.status_code, 200)
+            self.assertContains(r, 'already recorded')
+
+        # No duplicate QRUsage or AuditLog created
+        self.assertEqual(QRUsage.objects.filter(qr_session=session, user=self.officer1).count(), 1)
+        self.assertEqual(AuditLog.objects.filter(meeting=self.meeting, user=self.officer1).count(), initial_audit_count)
+
+    def test_concurrent_digital_signing_blocks_attendance_scan_and_preserves_signature(self):
+        """Regression test for F2/F9: If an Officer signs concurrently between the pre-flight check
+        and the atomic database update, scan_attendance_qr aborts, rolls back, returns 403,
+        and does NOT overwrite the cryptographic signature or annotation."""
+        from unittest.mock import patch
+        from django.utils import timezone
+        import datetime
+        from meetings.crypto import generate_qr_session_token
+
+        session = QRSession.objects.create(
+            meeting=self.meeting,
+            purpose='attendance',
+            token=generate_qr_session_token(),
+            created_by=self.ap,
+            expires_at=timezone.now() + datetime.timedelta(seconds=3600),
+        )
+
+        self.client.force_login(self.officer1)
+        url = reverse('scan_attendance_qr', args=[self.meeting.id])
+
+        original_filter = Attendance.objects.filter
+
+        def simulate_concurrent_signing(*args, **kwargs):
+            if kwargs.get('has_signed') is False and kwargs.get('pk') == self.att1.pk:
+                # Concurrent request completes signing right before conditional attendance update
+                original_filter(pk=self.att1.pk).update(
+                    has_signed=True,
+                    cryptographic_signature='concurrent_winner_ecdsa_sig',
+                    annotation='Signed concurrently during attendance scan',
+                    signed_at=timezone.now(),
+                )
+            return original_filter(*args, **kwargs)
+
+        with patch('meetings.views.Attendance.objects.filter', side_effect=simulate_concurrent_signing):
+            r = self.client.get(f"{url}?token={session.token}")
+            self.assertEqual(r.status_code, 403)
+            self.assertIn(b'already digitally signed', r.content)
+
+        # Signature, annotation, and signed_at are strictly preserved
+        self.att1.refresh_from_db()
+        self.assertTrue(self.att1.has_signed)
+        self.assertEqual(self.att1.cryptographic_signature, 'concurrent_winner_ecdsa_sig')
+        self.assertEqual(self.att1.annotation, 'Signed concurrently during attendance scan')
+
+        # No QRUsage or attendance audit log was committed (transaction rolled back)
+        self.assertFalse(QRUsage.objects.filter(qr_session=session, user=self.officer1).exists())
+        self.assertFalse(
+            AuditLog.objects.filter(
+                meeting=self.meeting,
+                user=self.officer1,
+                action="Recorded attendance via QR as Attended"
+            ).exists()
+        )

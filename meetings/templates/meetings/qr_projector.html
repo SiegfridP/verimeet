@@ -1,1 +1,124 @@
-<h1>This is the qr projector</h1>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Projector – {{ meeting.title }} – VeriMeet</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: 'Inter', sans-serif;
+      background: radial-gradient(circle at center, #1a1a40 0%, #08081a 100%);
+      color: #ffffff;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+      text-align: center;
+    }
+    .badge {
+      display: inline-block;
+      padding: 0.4rem 1rem;
+      border-radius: 9999px;
+      font-size: 0.9rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 1rem;
+      background: rgba(79, 209, 197, 0.2);
+      border: 1px solid #4fd1c5;
+      color: #4fd1c5;
+    }
+    h1 {
+      font-size: 2.2rem;
+      margin: 0 0 0.5rem 0;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+    }
+    p.subtitle {
+      color: #a0aec0;
+      font-size: 1.1rem;
+      margin: 0 0 2rem 0;
+      max-width: 600px;
+    }
+    .qr-card {
+      background: #ffffff;
+      padding: 2rem;
+      border-radius: 16px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6), 0 0 40px rgba(79, 209, 197, 0.2);
+      display: inline-block;
+      margin-bottom: 2rem;
+    }
+    .qr-card img {
+      display: block;
+      margin: 0 auto;
+      image-rendering: pixelated;
+    }
+    .url-box {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 10px;
+      padding: 0.85rem 1.5rem;
+      font-family: monospace;
+      font-size: 0.95rem;
+      color: #4fd1c5;
+      max-width: 650px;
+      word-break: break-all;
+      margin-bottom: 2rem;
+    }
+    .url-box a {
+      color: #4fd1c5;
+      text-decoration: underline;
+    }
+    .nav-links {
+      display: flex;
+      gap: 1rem;
+      justify-content: center;
+    }
+    .nav-links a {
+      color: #a0aec0;
+      text-decoration: none;
+      font-size: 0.9rem;
+      padding: 0.5rem 1rem;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.05);
+      transition: background 0.2s, color 0.2s;
+    }
+    .nav-links a:hover {
+      background: rgba(255, 255, 255, 0.15);
+      color: #ffffff;
+    }
+  </style>
+</head>
+<body>
+  <div class="badge">{{ meeting.department.name }} &bull; Digital Signing QR</div>
+  <h1>{{ meeting.title }}</h1>
+  <p class="subtitle">
+    Scan with your mobile device to review the finalized minutes, attach an optional annotation, and submit your ECDSA digital signature.
+  </p>
+
+  <div class="qr-card">
+    <img
+      src="data:image/png;base64,{{ qr_image_b64 }}"
+      alt="Digital Signing QR Code for {{ meeting.title }}"
+      width="280"
+      height="280"
+    />
+  </div>
+
+  <div class="url-box">
+    Direct Signing Link:<br />
+    <a href="{{ signing_url }}" id="signing-link" target="_blank">{{ signing_url }}</a>
+  </div>
+
+  <div class="nav-links">
+    <a href="{% url 'review_meeting' meeting.id %}">&larr; Return to Meeting Review</a>
+    <a href="{% url 'meeting_attendance' meeting.id %}">Manage Attendance</a>
+    <a href="{% url 'department_dashboard' meeting.department.id %}">Dashboard</a>
+  </div>
+</body>
+</html>

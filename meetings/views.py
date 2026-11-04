@@ -1,13 +1,24 @@
+import base64
+import datetime
 import hmac
+import io
 import time
+import segno
 from django.shortcuts import render, get_object_or_404, redirect
+from django.urls import reverse
 from django.contrib.auth.decorators import login_required
 from django.http import HttpResponseForbidden, HttpResponse, HttpResponseBadRequest, HttpResponseNotAllowed
 from django.utils import timezone
 from django.contrib import messages
-from django.db import transaction
-from .models import Meeting, Attendance, AuditLog
-from .crypto import generate_hmac_qr_token, sign_document_data, verify_document_signature
+from django.db import transaction, IntegrityError
+from .models import Meeting, Attendance, AuditLog, QRSession, QRUsage
+from .crypto import (
+    generate_hmac_qr_token,
+    verify_hmac_qr_token,
+    generate_qr_session_token,
+    sign_document_data,
+    verify_document_signature,
+)
 from .forms import (
     MeetingForm,
     AssignParticipantsForm,
@@ -124,6 +135,21 @@ def lock_meeting(request, meeting_id):
     """
     return _finalize_meeting_internal(request, meeting_id)
 
+def _generate_qr_png_b64(url: str, scale: int = 6) -> str:
+    """Return a base64-encoded PNG of a real, scannable QR code for the given URL.
+
+    Uses the ``segno`` library which produces ISO/IEC 18004-compliant QR codes.
+    The returned string is suitable for use as an ``<img src="data:image/png;base64,…">``
+    attribute without any further encoding.
+
+    ``scale`` controls module size in pixels (default 6 → each module is 6×6 px).
+    """
+    qr = segno.make(url, error='m')
+    buf = io.BytesIO()
+    qr.save(buf, kind='png', scale=scale)
+    return base64.b64encode(buf.getvalue()).decode('ascii')
+
+
 @login_required
 def projector_qr_view(request, meeting_id):
     """Displays the QR code for the projector."""
@@ -132,13 +158,333 @@ def projector_qr_view(request, meeting_id):
     if not can_access or meeting.status != 'Finished':
         return HttpResponseForbidden()
 
-    timestamp = str(int(time.time()))
-    sig = generate_hmac_qr_token(meeting_id, timestamp)
+    # Reuse or create active signing QR session
+    qr_session = QRSession.objects.filter(
+        meeting=meeting,
+        purpose=QRSession.PURPOSE_SIGNING,
+        is_revoked=False,
+        expires_at__gt=timezone.now()
+    ).first()
 
-    # The URL the QR code will point to
-    signing_url = f"{request.scheme}://{request.get_host()}/meetings/{meeting_id}/sign/?t={timestamp}&sig={sig}"
+    if not qr_session:
+        token = generate_qr_session_token()
+        expires_at = timezone.now() + datetime.timedelta(seconds=3600)
+        qr_session = QRSession.objects.create(
+            meeting=meeting,
+            purpose=QRSession.PURPOSE_SIGNING,
+            token=token,
+            created_by=request.user,
+            expires_at=expires_at,
+        )
+        AuditLog.objects.create(
+            department=meeting.department,
+            meeting=meeting,
+            user=request.user,
+            action="Generated Signing QR code"
+        )
 
-    return render(request, 'meetings/qr_projector.html', {'signing_url': signing_url})
+    signing_url = request.build_absolute_uri(reverse('sign_meeting', args=[meeting.id])) + f"?token={qr_session.token}"
+    qr_image_b64 = _generate_qr_png_b64(signing_url, scale=8)
+
+    return render(request, 'meetings/qr_projector.html', {
+        'meeting': meeting,
+        'qr_session': qr_session,
+        'signing_url': signing_url,
+        'qr_image_b64': qr_image_b64,
+    })
+
+
+@login_required
+def generate_attendance_qr(request, meeting_id):
+    """
+    Authorized Personnel generates an Attendance QR code for an eligible meeting.
+    Draft and Finished meetings are eligible; Archived meetings are locked.
+    """
+    meeting = get_object_or_404(Meeting, id=meeting_id)
+    can_access = is_global_admin(request.user) or has_membership(request.user, meeting.department, role='AP')
+    if not can_access:
+        return HttpResponseForbidden("You are not authorized to generate QR codes for this department.")
+
+    if meeting.status == 'Archived':
+        return HttpResponseForbidden("Cannot generate attendance QR for an archived meeting.")
+
+    token = generate_qr_session_token()
+    expires_at = timezone.now() + datetime.timedelta(seconds=3600)
+    qr_session = QRSession.objects.create(
+        meeting=meeting,
+        purpose=QRSession.PURPOSE_ATTENDANCE,
+        token=token,
+        created_by=request.user,
+        expires_at=expires_at,
+    )
+
+    AuditLog.objects.create(
+        department=meeting.department,
+        meeting=meeting,
+        user=request.user,
+        action="Generated Attendance QR code"
+    )
+
+    messages.success(request, "Attendance QR code generated successfully.")
+    return redirect('view_qr_session', meeting_id=meeting.id, session_id=qr_session.id)
+
+
+@login_required
+def generate_signing_qr(request, meeting_id):
+    """
+    Authorized Personnel generates a Signing QR code for an eligible Finished meeting.
+    Draft and Archived meetings cannot have Signing QR codes.
+    """
+    meeting = get_object_or_404(Meeting, id=meeting_id)
+    can_access = is_global_admin(request.user) or has_membership(request.user, meeting.department, role='AP')
+    if not can_access:
+        return HttpResponseForbidden("You are not authorized to generate QR codes for this department.")
+
+    if meeting.status != 'Finished':
+        return HttpResponseForbidden("Signing QR codes can only be generated for Finished meetings.")
+
+    token = generate_qr_session_token()
+    expires_at = timezone.now() + datetime.timedelta(seconds=3600)
+    qr_session = QRSession.objects.create(
+        meeting=meeting,
+        purpose=QRSession.PURPOSE_SIGNING,
+        token=token,
+        created_by=request.user,
+        expires_at=expires_at,
+    )
+
+    AuditLog.objects.create(
+        department=meeting.department,
+        meeting=meeting,
+        user=request.user,
+        action="Generated Signing QR code"
+    )
+
+    messages.success(request, "Signing QR code generated successfully.")
+    return redirect('view_qr_session', meeting_id=meeting.id, session_id=qr_session.id)
+
+
+@login_required
+def view_qr_session(request, meeting_id, session_id):
+    """
+    AP view to display the QR code, expiration time, purpose, and usage status.
+    """
+    meeting = get_object_or_404(Meeting, id=meeting_id)
+    can_access = is_global_admin(request.user) or has_membership(request.user, meeting.department, role='AP')
+    if not can_access:
+        return HttpResponseForbidden("You are not authorized to view QR sessions for this department.")
+
+    qr_session = get_object_or_404(QRSession, id=session_id, meeting=meeting)
+
+    if qr_session.purpose == QRSession.PURPOSE_ATTENDANCE:
+        scan_url = request.build_absolute_uri(reverse('scan_attendance_qr', args=[meeting.id])) + f"?token={qr_session.token}"
+        purpose_display = "Attendance"
+    else:
+        scan_url = request.build_absolute_uri(reverse('sign_meeting', args=[meeting.id])) + f"?token={qr_session.token}"
+        purpose_display = "Digital Signing"
+
+    qr_image_b64 = _generate_qr_png_b64(scan_url, scale=6)
+
+    return render(request, 'meetings/qr_display.html', {
+        'meeting': meeting,
+        'qr_session': qr_session,
+        'scan_url': scan_url,
+        'purpose_display': purpose_display,
+        'qr_image_b64': qr_image_b64,
+    })
+
+
+@login_required
+def revoke_qr_session(request, meeting_id, session_id):
+    """
+    AP view to revoke an active QR session immediately.
+    """
+    if request.method != 'POST':
+        return HttpResponseNotAllowed(['POST'], "Revoking a QR session requires a POST request.")
+
+    meeting = get_object_or_404(Meeting, id=meeting_id)
+    can_access = is_global_admin(request.user) or has_membership(request.user, meeting.department, role='AP')
+    if not can_access:
+        return HttpResponseForbidden("You are not authorized to revoke QR sessions for this department.")
+
+    qr_session = get_object_or_404(QRSession, id=session_id, meeting=meeting)
+
+    if not qr_session.is_revoked:
+        qr_session.is_revoked = True
+        qr_session.revoked_at = timezone.now()
+        qr_session.revoked_by = request.user
+        qr_session.save(update_fields=['is_revoked', 'revoked_at', 'revoked_by'])
+
+        AuditLog.objects.create(
+            department=meeting.department,
+            meeting=meeting,
+            user=request.user,
+            action=f"Revoked {qr_session.get_purpose_display()} QR code"
+        )
+        messages.success(request, f"{qr_session.get_purpose_display()} QR code has been revoked.")
+
+    return redirect('view_qr_session', meeting_id=meeting.id, session_id=qr_session.id)
+
+
+@login_required
+def scan_attendance_qr(request, meeting_id):
+    """
+    Officer view to record attendance by scanning the Attendance QR code.
+    Validates token, purpose, expiration, revocation, assignment, and existing state.
+    """
+    meeting = get_object_or_404(Meeting, id=meeting_id)
+
+    # 1. Department membership check
+    if not user_in_department(request.user, meeting):
+        return HttpResponseForbidden("You do not belong to this department.")
+
+    # 2. Extract token or HMAC params
+    qr_token = request.GET.get('token') or request.POST.get('token')
+    timestamp = request.GET.get('t') or request.POST.get('t')
+    received_sig = request.GET.get('sig') or request.POST.get('sig')
+
+    qr_session = None
+
+    if qr_token:
+        qr_session = QRSession.objects.filter(token=qr_token, meeting=meeting).first()
+        if not qr_session:
+            return HttpResponseForbidden("Invalid QR code.")
+        if qr_session.purpose != QRSession.PURPOSE_ATTENDANCE:
+            return HttpResponseForbidden("Signing QR tokens cannot be used to record attendance.")
+        if qr_session.is_revoked:
+            return HttpResponseForbidden("This QR code has been revoked.")
+        if qr_session.is_expired:
+            return HttpResponseForbidden("This QR code has expired.")
+    elif timestamp and received_sig:
+        purpose_param = request.GET.get('purpose') or request.POST.get('purpose')
+        if purpose_param == 'signing':
+            return HttpResponseForbidden("Signing QR tokens cannot be used to record attendance.")
+
+        if not verify_hmac_qr_token(meeting.id, timestamp, received_sig, purpose='attendance'):
+            return HttpResponseForbidden("Invalid or expired QR code.")
+    else:
+        return HttpResponseForbidden("Missing security token.")
+
+    # 3. Check Officer is an assigned participant for this meeting
+    try:
+        attendance = Attendance.objects.get(meeting=meeting, user=request.user)
+    except Attendance.DoesNotExist:
+        return HttpResponseForbidden("You are not an assigned participant for this meeting.")
+
+    # 4. QR attendance must not overwrite an existing digital signature (pre-flight read; definitive
+    #    check is re-confirmed inside the atomic block below).
+    if attendance.has_signed:
+        return HttpResponseForbidden("Attendance cannot be modified because you have already digitally signed this meeting document.")
+
+    # 5. Record attendance atomically.
+    #
+    #    The duplicate-use guard lives INSIDE the transaction so that two simultaneous requests by
+    #    the same officer cannot both slip through a pre-flight check and both write attendance.
+    #
+    #    Strategy (SQLite-safe — no row-level SELECT FOR UPDATE):
+    #      a. Attempt to INSERT a QRUsage row guarded by the unique_together constraint.
+    #         Only one of two racing requests can win that INSERT; the other gets IntegrityError.
+    #      b. Inside the same transaction, before writing attendance, re-read the Attendance row
+    #         to confirm it is still unsigned and not yet recorded via QR.
+    #      c. The winning INSERT request writes attendance + audit.
+    #         The losing request rolls back cleanly and returns the "already recorded" response.
+    #    For the HMAC path (no QRSession), use a conditional UPDATE that only writes when the
+    #    status is still 'Absent' with a NULL status_updated_at, mirroring the sign_meeting
+    #    conditional-update pattern used in Batch 05.
+    already_recorded = False
+
+    if qr_session:
+        try:
+            with transaction.atomic():
+                # Re-read attendance inside transaction for consistency.
+                attendance_now = Attendance.objects.get(pk=attendance.pk)
+
+                if attendance_now.has_signed:
+                    return HttpResponseForbidden("Attendance cannot be modified because you have already digitally signed this meeting document.")
+
+                # Try to create the QRUsage record first.  The unique_together constraint
+                # (qr_session, user) means only one concurrent request can succeed.
+                # get_or_create returns (obj, created); created=False means already recorded.
+                _usage, created = QRUsage.objects.get_or_create(
+                    qr_session=qr_session, user=request.user
+                )
+
+                if not created:
+                    # Another request (or a previous scan) already recorded this usage.
+                    already_recorded = True
+                elif attendance_now.status in ('Attended', 'Late') and attendance_now.status_updated_at is not None:
+                    # Attendance was already set by a prior QR scan or manual AP update.
+                    already_recorded = True
+                else:
+                    # We hold the unique QRUsage slot.  Record attendance conditionally
+                    # requiring has_signed=False so that a concurrent digital signature
+                    # cannot be overwritten.
+                    updated = Attendance.objects.filter(
+                        pk=attendance.pk,
+                        has_signed=False,
+                    ).update(
+                        status='Attended',
+                        status_updated_at=timezone.now(),
+                    )
+                    if updated == 0:
+                        _usage.delete()
+                        return HttpResponseForbidden(
+                            "Attendance cannot be modified because you have already digitally signed this meeting document."
+                        )
+
+                    AuditLog.objects.create(
+                        department=meeting.department,
+                        meeting=meeting,
+                        user=request.user,
+                        action="Recorded attendance via QR as Attended"
+                    )
+        except IntegrityError:
+            # Race lost at the DB level (unique constraint on QRUsage).  Treat as already recorded.
+            already_recorded = True
+    else:
+        # HMAC path: use conditional UPDATE to atomically record attendance only once.
+        # The filter on status='Absent' + status_updated_at=None ensures idempotency.
+        updated = Attendance.objects.filter(
+            pk=attendance.pk,
+            has_signed=False,
+            status='Absent',
+            status_updated_at__isnull=True,
+        ).update(
+            status='Attended',
+            status_updated_at=timezone.now(),
+        )
+        if updated == 0:
+            current = Attendance.objects.filter(pk=attendance.pk).first()
+            if current and current.has_signed:
+                return HttpResponseForbidden(
+                    "Attendance cannot be modified because you have already digitally signed this meeting document."
+                )
+            already_recorded = True
+        else:
+            AuditLog.objects.create(
+                department=meeting.department,
+                meeting=meeting,
+                user=request.user,
+                action="Recorded attendance via QR as Attended"
+            )
+
+    attendance.refresh_from_db()
+
+    if already_recorded:
+        return render(request, 'meetings/qr_attendance_result.html', {
+            'meeting': meeting,
+            'attendance': attendance,
+            'already_recorded': True,
+            'message': f"Your attendance is already recorded as {attendance.status}.",
+        })
+
+    return render(request, 'meetings/qr_attendance_result.html', {
+        'meeting': meeting,
+        'attendance': attendance,
+        'already_recorded': False,
+        'message': "Your attendance has been successfully recorded as Attended.",
+    })
+
 
 @login_required
 def sign_meeting(request, meeting_id):
@@ -147,24 +493,43 @@ def sign_meeting(request, meeting_id):
     if not user_in_department(request.user, meeting) or meeting.status != 'Finished':
         return HttpResponseForbidden()
 
-    # 1. Verify the HMAC token from the URL to ensure they scanned the QR
+    # 1. Verify the QR session token or HMAC token from the URL to ensure they scanned the QR
+    qr_token = request.GET.get('token') or request.POST.get('token')
     timestamp = request.GET.get('t') or request.POST.get('t')
     received_sig = request.GET.get('sig') or request.POST.get('sig')
-    if not timestamp or not received_sig:
+
+    qr_session = None
+
+    if qr_token:
+        qr_session = QRSession.objects.filter(token=qr_token, meeting=meeting).first()
+        if not qr_session:
+            return HttpResponseForbidden("Invalid QR code.")
+        if qr_session.purpose != QRSession.PURPOSE_SIGNING:
+            return HttpResponseForbidden("Attendance QR tokens cannot be used for signing.")
+        if qr_session.is_revoked:
+            return HttpResponseForbidden("This QR code has been revoked.")
+        if qr_session.is_expired:
+            return HttpResponseForbidden("This QR code has expired.")
+    elif timestamp and received_sig:
+        purpose_param = request.GET.get('purpose') or request.POST.get('purpose')
+        if purpose_param == 'attendance':
+            return HttpResponseForbidden("Attendance QR tokens cannot be used for signing.")
+
+        try:
+            ts = int(timestamp)
+            now = int(time.time())
+            token_age = now - ts
+            if token_age < 0 or token_age > 3600:
+                return HttpResponseForbidden("Invalid or expired QR code.")
+
+            expected_sig = generate_hmac_qr_token(meeting_id, timestamp)
+            expected_sig_signing = generate_hmac_qr_token(meeting_id, timestamp, purpose='signing')
+            if not (hmac.compare_digest(expected_sig, received_sig) or hmac.compare_digest(expected_sig_signing, received_sig)):
+                return HttpResponseForbidden("Invalid or expired QR code.")
+        except (ValueError, TypeError):
+            return HttpResponseForbidden("Invalid or expired QR code.")
+    else:
         return HttpResponseForbidden("Missing security token.")
-
-    try:
-        ts = int(timestamp)
-        now = int(time.time())
-        token_age = now - ts
-        if token_age < 0 or token_age > 3600:
-            return HttpResponseForbidden("Invalid or expired QR code.")
-
-        expected_sig = generate_hmac_qr_token(meeting_id, timestamp)
-        if not hmac.compare_digest(expected_sig, received_sig):
-            return HttpResponseForbidden("Invalid or expired QR code.")
-    except (ValueError, TypeError):
-        return HttpResponseForbidden("Invalid or expired QR code.")
 
     # 2. Verify Officer is an assigned eligible signer for this meeting
     try:
@@ -219,6 +584,9 @@ def sign_meeting(request, meeting_id):
                     return HttpResponseForbidden("You have already signed this document.")
                 return HttpResponseForbidden("Your attendance must be recorded as Attended or Late before you can sign.")
 
+            if qr_session:
+                QRUsage.objects.get_or_create(qr_session=qr_session, user=request.user)
+
             AuditLog.objects.create(
                 department=meeting.department,
                 meeting=meeting,
@@ -232,6 +600,7 @@ def sign_meeting(request, meeting_id):
         'meeting': meeting,
         'attendance': attendance,
         'form': form,
+        'qr_token': qr_token,
         'timestamp': timestamp,
         'sig': received_sig,
     })

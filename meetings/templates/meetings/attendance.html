@@ -224,7 +224,8 @@
             Status: <strong>{{ meeting.get_status_display }}</strong> &bull; Department: <strong>{{ department.name }}</strong>
           </p>
         </div>
-        <div style="display: flex; gap: 0.5rem;">
+        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+          <a href="{% url 'generate_attendance_qr' meeting.id %}" class="button">Project Attendance QR</a>
           <a href="{% url 'review_meeting' meeting.id %}" class="button btn-secondary">Review Document</a>
           <a href="{% url 'department_dashboard' dept_id=department.id %}" class="button btn-secondary">Dashboard</a>
         </div>

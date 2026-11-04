@@ -166,6 +166,7 @@
 
       <form method="post" action="{% url 'sign_meeting' meeting.id %}">
         {% csrf_token %}
+        <input type="hidden" name="token" value="{{ qr_token }}" />
         <input type="hidden" name="t" value="{{ timestamp }}" />
         <input type="hidden" name="sig" value="{{ sig }}" />
 

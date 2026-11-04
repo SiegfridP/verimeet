@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Attendance Confirmation â€“ {{ meeting.title }} â€“ VeriMeet</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: 'Inter', sans-serif;
+      background: linear-gradient(135deg, #0d0d2b, #1a1a40);
+      color: #e0e0ff;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+    }
+
+    .card {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 16px;
+      padding: 2.5rem 2rem;
+      max-width: 500px;
+      width: 100%;
+      text-align: center;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+    }
+
+    .status-icon {
+      width: 64px;
+      height: 64px;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 2rem;
+      margin-bottom: 1.25rem;
+    }
+
+    .icon-success {
+      background: rgba(79, 209, 197, 0.2);
+      color: #4fd1c5;
+      border: 2px solid #4fd1c5;
+    }
+
+    .icon-info {
+      background: rgba(99, 179, 237, 0.2);
+      color: #63b3ed;
+      border: 2px solid #63b3ed;
+    }
+
+    h1 {
+      font-size: 1.6rem;
+      margin: 0 0 0.5rem 0;
+      color: #ffffff;
+      font-weight: 700;
+    }
+
+    p.message {
+      color: #cbd5e0;
+      font-size: 1rem;
+      line-height: 1.5;
+      margin: 0 0 1.75rem 0;
+    }
+
+    .details-box {
+      background: rgba(0, 0, 0, 0.25);
+      border-radius: 10px;
+      padding: 1.25rem;
+      margin-bottom: 1.75rem;
+      text-align: left;
+      font-size: 0.9rem;
+    }
+
+    .details-row {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 0.5rem;
+    }
+
+    .details-row:last-child {
+      margin-bottom: 0;
+    }
+
+    .details-label {
+      color: #a0aec0;
+    }
+
+    .details-value {
+      font-weight: 600;
+      color: #ffffff;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 0.25rem 0.65rem;
+      border-radius: 9999px;
+      font-size: 0.8rem;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .badge-attended {
+      background: rgba(79, 209, 197, 0.2);
+      color: #4fd1c5;
+      border: 1px solid #4fd1c5;
+    }
+
+    .button {
+      display: inline-block;
+      width: 100%;
+      padding: 0.75rem 1.25rem;
+      border-radius: 8px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      text-decoration: none;
+      background: #4fd1c5;
+      color: #0d0d2b;
+      transition: background 0.2s;
+    }
+
+    .button:hover {
+      background: #38b2ac;
+    }
+
+    .secondary-link {
+      display: inline-block;
+      margin-top: 1rem;
+      color: #a0aec0;
+      font-size: 0.85rem;
+      text-decoration: none;
+    }
+
+    .secondary-link:hover {
+      color: #ffffff;
+      text-decoration: underline;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="card">
+    {% if already_recorded %}
+    <div class="status-icon icon-info">&#x2714;</div>
+    <h1>Attendance Confirmed</h1>
+    {% else %}
+    <div class="status-icon icon-success">&#x2713;</div>
+    <h1>Attendance Recorded!</h1>
+    {% endif %}
+
+    <p class="message">{{ message }}</p>
+
+    <div class="details-box">
+      <div class="details-row">
+        <span class="details-label">Meeting:</span>
+        <span class="details-value">{{ meeting.title }}</span>
+      </div>
+      <div class="details-row">
+        <span class="details-label">Department:</span>
+        <span class="details-value">{{ meeting.department.name }}</span>
+      </div>
+      <div class="details-row">
+        <span class="details-label">Officer:</span>
+        <span class="details-value">{{ attendance.user.username }}</span>
+      </div>
+      <div class="details-row">
+        <span class="details-label">Attendance Status:</span>
+        <span class="details-value">
+          <span class="badge badge-attended">{{ attendance.status }}</span>
+        </span>
+      </div>
+      <div class="details-row">
+        <span class="details-label">Recorded At:</span>
+        <span class="details-value">{{ attendance.status_updated_at|date:"Y-m-d H:i:s" }}</span>
+      </div>
+    </div>
+
+    <a href="{% url 'my_attendance' meeting.id %}" class="button">View My Attendance Details</a>
+    <a href="{% url 'officer_dashboard' %}" class="secondary-link">Return to Dashboard</a>
+  </div>
+</body>
+</html>

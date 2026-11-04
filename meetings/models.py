@@ -89,3 +89,56 @@ class AuditLog(models.Model):
     user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
     action = models.CharField(max_length=255) # e.g., "Changed status to Finished", "Signed Document"
     timestamp = models.DateTimeField(auto_now_add=True)
+
+
+class QRSession(models.Model):
+    PURPOSE_ATTENDANCE = 'attendance'
+    PURPOSE_SIGNING = 'signing'
+    PURPOSE_CHOICES = [
+        (PURPOSE_ATTENDANCE, 'Attendance'),
+        (PURPOSE_SIGNING, 'Signing'),
+    ]
+
+    meeting = models.ForeignKey(Meeting, on_delete=models.CASCADE, related_name='qr_sessions')
+    purpose = models.CharField(max_length=20, choices=PURPOSE_CHOICES)
+    token = models.CharField(max_length=128, unique=True, db_index=True)
+    created_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name='created_qr_sessions')
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    is_revoked = models.BooleanField(default=False)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    revoked_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='revoked_qr_sessions'
+    )
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        status = 'Revoked' if self.is_revoked else ('Expired' if self.is_expired else 'Active')
+        return f"{self.meeting.title} - {self.get_purpose_display()} QR ({status})"
+
+    @property
+    def is_expired(self):
+        from django.utils import timezone
+        return timezone.now() > self.expires_at
+
+    @property
+    def is_active(self):
+        return (not self.is_revoked) and (not self.is_expired)
+
+
+class QRUsage(models.Model):
+    qr_session = models.ForeignKey(QRSession, on_delete=models.CASCADE, related_name='usages')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='qr_usages')
+    used_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('qr_session', 'user')
+
+    def __str__(self):
+        return f"{self.user.username} - {self.qr_session.purpose} on {self.qr_session.meeting.title}"
