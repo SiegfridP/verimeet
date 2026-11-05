@@ -291,3 +291,85 @@ class MultiDepartmentAndRBACTests(TestCase):
         # Role remains unchanged
         m = Membership.objects.get(user=self.regular_officer, department=self.dept_b)
         self.assertEqual(m.role, 'O')
+
+
+class Batch09AdministrativeAuditTests(TestCase):
+    def setUp(self):
+        from django.test import RequestFactory
+        from types import SimpleNamespace
+        self.actor = User.objects.create_user(username='audit_admin', is_admin=True)
+        self.department = Department.objects.create(name='Audit department')
+        self.target = User.objects.create_user(username='audit_target')
+        self.request = RequestFactory().post('/admin/')
+        self.request.user = self.actor
+        self.form = SimpleNamespace(changed_data=['name'])
+
+    def test_department_admin_create_update_delete(self):
+        from django.contrib import admin
+        from meetings.models import AuditLog
+        model_admin = admin.site._registry[Department]
+        department = Department(name='New department')
+        model_admin.save_model(self.request, department, self.form, False)
+        event = AuditLog.objects.get(event_type='department.created')
+        self.assertEqual(event.user, self.actor)
+        target_id = str(department.pk)
+        department.name = 'Updated'
+        model_admin.save_model(self.request, department, self.form, True)
+        self.assertEqual(AuditLog.objects.get(event_type='department.updated').metadata['changed_fields'], ['name'])
+        model_admin.delete_model(self.request, department)
+        event = AuditLog.objects.get(event_type='department.deleted')
+        self.assertEqual(event.target_id, target_id)
+        self.assertIsNone(event.department_id)
+
+    def test_role_grant_noop_and_attribution(self):
+        from .audit import grant_ap
+        from meetings.models import AuditLog
+        from django.db import transaction
+        Membership.objects.create(user=self.target, department=self.department, role='O')
+        with transaction.atomic():
+            grant_ap(self.actor, self.target, self.department)
+            grant_ap(self.actor, self.target, self.department)
+        event = AuditLog.objects.get()
+        self.assertEqual(event.user, self.actor)
+        self.assertEqual(event.department, self.department)
+        self.assertEqual(event.metadata['previous_role'], 'O')
+        self.assertEqual(event.metadata['new_role'], 'AP')
+
+    def test_invitation_replacement_and_acceptance(self):
+        from meetings.models import AuditLog
+        self.client.force_login(self.actor)
+        url = reverse('invite_member', args=[self.department.pk])
+        for i in range(2):
+            self.assertEqual(self.client.post(url, {'email': 'invite@example.com', 'role': 'O'}).status_code, 302)
+        self.assertEqual(AuditLog.objects.filter(event_type='invitation.created').count(), 2)
+        self.assertEqual(AuditLog.objects.filter(event_type='invitation.revoked').count(), 1)
+        invitation = Invitation.objects.get(accepted=False)
+        self.client.force_login(self.target)
+        self.client.get(reverse('accept_invitation', args=[invitation.token]))
+        event = AuditLog.objects.get(event_type='membership.added')
+        self.assertEqual(event.user, self.target)
+        self.assertEqual(event.metadata['user_id'], self.target.pk)
+        self.assertNotIn(invitation.token, str(list(AuditLog.objects.values())))
+
+    def test_user_admin_activation_role_and_membership(self):
+        from django.contrib import admin
+        from meetings.models import AuditLog
+        model_admin = admin.site._registry[User]
+        self.target.is_active = False
+        self.target.is_admin = True
+        self.target.department = self.department
+        model_admin.save_model(self.request, self.target, self.form, True)
+        self.assertEqual(AuditLog.objects.get(event_type='user.activation_changed').user, self.actor)
+        self.assertEqual(AuditLog.objects.get(event_type='user.role_changed').metadata['new_role'], 'Global Admin')
+        self.assertEqual(AuditLog.objects.filter(event_type='membership.added').count(), 1)
+        model_admin.delete_model(self.request, self.target)
+        self.assertEqual(AuditLog.objects.get(event_type='membership.removed').user, self.actor)
+
+    def test_audit_failure_rolls_back_department_admin_save(self):
+        from django.contrib import admin
+        from unittest.mock import patch
+        department = Department(name='Rollback department')
+        with patch('accounts.audit.AuditLog.objects.create', side_effect=RuntimeError('audit failure')):
+            with self.assertRaises(RuntimeError):
+                admin.site._registry[Department].save_model(self.request, department, self.form, False)
+        self.assertFalse(Department.objects.filter(name='Rollback department').exists())

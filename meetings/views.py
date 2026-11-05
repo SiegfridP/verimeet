@@ -11,6 +11,7 @@ from django.http import HttpResponseForbidden, HttpResponse, HttpResponseBadRequ
 from django.utils import timezone
 from django.contrib import messages
 from django.db import transaction, IntegrityError
+from django.core.paginator import Paginator
 from .models import Meeting, Attendance, AuditLog, QRSession, QRUsage, VerificationQR
 from .crypto import (
     generate_hmac_qr_token,
@@ -124,6 +125,7 @@ def _finalize_meeting_internal(request, meeting_id):
             department=department,
             meeting=meeting,
             user=request.user,
+            event_type='meeting.finalized', target_type='meeting', target_id=str(meeting.pk), metadata={'previous_status': 'Draft', 'new_status': 'Finished'},
             action="Finalized document for signing"
         )
 
@@ -156,6 +158,7 @@ def _generate_qr_png_b64(url: str, scale: int = 6) -> str:
 
 
 @login_required
+@transaction.atomic
 def projector_qr_view(request, meeting_id):
     """Displays the QR code for the projector."""
     meeting = get_object_or_404(Meeting, id=meeting_id)
@@ -185,6 +188,7 @@ def projector_qr_view(request, meeting_id):
             department=meeting.department,
             meeting=meeting,
             user=request.user,
+            event_type='qr.generated', target_type='qr_session', target_id=str(qr_session.pk), metadata={'qr_session_id': qr_session.pk, 'purpose': qr_session.purpose, 'expires_at': qr_session.expires_at.isoformat()},
             action="Generated Signing QR code"
         )
 
@@ -200,6 +204,7 @@ def projector_qr_view(request, meeting_id):
 
 
 @login_required
+@transaction.atomic
 def generate_attendance_qr(request, meeting_id):
     """
     Authorized Personnel generates an Attendance QR code for an eligible meeting.
@@ -227,6 +232,7 @@ def generate_attendance_qr(request, meeting_id):
         department=meeting.department,
         meeting=meeting,
         user=request.user,
+        event_type='qr.generated', target_type='qr_session', target_id=str(qr_session.pk), metadata={'qr_session_id': qr_session.pk, 'purpose': qr_session.purpose, 'expires_at': qr_session.expires_at.isoformat()},
         action="Generated Attendance QR code"
     )
 
@@ -235,6 +241,7 @@ def generate_attendance_qr(request, meeting_id):
 
 
 @login_required
+@transaction.atomic
 def generate_signing_qr(request, meeting_id):
     """
     Authorized Personnel generates a Signing QR code for an eligible Finished meeting.
@@ -262,6 +269,7 @@ def generate_signing_qr(request, meeting_id):
         department=meeting.department,
         meeting=meeting,
         user=request.user,
+        event_type='qr.generated', target_type='qr_session', target_id=str(qr_session.pk), metadata={'qr_session_id': qr_session.pk, 'purpose': qr_session.purpose, 'expires_at': qr_session.expires_at.isoformat()},
         action="Generated Signing QR code"
     )
 
@@ -300,6 +308,7 @@ def view_qr_session(request, meeting_id, session_id):
 
 
 @login_required
+@transaction.atomic
 def revoke_qr_session(request, meeting_id, session_id):
     """
     AP view to revoke an active QR session immediately.
@@ -312,7 +321,7 @@ def revoke_qr_session(request, meeting_id, session_id):
     if not can_access:
         return HttpResponseForbidden("You are not authorized to revoke QR sessions for this department.")
 
-    qr_session = get_object_or_404(QRSession, id=session_id, meeting=meeting)
+    qr_session = get_object_or_404(QRSession.objects.select_for_update(), id=session_id, meeting=meeting)
 
     if not qr_session.is_revoked:
         qr_session.is_revoked = True
@@ -324,6 +333,7 @@ def revoke_qr_session(request, meeting_id, session_id):
             department=meeting.department,
             meeting=meeting,
             user=request.user,
+            event_type='qr.revoked', target_type='qr_session', target_id=str(qr_session.pk), metadata={'qr_session_id': qr_session.pk, 'purpose': qr_session.purpose},
             action=f"Revoked {qr_session.get_purpose_display()} QR code"
         )
         messages.success(request, f"{qr_session.get_purpose_display()} QR code has been revoked.")
@@ -332,6 +342,7 @@ def revoke_qr_session(request, meeting_id, session_id):
 
 
 @login_required
+@transaction.atomic
 def scan_attendance_qr(request, meeting_id):
     """
     Officer view to record attendance by scanning the Attendance QR code.
@@ -401,8 +412,10 @@ def scan_attendance_qr(request, meeting_id):
     if qr_session:
         try:
             with transaction.atomic():
-                # Re-read attendance inside transaction for consistency.
-                attendance_now = Attendance.objects.get(pk=attendance.pk)
+                # Serialize with manual updates where row locks are supported.
+                # SQLite ignores this lock; the conditional update below also guards
+                # the status snapshot, but SQLite can still report database contention.
+                attendance_now = Attendance.objects.select_for_update().get(pk=attendance.pk)
 
                 if attendance_now.has_signed:
                     return HttpResponseForbidden("Attendance cannot be modified because you have already digitally signed this meeting document.")
@@ -427,12 +440,19 @@ def scan_attendance_qr(request, meeting_id):
                     updated = Attendance.objects.filter(
                         pk=attendance.pk,
                         has_signed=False,
+                        status=attendance_now.status,
+                        status_updated_at=attendance_now.status_updated_at,
                     ).update(
                         status='Attended',
                         status_updated_at=timezone.now(),
                     )
                     if updated == 0:
                         _usage.delete()
+                        current = Attendance.objects.get(pk=attendance.pk)
+                        if not current.has_signed:
+                            return HttpResponseForbidden(
+                                'Attendance changed during this request. Please retry.'
+                            )
                         return HttpResponseForbidden(
                             "Attendance cannot be modified because you have already digitally signed this meeting document."
                         )
@@ -441,6 +461,7 @@ def scan_attendance_qr(request, meeting_id):
                         department=meeting.department,
                         meeting=meeting,
                         user=request.user,
+                        event_type='attendance.changed', target_type='attendance', target_id=str(attendance.pk), metadata={'attendance_id': attendance.pk, 'officer_id': attendance.user_id, 'previous_status': attendance_now.status, 'new_status': 'Attended', 'method': 'qr'},
                         action="Recorded attendance via QR as Attended"
                     )
         except IntegrityError:
@@ -470,6 +491,7 @@ def scan_attendance_qr(request, meeting_id):
                 department=meeting.department,
                 meeting=meeting,
                 user=request.user,
+                event_type='attendance.changed', target_type='attendance', target_id=str(attendance.pk), metadata={'attendance_id': attendance.pk, 'officer_id': attendance.user_id, 'previous_status': 'Absent', 'new_status': 'Attended', 'method': 'qr'},
                 action="Recorded attendance via QR as Attended"
             )
 
@@ -596,6 +618,7 @@ def sign_meeting(request, meeting_id):
                 department=meeting.department,
                 meeting=meeting,
                 user=request.user,
+                event_type='signature.created', target_type='attendance', target_id=str(attendance.pk), metadata={'attendance_id': attendance.pk, 'officer_id': attendance.user_id, 'signed_at': Attendance.objects.get(pk=attendance.pk).signed_at.isoformat(), 'annotation_included': bool(annotation)},
                 action="Signed document with annotation"
             )
         return redirect('department_dashboard', dept_id=meeting.department_id)
@@ -698,6 +721,7 @@ def create_meeting(request, dept_id=None):
                     department=department,
                     meeting=meeting,
                     user=request.user,
+                    event_type='meeting.created', target_type='meeting', target_id=str(meeting.pk), metadata={'participant_count': len(participants)},
                     action=f"Created meeting '{meeting.title[:50]}' with {len(participants)} assigned participant(s)"
                 )
 
@@ -713,12 +737,13 @@ def create_meeting(request, dept_id=None):
 
 
 @login_required
+@transaction.atomic
 def assign_participants(request, meeting_id):
     """
     Authorized Personnel manages participant/intended-signer assignments
     for an existing Draft meeting within their department.
     """
-    meeting = get_object_or_404(Meeting, id=meeting_id)
+    meeting = get_object_or_404(Meeting.objects.select_for_update(), id=meeting_id)
     department = meeting.department
 
     # Server-side authorization check
@@ -746,17 +771,21 @@ def assign_participants(request, meeting_id):
 
                 # Remove unselected participants (only if they haven't already signed)
                 to_remove = current_user_ids - selected_user_ids
+                removed_ids = set()
                 for uid in to_remove:
                     att = current_attendances[uid]
                     if not att.has_signed:
                         att.delete()
+                        removed_ids.add(uid)
 
-                AuditLog.objects.create(
-                    department=department,
-                    meeting=meeting,
-                    user=request.user,
-                    action=f"Updated participant assignments for meeting '{meeting.title[:50]}'"
-                )
+                if to_add or removed_ids:
+                    AuditLog.objects.create(
+                        department=department,
+                        meeting=meeting,
+                        user=request.user,
+                        event_type='meeting.participants_changed', target_type='meeting', target_id=str(meeting.pk), metadata={'added_ids': sorted(to_add), 'removed_ids': sorted(removed_ids), 'added_count': len(to_add), 'removed_count': len(removed_ids)},
+                        action=f"Updated participant assignments for meeting '{meeting.title[:50]}'"
+                    )
 
             messages.success(request, "Participant assignments updated successfully.")
             return redirect('department_dashboard', dept_id=department.id)
@@ -777,12 +806,13 @@ def assign_participants(request, meeting_id):
 
 
 @login_required
+@transaction.atomic
 def edit_meeting(request, meeting_id):
     """
     Authorized Personnel edits an existing Draft meeting within their authorized department.
     Enforces that finalized or locked meetings cannot be modified.
     """
-    meeting = get_object_or_404(Meeting, id=meeting_id)
+    meeting = get_object_or_404(Meeting.objects.select_for_update(), id=meeting_id)
     department = meeting.department
 
     # Server-side authorization check: Global Admin or AP of the department
@@ -796,20 +826,22 @@ def edit_meeting(request, meeting_id):
     if request.method == 'POST':
         form = MeetingEditForm(request.POST, instance=meeting)
         if form.is_valid():
-            with transaction.atomic():
-                updated_meeting = form.save(commit=False)
-                # Guarantee that department association and Draft status are preserved
-                updated_meeting.department = department
-                updated_meeting.status = 'Draft'
-                updated_meeting.save()
+            updated_meeting = meeting
+            if form.has_changed():
+                with transaction.atomic():
+                    updated_meeting = form.save(commit=False)
+                    # Guarantee that department association and Draft status are preserved
+                    updated_meeting.department = department
+                    updated_meeting.status = 'Draft'
+                    updated_meeting.save()
 
-                AuditLog.objects.create(
-                    department=department,
-                    meeting=meeting,
-                    user=request.user,
-                    action=f"Edited draft meeting minutes for '{updated_meeting.title[:50]}'"
-                )
-
+                    AuditLog.objects.create(
+                        department=department,
+                        meeting=meeting,
+                        user=request.user,
+                        event_type='meeting.edited', target_type='meeting', target_id=str(meeting.pk), metadata={'changed_fields': sorted(form.changed_data)},
+                        action=f"Edited draft meeting minutes for '{updated_meeting.title[:50]}'"
+                    )
             messages.success(request, f"Meeting '{updated_meeting.title}' updated successfully.")
             return redirect('department_dashboard', dept_id=department.id)
     else:
@@ -945,6 +977,7 @@ def verify_signature(request, meeting_id, attendance_id):
 
 
 @login_required
+@transaction.atomic
 def meeting_attendance(request, meeting_id):
     """
     Authorized Personnel views attendance records and assigned participants
@@ -960,7 +993,7 @@ def meeting_attendance(request, meeting_id):
     # Allow AP to update attendance status directly via POST if attendance_id and status are provided
     if request.method == 'POST':
         attendance_id = request.POST.get('attendance_id')
-        attendance = get_object_or_404(Attendance, id=attendance_id, meeting=meeting)
+        attendance = get_object_or_404(Attendance.objects.select_for_update(), id=attendance_id, meeting=meeting)
 
         form = AttendanceStatusUpdateForm(request.POST)
         if not form.is_valid():
@@ -977,6 +1010,7 @@ def meeting_attendance(request, meeting_id):
                 department=department,
                 meeting=meeting,
                 user=request.user,
+                event_type='attendance.changed', target_type='attendance', target_id=str(attendance.pk), metadata={'attendance_id': attendance.pk, 'officer_id': attendance.user_id, 'previous_status': old_status, 'new_status': cleaned_status, 'method': 'manual'},
                 action=f"Changed attendance for {attendance.user.username} from {old_status} to {cleaned_status}"
             )
             messages.success(request, f"Updated attendance for {attendance.user.username} to {cleaned_status}.")
@@ -993,6 +1027,7 @@ def meeting_attendance(request, meeting_id):
 
 
 @login_required
+@transaction.atomic
 def update_attendance_status(request, meeting_id, attendance_id):
     """
     Dedicated endpoint for updating an attendee's attendance status.
@@ -1007,7 +1042,7 @@ def update_attendance_status(request, meeting_id, attendance_id):
     if not is_global_admin(request.user) and not has_membership(request.user, department, role='AP'):
         return HttpResponseForbidden("You are not authorized to manage attendance for this department.")
 
-    attendance = get_object_or_404(Attendance, id=attendance_id, meeting=meeting)
+    attendance = get_object_or_404(Attendance.objects.select_for_update(), id=attendance_id, meeting=meeting)
 
     form = AttendanceStatusUpdateForm(request.POST)
     if not form.is_valid():
@@ -1025,6 +1060,7 @@ def update_attendance_status(request, meeting_id, attendance_id):
             department=department,
             meeting=meeting,
             user=request.user,
+            event_type='attendance.changed', target_type='attendance', target_id=str(attendance.pk), metadata={'attendance_id': attendance.pk, 'officer_id': attendance.user_id, 'previous_status': old_status, 'new_status': new_status, 'method': 'manual'},
             action=f"Changed attendance for {attendance.user.username} from {old_status} to {new_status}"
         )
         messages.success(request, f"Updated attendance for {attendance.user.username} to {new_status}.")
@@ -1144,6 +1180,7 @@ def my_signature_verification_qr(request, meeting_id):
                 if not attendance.has_signed or not attendance.cryptographic_signature:
                     return HttpResponseForbidden("You must sign this document before generating a signature verification QR code.")
                 active_qr = VerificationQR.objects.filter(attendance=attendance, is_revoked=False).first()
+                previous_qr_id = active_qr.pk if active_qr else None
                 if active_qr:
                     active_qr.is_revoked = True
                     active_qr.revoked_at = timezone.now()
@@ -1158,6 +1195,15 @@ def my_signature_verification_qr(request, meeting_id):
                     attendance=attendance,
                     token_hash=token_hash,
                     encrypted_token=encrypted_token,
+                )
+
+                AuditLog.objects.create(
+                    department=meeting.department, meeting=meeting, user=request.user,
+                    action='Regenerated signature verification QR code' if previous_qr_id else 'Generated signature verification QR code',
+                    event_type='verification_qr.regenerated' if previous_qr_id else 'verification_qr.generated',
+                    target_type='verification_qr', target_id=str(active_qr.pk),
+                    metadata={'attendance_id': attendance.pk, 'verification_qr_id': active_qr.pk,
+                              'previous_qr_id': previous_qr_id, 'replacement_qr_id': active_qr.pk},
                 )
 
         except IntegrityError:
@@ -1194,6 +1240,7 @@ def my_signature_verification_qr(request, meeting_id):
 
 
 @login_required
+@transaction.atomic
 def revoke_my_signature_verification_qr(request, meeting_id):
     """Revoke personal verification QR code. POST-only action.
 
@@ -1218,6 +1265,7 @@ def revoke_my_signature_verification_qr(request, meeting_id):
     if not attendance.has_signed or not attendance.cryptographic_signature:
         return HttpResponseForbidden("You have not signed this document.")
 
+    Attendance.objects.select_for_update().get(pk=attendance.pk)
     active_qr = VerificationQR.objects.filter(attendance=attendance, is_revoked=False).first()
     if not active_qr:
         messages.info(request, "No active verification QR code to revoke.")
@@ -1228,6 +1276,12 @@ def revoke_my_signature_verification_qr(request, meeting_id):
         active_qr.revoked_at = timezone.now()
         active_qr.revoked_by = request.user
         active_qr.save(update_fields=['is_revoked', 'revoked_at', 'revoked_by'])
+        AuditLog.objects.create(
+            department=meeting.department, meeting=meeting, user=request.user,
+            action='Revoked signature verification QR code', event_type='verification_qr.revoked',
+            target_type='verification_qr', target_id=str(active_qr.pk),
+            metadata={'attendance_id': attendance.pk, 'verification_qr_id': active_qr.pk},
+        )
 
     messages.warning(request, "Signature verification QR code has been revoked.")
     return redirect('my_signature_verification_qr', meeting_id=meeting.id)
@@ -1304,3 +1358,16 @@ def verify_individual_signature(request):
         'signed_at': attendance.signed_at,
         'sig_result': sig_result,
     })
+
+
+@login_required
+def document_history(request, meeting_id):
+    """Read-only audit timeline; never resolve membership through a dashboard."""
+    if request.method != 'GET':
+        return HttpResponseNotAllowed(['GET'])
+    meeting = get_object_or_404(Meeting, pk=meeting_id)
+    if not is_global_admin(request.user) and not has_membership(request.user, meeting.department, role='AP'):
+        return HttpResponseForbidden('Not authorized to view document history.')
+    events = AuditLog.objects.filter(meeting=meeting).select_related('user').order_by('-timestamp', '-pk')
+    page = Paginator(events, 25).get_page(request.GET.get('page'))
+    return render(request, 'meetings/document_history.html', {'meeting': meeting, 'page_obj': page})

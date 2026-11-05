@@ -1,4 +1,4 @@
-from django.db import models
+from django.db import models, router, transaction
 from django.core.exceptions import ValidationError
 from accounts.models import Department, User
 
@@ -53,9 +53,32 @@ class Meeting(models.Model):
                 raise ValidationError("Archived meetings cannot change status.")
 
     def save(self, *args, **kwargs):
-        if self.pk:
-            self.full_clean()
-        super().save(*args, **kwargs)
+        using = kwargs.get('using') or router.db_for_write(type(self), instance=self)
+        with transaction.atomic(using=using):
+            previous = None
+            if self.pk:
+                previous = type(self).objects.using(using).select_for_update().filter(
+                    pk=self.pk
+                ).values('status').first()
+                self.full_clean()
+            super().save(*args, **kwargs)
+            update_fields = kwargs.get('update_fields')
+            writes_status = update_fields is None or 'status' in update_fields
+            if (previous and previous['status'] == 'Finished'
+                    and self.status == 'Archived' and writes_status):
+                AuditLog.objects.using(using).create(
+                    department_id=self.department_id,
+                    meeting=self,
+                    user=None,
+                    action='Archived document',
+                    event_type='meeting.archived',
+                    metadata={
+                        'source': 'system',
+                        'reason': 'No request actor available',
+                        'meeting_id': self.pk,
+                        'department_id': self.department_id,
+                    },
+                )
 
 class Attendance(models.Model):
     ATTENDANCE_STATUS_CHOICES = [
@@ -88,11 +111,39 @@ class Attendance(models.Model):
         return self.verification_qrs.filter(is_revoked=False).first()
 
 class AuditLog(models.Model):
-    department = models.ForeignKey(Department, on_delete=models.CASCADE)
-    meeting = models.ForeignKey(Meeting, on_delete=models.CASCADE)
+    department = models.ForeignKey(Department, on_delete=models.SET_NULL, null=True, blank=True)
+    meeting = models.ForeignKey(Meeting, on_delete=models.SET_NULL, null=True, blank=True)
     user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
     action = models.CharField(max_length=255) # e.g., "Changed status to Finished", "Signed Document"
     timestamp = models.DateTimeField(auto_now_add=True)
+    event_type = models.CharField(max_length=64, default='legacy')
+    metadata = models.JSONField(default=dict)
+    target_type = models.CharField(max_length=64, blank=True)
+    target_id = models.CharField(max_length=64, blank=True)
+
+    @property
+    def safe_metadata(self):
+        allowed = {
+            'source', 'reason', 'meeting_id', 'department_id', 'actor_id',
+            'changed_fields', 'added_ids', 'removed_ids', 'added_count', 'removed_count',
+            'participant_count', 'attendance_id', 'officer_id', 'previous_status',
+            'new_status', 'method', 'signed_at', 'annotation_included', 'qr_session_id',
+            'purpose', 'expires_at', 'verification_qr_id', 'previous_qr_id',
+            'replacement_qr_id', 'previous_role', 'new_role', 'user_id',
+            'previous_meeting_id', 'new_meeting_id', 'previous_officer_id',
+            'new_officer_id', 'previous_department_id', 'new_department_id',
+        }
+        return {key: value for key, value in self.metadata.items() if key in allowed}
+
+    def save(self, *args, **kwargs):
+        if self._state.adding and self.event_type != 'legacy':
+            # Retain stable identifiers without copying document or personal content.
+            self.metadata = dict(self.metadata)
+            for key, value in (('meeting_id', self.meeting_id),
+                               ('department_id', self.department_id), ('actor_id', self.user_id)):
+                if value is not None:
+                    self.metadata.setdefault(key, value)
+        super().save(*args, **kwargs)
 
 
 class QRSession(models.Model):

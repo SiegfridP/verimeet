@@ -3334,6 +3334,93 @@ class Batch07QRAttendanceAndSigningTests(TestCase):
 
 
 
+class Batch09ArchivalAuditTests(TestCase):
+    def setUp(self):
+        self.department = Department.objects.create(name='Archival audit')
+        self.meeting = Meeting.objects.create(
+            department=self.department, title='Archive test', status='Finished'
+        )
+
+    def test_archive_logs_once_with_system_metadata(self):
+        self.meeting.status = 'Archived'
+        self.meeting.save(update_fields=['status', 'updated_at'])
+        event = AuditLog.objects.get(meeting=self.meeting)
+        self.assertEqual(event.event_type, 'meeting.archived')
+        self.assertEqual(event.action, 'Archived document')
+        self.assertIsNone(event.user)
+        self.assertEqual(event.metadata['source'], 'system')
+        self.assertEqual(event.metadata['reason'], 'No request actor available')
+        self.assertEqual(event.metadata['meeting_id'], self.meeting.pk)
+        self.meeting.save()
+        self.assertEqual(AuditLog.objects.filter(meeting=self.meeting).count(), 1)
+
+    def test_stale_instance_uses_persisted_previous_state(self):
+        stale = Meeting.objects.get(pk=self.meeting.pk)
+        self.meeting.status = 'Archived'
+        self.meeting.save()
+        stale.status = 'Archived'
+        stale.save()
+        self.assertEqual(AuditLog.objects.filter(meeting=self.meeting).count(), 1)
+
+    def test_draft_archive_rejected_without_event(self):
+        from django.core.exceptions import ValidationError
+
+        draft = Meeting.objects.create(department=self.department, title='Draft')
+        draft.status = 'Archived'
+        with self.assertRaises(ValidationError):
+            draft.save()
+        draft.refresh_from_db()
+        self.assertEqual(draft.status, 'Draft')
+        self.assertFalse(AuditLog.objects.exists())
+
+    def test_ordinary_save_and_excluded_status_do_not_log(self):
+        self.meeting.save()
+        self.meeting.status = 'Archived'
+        self.meeting.save(update_fields=['updated_at'])
+        self.meeting.refresh_from_db()
+        self.assertEqual(self.meeting.status, 'Finished')
+        self.assertFalse(AuditLog.objects.exists())
+
+    def test_audit_failure_rolls_back_archive(self):
+        from unittest.mock import patch
+        from django.db.models.query import QuerySet
+
+        self.meeting.status = 'Archived'
+        with patch.object(QuerySet, 'create', side_effect=RuntimeError('audit unavailable')):
+            with self.assertRaises(RuntimeError):
+                self.meeting.save()
+        self.meeting.refresh_from_db()
+        self.assertEqual(self.meeting.status, 'Finished')
+        self.assertFalse(AuditLog.objects.exists())
+
+    def test_creation_in_archived_state_is_not_a_transition(self):
+        Meeting.objects.create(department=self.department, title='Existing archive', status='Archived')
+        self.assertFalse(AuditLog.objects.exists())
+
+    def test_outer_rollback_removes_archive_and_event(self):
+        from django.db import transaction
+
+        with self.assertRaises(RuntimeError):
+            with transaction.atomic():
+                self.meeting.status = 'Archived'
+                self.meeting.save()
+                raise RuntimeError('outer rollback')
+        self.meeting.refresh_from_db()
+        self.assertEqual(self.meeting.status, 'Finished')
+        self.assertFalse(AuditLog.objects.exists())
+
+    def test_legacy_defaults_remain_readable_and_independent(self):
+        first = AuditLog.objects.create(
+            department=self.department, meeting=self.meeting, action='Old event'
+        )
+        second = AuditLog.objects.create(
+            department=self.department, meeting=self.meeting, action='Other old event'
+        )
+        self.assertEqual(first.event_type, 'legacy')
+        first.metadata['source'] = 'system'
+        self.assertEqual(second.metadata, {})
+
+
 class Batch08VerificationQRTests(TestCase):
     """Batch 08: Individual Signature Verification QR System Tests.
 
@@ -3970,3 +4057,412 @@ class Batch08VerificationQRTests(TestCase):
         self.att1.refresh_from_db()
         self.assertEqual(self.att1.cryptographic_signature, signature)
         self.assertEqual(self.att1.signed_at, signed_at)
+
+
+class Batch09StructuredAuditTests(TestCase):
+    setUp = Batch04DraftEditingReviewFinalizationTests.setUp
+
+    def test_retention_and_legacy_defaults(self):
+        event = AuditLog.objects.create(meeting=self.draft_meeting, department=self.dept,
+                                        user=self.officer, action='Legacy')
+        other = AuditLog(action='Another')
+        event.metadata['x'] = 1
+        self.assertEqual(other.metadata, {})
+        event.refresh_from_db()
+        self.assertEqual(event.event_type, 'legacy')
+        self.assertEqual(event.metadata, {})
+        self.officer.delete()
+        event.refresh_from_db()
+        self.assertIsNone(event.user_id)
+        self.draft_meeting.delete()
+        event.refresh_from_db()
+        self.assertIsNone(event.meeting_id)
+        self.dept.delete()
+        event.refresh_from_db()
+        self.assertIsNone(event.department_id)
+
+    def test_edit_fields_and_noop(self):
+        self.client.force_login(self.ap_user)
+        url = reverse('edit_meeting', args=[self.draft_meeting.pk])
+        data = {'title': self.draft_meeting.title, 'minutes_content': self.draft_meeting.minutes_content}
+        self.client.post(url, data)
+        self.assertFalse(AuditLog.objects.exists())
+        data['minutes_content'] = 'Private revised minutes'
+        self.client.post(url, data)
+        event = AuditLog.objects.get(event_type='meeting.edited')
+        self.assertEqual(event.metadata['changed_fields'], ['minutes_content'])
+        self.assertNotIn(data['minutes_content'], str(event.metadata))
+        self.client.post(url, data)
+        self.assertEqual(AuditLog.objects.count(), 1)
+
+    def test_assignment_deltas_and_noop(self):
+        self.client.force_login(self.ap_user)
+        url = reverse('assign_participants', args=[self.draft_meeting.pk])
+        self.client.post(url, {'participants': [self.officer.pk]})
+        event = AuditLog.objects.get(event_type='meeting.participants_changed')
+        self.assertEqual(event.metadata['added_ids'], [self.officer.pk])
+        self.client.post(url, {'participants': [self.officer.pk]})
+        self.assertEqual(AuditLog.objects.count(), 1)
+        self.client.post(url, {'participants': []})
+        self.assertEqual(AuditLog.objects.latest('pk').metadata['removed_ids'], [self.officer.pk])
+
+    def test_creation_and_finalization(self):
+        self.client.force_login(self.ap_user)
+        response = self.client.post(reverse('create_meeting_dept', args=[self.dept.pk]),
+                                    {'title': 'New', 'minutes_content': 'Private'})
+        self.assertEqual(response.status_code, 302)
+        event = AuditLog.objects.get(event_type='meeting.created')
+        self.assertEqual(event.user, self.ap_user)
+        url = reverse('finalize_meeting', args=[event.meeting_id])
+        self.client.post(url)
+        self.client.post(url)
+        self.assertEqual(AuditLog.objects.filter(event_type='meeting.finalized').count(), 1)
+
+    def test_attendance_transitions_and_noop(self):
+        attendance = Attendance.objects.create(meeting=self.finished_meeting, user=self.officer)
+        self.client.force_login(self.ap_user)
+        url = reverse('update_attendance_status', args=[self.finished_meeting.pk, attendance.pk])
+        previous = 'Absent'
+        for status in ('Attended', 'Late', 'Absent'):
+            self.client.post(url, {'status': status})
+            event = AuditLog.objects.latest('pk')
+            self.assertEqual(event.metadata['previous_status'], previous)
+            self.assertEqual(event.metadata['new_status'], status)
+            self.assertEqual(event.metadata['officer_id'], self.officer.pk)
+            previous = status
+        self.client.post(url, {'status': 'Absent'})
+        self.assertEqual(AuditLog.objects.count(), 3)
+
+    def test_audit_failure_rolls_back_manual_attendance_and_qr_generation(self):
+        from unittest.mock import patch
+        attendance = Attendance.objects.create(meeting=self.finished_meeting, user=self.officer)
+        self.client.force_login(self.ap_user)
+        with patch('meetings.views.AuditLog.objects.create', side_effect=RuntimeError('failed audit')):
+            with self.assertRaises(RuntimeError):
+                self.client.post(reverse('update_attendance_status', args=[self.finished_meeting.pk, attendance.pk]), {'status': 'Late'})
+            with self.assertRaises(RuntimeError):
+                self.client.get(reverse('generate_attendance_qr', args=[self.finished_meeting.pk]))
+        attendance.refresh_from_db()
+        self.assertEqual(attendance.status, 'Absent')
+        self.assertFalse(QRSession.objects.exists())
+
+    def test_history_permissions_and_methods(self):
+        url = reverse('document_history', args=[self.draft_meeting.pk])
+        self.assertEqual(self.client.get(url).status_code, 302)
+        for user, expected in ((self.global_admin, 200), (self.ap_user, 200),
+                               (self.other_ap, 403), (self.officer, 403)):
+            self.client.force_login(user)
+            self.assertEqual(self.client.get(url).status_code, expected)
+        self.client.force_login(self.ap_user)
+        for method in ('POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'):
+            response = self.client.generic(method, url)
+            self.assertEqual(response.status_code, 405)
+            self.assertEqual(response['Allow'], 'GET')
+
+    def test_history_empty_order_pagination_and_escaping(self):
+        self.client.force_login(self.ap_user)
+        url = reverse('document_history', args=[self.draft_meeting.pk])
+        self.assertContains(self.client.get(url), 'No document history recorded.')
+        events = [AuditLog.objects.create(meeting=self.draft_meeting, department=self.dept,
+                  action='<script>unsafe</script>', metadata={'source': '<b>system</b>',
+                  'private_key': 'HIDDEN-SECRET'}) for i in range(26)]
+        from django.utils import timezone
+        AuditLog.objects.filter(pk__in=[e.pk for e in events]).update(timestamp=timezone.now())
+        response = self.client.get(url)
+        self.assertEqual([e.pk for e in response.context['page_obj']], [e.pk for e in reversed(events[1:])])
+        self.assertContains(response, '&lt;script&gt;unsafe&lt;/script&gt;')
+        self.assertContains(response, '&lt;b&gt;system&lt;/b&gt;')
+        self.assertNotContains(response, 'HIDDEN-SECRET')
+        self.assertEqual(len(self.client.get(url+'?page=2').context['page_obj']), 1)
+
+    def test_audit_admin_is_readonly(self):
+        from django.contrib import admin
+        from django.test import RequestFactory
+        model_admin = admin.site._registry[AuditLog]
+        request = RequestFactory().get('/admin/')
+        request.user = self.global_admin
+        self.assertFalse(model_admin.has_add_permission(request))
+        self.assertFalse(model_admin.has_change_permission(request))
+        self.assertFalse(model_admin.has_delete_permission(request))
+        self.assertNotIn('delete_selected', model_admin.get_actions(request))
+
+
+class Batch09SignatureAndQRTests(TestCase):
+    setUp = Batch08VerificationQRTests.setUp
+
+    def test_verification_qr_events_and_conflict(self):
+        from meetings.models import VerificationQR
+        from unittest.mock import patch
+        from django.db import IntegrityError
+        self.client.force_login(self.officer1)
+        url = reverse('my_signature_verification_qr', args=[self.finished_meeting.pk])
+        self.client.post(url)
+        first = VerificationQR.objects.get(attendance=self.att1)
+        self.assertEqual(AuditLog.objects.get(event_type='verification_qr.generated').event_type, 'verification_qr.generated')
+        self.client.post(url)
+        event = AuditLog.objects.latest('pk')
+        self.assertEqual(event.event_type, 'verification_qr.regenerated')
+        self.assertEqual(event.metadata['previous_qr_id'], first.pk)
+        replacement = VerificationQR.objects.get(attendance=self.att1, is_revoked=False)
+        self.assertEqual(event.metadata['replacement_qr_id'], replacement.pk)
+        with patch('meetings.views.VerificationQR.objects.create', side_effect=IntegrityError('conflict')):
+            self.client.post(url)
+        self.assertEqual(AuditLog.objects.filter(event_type__startswith='verification_qr.').count(), 2)
+        replacement.refresh_from_db()
+        self.assertFalse(replacement.is_revoked)
+        revoke = reverse('revoke_my_signature_verification_qr', args=[self.finished_meeting.pk])
+        self.client.post(revoke)
+        self.client.post(revoke)
+        self.assertEqual(AuditLog.objects.filter(event_type__startswith='verification_qr.').count(), 3)
+        self.assertEqual(AuditLog.objects.latest('pk').event_type, 'verification_qr.revoked')
+        for event in AuditLog.objects.all():
+            self.assertNotIn(replacement.encrypted_token, str(event.metadata))
+
+
+class Batch09SigningMetadataTests(TestCase):
+    setUp = Batch06AttendanceAndAnnotationTests.setUp
+
+    def test_signing_metadata_and_duplicate(self):
+        self.client.force_login(self.officer1)
+        attendance = Attendance.objects.get(meeting=self.meeting, user=self.officer1)
+        attendance.status = 'Attended'
+        attendance.save()
+        import time
+        from meetings.crypto import generate_hmac_qr_token
+        timestamp = str(int(time.time()))
+        token = generate_hmac_qr_token(self.meeting.pk, timestamp)
+        url = reverse('sign_meeting', args=[self.meeting.pk]) + f'?t={timestamp}&sig={token}'
+        response = self.client.post(url, {'annotation': 'PRIVATE ANNOTATION'})
+        self.assertEqual(response.status_code, 302)
+        event = AuditLog.objects.get(event_type='signature.created')
+        self.assertTrue(event.metadata['annotation_included'])
+        self.assertIn('signed_at', event.metadata)
+        self.assertNotIn('PRIVATE ANNOTATION', str(event.metadata))
+        self.client.post(url, {'annotation': 'Again'})
+        self.assertEqual(AuditLog.objects.filter(event_type='signature.created').count(), 1)
+
+
+class Batch09SessionAuditTests(TestCase):
+    setUp = Batch07QRAttendanceAndSigningTests.setUp
+
+    def test_session_generation_reuse_revocation_and_scan(self):
+        self.client.force_login(self.ap)
+        self.client.get(reverse('generate_attendance_qr', args=[self.meeting.pk]))
+        session = QRSession.objects.get(purpose='attendance')
+        event = AuditLog.objects.get(event_type='qr.generated')
+        self.assertEqual(event.metadata['qr_session_id'], session.pk)
+        self.assertEqual(event.metadata['purpose'], 'attendance')
+        self.assertNotIn(session.token, str(event.metadata))
+        self.client.force_login(self.officer1)
+        self.client.get(reverse('scan_attendance_qr', args=[self.meeting.pk]), {'token': session.token})
+        event = AuditLog.objects.get(event_type='attendance.changed')
+        self.assertEqual(event.metadata['method'], 'qr')
+        self.assertEqual(event.metadata['previous_status'], 'Absent')
+        self.assertEqual(event.metadata['new_status'], 'Attended')
+        self.client.force_login(self.ap)
+        revoke = reverse('revoke_qr_session', args=[self.meeting.pk, session.pk])
+        self.client.post(revoke)
+        self.client.post(revoke)
+        self.assertEqual(AuditLog.objects.filter(event_type='qr.revoked').count(), 1)
+        self.client.get(reverse('projector_qr_view', args=[self.meeting.pk]))
+        self.client.get(reverse('projector_qr_view', args=[self.meeting.pk]))
+        self.assertEqual(AuditLog.objects.filter(event_type='qr.generated').count(), 2)
+
+
+class Batch09MeetingAdminAuditTests(TestCase):
+    def test_meeting_admin_and_attendance_admin_events(self):
+        from django.contrib import admin
+        from django.test import RequestFactory
+        from types import SimpleNamespace
+        department = Department.objects.create(name='Admin audit')
+        actor = User.objects.create_user(username='admin_audit_actor', is_admin=True)
+        officer = User.objects.create_user(username='admin_audit_officer')
+        request = RequestFactory().post('/admin/')
+        request.user = actor
+        form = SimpleNamespace(changed_data=['title'])
+        meeting = Meeting(department=department, title='Initial')
+        model_admin = admin.site._registry[Meeting]
+        model_admin.save_model(request, meeting, form, False)
+        self.assertEqual(AuditLog.objects.get(event_type='meeting.created').user, actor)
+        meeting.title = 'Changed'
+        model_admin.save_model(request, meeting, form, True)
+        model_admin.save_model(request, meeting, form, True)
+        self.assertEqual(AuditLog.objects.filter(event_type='meeting.edited').count(), 1)
+        attendance = Attendance.objects.create(meeting=meeting, user=officer)
+        attendance.status = 'Late'
+        admin.site._registry[Attendance].save_model(request, attendance, form, True)
+        event = AuditLog.objects.get(event_type='attendance.changed')
+        self.assertEqual(event.metadata['previous_status'], 'Absent')
+        self.assertEqual(event.metadata['new_status'], 'Late')
+        self.assertEqual(event.user, actor)
+
+
+    def test_audit_admin_queryset_scopes_ap_and_officer(self):
+        from django.contrib import admin
+        from django.test import RequestFactory
+        department = Department.objects.create(name='Scoped admin department')
+        other = Department.objects.create(name='Other admin department')
+        actor = User.objects.create_user(username='scoped_admin_actor')
+        Membership.objects.create(user=actor, department=department, role='AP')
+        own = AuditLog.objects.create(department=department, action='Own department')
+        AuditLog.objects.create(department=other, action='Other department')
+        request = RequestFactory().get('/admin/')
+        request.user = actor
+        model_admin = admin.site._registry[AuditLog]
+        self.assertEqual(list(model_admin.get_queryset(request)), [own])
+        self.assertNotIn('department', model_admin.get_list_filter(request))
+        Membership.objects.filter(user=actor).update(role='O')
+        self.assertFalse(model_admin.get_queryset(request).exists())
+
+
+class Batch09AuditCorrectionAdminTests(TestCase):
+    def setUp(self):
+        from django.contrib import admin
+        from django.test import RequestFactory
+        from types import SimpleNamespace
+        self.department = Department.objects.create(name='Corrections')
+        self.other_department = Department.objects.create(name='Other corrections')
+        self.actor = User.objects.create_user(username='correction_admin')
+        self.officer = User.objects.create_user(username='correction_officer')
+        self.other_officer = User.objects.create_user(username='other_correction_officer')
+        self.meeting = Meeting.objects.create(department=self.department, title='First')
+        self.other_meeting = Meeting.objects.create(department=self.other_department, title='Second')
+        self.request = RequestFactory().post('/admin/')
+        self.request.user = self.actor
+        self.form = SimpleNamespace(changed_data=[])
+        self.model_admin = admin.site._registry[Attendance]
+
+    def test_creation_and_noop(self):
+        attendance = Attendance(meeting=self.meeting, user=self.officer)
+        self.model_admin.save_model(self.request, attendance, self.form, False)
+        event = AuditLog.objects.get()
+        self.assertEqual(event.event_type, 'attendance.created')
+        self.assertEqual(event.user, self.actor)
+        self.assertEqual(event.target_id, str(attendance.pk))
+        self.assertEqual(event.meeting, self.meeting)
+        self.assertEqual(event.department, self.department)
+        self.assertIsNone(event.metadata['previous_officer_id'])
+        self.assertEqual(event.metadata['new_officer_id'], self.officer.pk)
+        self.model_admin.save_model(self.request, attendance, self.form, True)
+        self.assertEqual(AuditLog.objects.count(), 1)
+
+    def test_reassignment_and_status_are_one_event(self):
+        attendance = Attendance.objects.create(meeting=self.meeting, user=self.officer)
+        attendance.meeting = self.other_meeting
+        attendance.user = self.other_officer
+        attendance.status = 'Late'
+        self.model_admin.save_model(self.request, attendance, self.form, True)
+        event = AuditLog.objects.get()
+        self.assertEqual(event.event_type, 'attendance.reassigned')
+        self.assertEqual(event.user, self.actor)
+        self.assertEqual(event.meeting, self.other_meeting)
+        for key, expected in {'previous_meeting_id': self.meeting.pk,
+                              'new_meeting_id': self.other_meeting.pk,
+                              'previous_officer_id': self.officer.pk,
+                              'new_officer_id': self.other_officer.pk,
+                              'previous_department_id': self.department.pk,
+                              'new_department_id': self.other_department.pk,
+                              'previous_status': 'Absent', 'new_status': 'Late'}.items():
+            self.assertEqual(event.metadata[key], expected)
+
+    def test_delete_and_repeated_delete(self):
+        attendance = Attendance.objects.create(meeting=self.meeting, user=self.officer)
+        self.model_admin.delete_model(self.request, attendance)
+        self.model_admin.delete_model(self.request, attendance)
+        event = AuditLog.objects.get()
+        self.assertEqual(event.event_type, 'attendance.deleted')
+        self.assertEqual(event.metadata['previous_officer_id'], self.officer.pk)
+        self.assertIsNone(event.metadata['new_officer_id'])
+        self.assertEqual(event.user, self.actor)
+        self.assertFalse(Attendance.objects.exists())
+
+    def test_bulk_delete_logs_each_record(self):
+        for user in (self.officer, self.other_officer):
+            Attendance.objects.create(meeting=self.meeting, user=user)
+        self.model_admin.delete_queryset(self.request, Attendance.objects.all())
+        self.assertEqual(AuditLog.objects.filter(event_type='attendance.deleted').count(), 2)
+        self.assertFalse(Attendance.objects.exists())
+
+    def test_failure_rolls_back_create_reassign_and_delete(self):
+        from unittest.mock import patch
+        attendance = Attendance.objects.create(meeting=self.meeting, user=self.officer)
+        with patch('meetings.admin.AuditLog.objects.create', side_effect=RuntimeError('audit failure')):
+            with self.assertRaises(RuntimeError):
+                self.model_admin.save_model(self.request, Attendance(meeting=self.meeting, user=self.other_officer), self.form, False)
+            attendance.user = self.other_officer
+            with self.assertRaises(RuntimeError):
+                self.model_admin.save_model(self.request, attendance, self.form, True)
+            with self.assertRaises(RuntimeError):
+                self.model_admin.delete_queryset(self.request, Attendance.objects.all())
+        attendance.refresh_from_db()
+        self.assertEqual(attendance.user, self.officer)
+        self.assertEqual(Attendance.objects.count(), 1)
+        self.assertFalse(AuditLog.objects.exists())
+
+    def test_duplicate_assignment_fails_without_event(self):
+        from django.db import IntegrityError, transaction
+        Attendance.objects.create(meeting=self.meeting, user=self.officer)
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                self.model_admin.save_model(self.request, Attendance(meeting=self.meeting, user=self.officer), self.form, False)
+        self.assertFalse(AuditLog.objects.exists())
+
+    def test_department_only_edit_and_noop(self):
+        from django.contrib import admin
+        self.meeting.department = self.other_department
+        model_admin = admin.site._registry[Meeting]
+        model_admin.save_model(self.request, self.meeting, self.form, True)
+        model_admin.save_model(self.request, self.meeting, self.form, True)
+        event = AuditLog.objects.get()
+        self.assertEqual(event.metadata['changed_fields'], ['department'])
+        self.assertEqual(event.metadata['previous_department_id'], self.department.pk)
+        self.assertEqual(event.metadata['new_department_id'], self.other_department.pk)
+        self.assertEqual(event.user, self.actor)
+        self.assertEqual(event.meeting, self.meeting)
+
+
+class Batch09QRCorrectionTests(TestCase):
+    setUp = Batch07QRAttendanceAndSigningTests.setUp
+
+    def scan(self):
+        from meetings.crypto import generate_qr_session_token
+        from django.utils import timezone
+        import datetime
+        session = QRSession.objects.create(meeting=self.meeting, purpose='attendance',
+            token=generate_qr_session_token(), created_by=self.ap,
+            expires_at=timezone.now()+datetime.timedelta(hours=1))
+        self.client.force_login(self.officer1)
+        return reverse('scan_attendance_qr', args=[self.meeting.pk])+'?token='+session.token
+
+    def test_fresh_persisted_status_and_duplicate(self):
+        Attendance.objects.filter(pk=self.att1.pk).update(status='Late', status_updated_at=None)
+        url = self.scan()
+        self.assertEqual(self.client.get(url).status_code, 200)
+        event = AuditLog.objects.get(event_type='attendance.changed')
+        self.assertEqual(event.metadata['previous_status'], 'Late')
+        self.assertEqual(event.metadata['new_status'], 'Attended')
+        self.client.get(url)
+        self.assertEqual(AuditLog.objects.filter(event_type='attendance.changed').count(), 1)
+
+    def test_concurrent_status_change_is_not_overwritten(self):
+        from unittest.mock import patch
+        from django.utils import timezone
+        original_filter = Attendance.objects.filter
+        def concurrent_change(*args, **kwargs):
+            if 'status_updated_at' in kwargs and kwargs.get('has_signed') is False:
+                original_filter(pk=self.att1.pk).update(status='Late', status_updated_at=timezone.now())
+            return original_filter(*args, **kwargs)
+        url = self.scan()
+        with patch('meetings.views.Attendance.objects.filter', side_effect=concurrent_change):
+            self.assertEqual(self.client.get(url).status_code, 403)
+        self.att1.refresh_from_db()
+        self.assertEqual(self.att1.status, 'Late')
+        self.assertFalse(AuditLog.objects.exists())
+        self.assertFalse(QRUsage.objects.exists())
+
+    def test_signed_attendance_rejected_without_event(self):
+        url = self.scan()
+        Attendance.objects.filter(pk=self.att1.pk).update(has_signed=True)
+        self.assertEqual(self.client.get(url).status_code, 403)
+        self.assertFalse(AuditLog.objects.exists())
+        self.assertFalse(QRUsage.objects.exists())

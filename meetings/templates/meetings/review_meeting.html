@@ -215,6 +215,7 @@
 <body>
   <header>
     <h1>Review Meeting Minutes</h1>
+    <a href="{% url 'document_history' meeting.id %}">Document History</a>
     <div class="header-badges">
       <span class="dept-badge">{{ department.name }}</span>
       {% if meeting.status == 'Draft' %}

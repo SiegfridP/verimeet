@@ -4,6 +4,8 @@ from django.http import HttpResponseForbidden, HttpResponseBadRequest
 from .models import Department, Membership, Invitation, RoleElevationRequest, User
 from django import forms
 from django.utils import timezone
+from django.db import transaction
+from .audit import record, grant_ap
 
 # Helper decorators
 
@@ -20,6 +22,7 @@ def has_membership(user, department, role=None):
         return False
 
 @login_required
+@transaction.atomic
 def admin_dashboard(request):
     if not is_global_admin(request.user):
         return HttpResponseForbidden('Global Admin access required')
@@ -29,13 +32,9 @@ def admin_dashboard(request):
         req_id = request.POST.get('request_id') or request.GET.get('request_id')
         if not action or not req_id:
             return HttpResponseBadRequest('Missing request_id or action')
-        req = get_object_or_404(RoleElevationRequest, pk=req_id, status='P')
+        req = get_object_or_404(RoleElevationRequest.objects.select_for_update(), pk=req_id, status='P')
         if action == 'approve':
-            Membership.objects.update_or_create(
-                user=req.target_user,
-                department=req.department,
-                defaults={'role': 'AP'}
-            )
+            grant_ap(request.user, req.target_user, req.department)
             req.status = 'A'
         elif action == 'reject':
             req.status = 'R'
@@ -119,6 +118,7 @@ class InvitationForm(forms.Form):
     )
 
 @login_required
+@transaction.atomic
 def invite_member(request, dept_id):
     department = get_object_or_404(Department, pk=dept_id, is_active=True)
     # Only Authorized Personnel (or Global Admin) can invite
@@ -131,13 +131,18 @@ def invite_member(request, dept_id):
             # Invitations strictly grant canonical Officer role
             role = 'O'
             # Avoid duplicate pending invitations
-            Invitation.objects.filter(email=email, department=department, accepted=False).delete()
-            Invitation.objects.create(email=email, department=department, inviter=request.user, role=role)
+            pending = Invitation.objects.select_for_update().filter(email=email, department=department, accepted=False)
+            for old_invitation in pending:
+                record(request.user, 'invitation.revoked', old_invitation, department)
+            pending.delete()
+            invitation = Invitation.objects.create(email=email, department=department, inviter=request.user, role=role)
+            record(request.user, 'invitation.created', invitation, department)
             return redirect('department_dashboard', dept_id=department.id)
     else:
         form = InvitationForm()
     return render(request, 'accounts/invite.html', {'form': form, 'department': department})
 
+@transaction.atomic
 def accept_invitation(request, token):
     invitation = get_object_or_404(Invitation, token=token)
     if not invitation.is_valid():
@@ -153,10 +158,17 @@ def accept_invitation(request, token):
         department=invitation.department,
         defaults={'role': role_to_grant}
     )
+    if created:
+        record(request.user, 'membership.added', membership, invitation.department,
+               {'user_id': request.user.pk, 'new_role': role_to_grant})
     # Ensure accepting an invitation does not downgrade an existing Authorized Personnel
     if not created and membership.role not in ('AP',):
+        previous_role = membership.role
         membership.role = role_to_grant
         membership.save(update_fields=['role'])
+        if previous_role != role_to_grant:
+            record(request.user, 'user.role_changed', membership, invitation.department,
+                   {'user_id': request.user.pk, 'previous_role': previous_role, 'new_role': role_to_grant})
 
     invitation.accepted = True
     invitation.accepted_at = timezone.now()
@@ -194,6 +206,7 @@ def request_authorized_personnel(request, dept_id):
     return render(request, 'accounts/elevation_request.html', {'form': form, 'department': department})
 
 @login_required
+@transaction.atomic
 def review_elevation_requests(request):
     if not is_global_admin(request.user):
         return HttpResponseForbidden('Global Admin access required')
@@ -203,14 +216,10 @@ def review_elevation_requests(request):
         req_id = request.POST.get('request_id') or request.GET.get('request_id')
         if not action or not req_id:
             return HttpResponseBadRequest('Missing request_id or action')
-        req = get_object_or_404(RoleElevationRequest, pk=req_id, status='P')
+        req = get_object_or_404(RoleElevationRequest.objects.select_for_update(), pk=req_id, status='P')
         if action == 'approve':
             # Grant Authorized Personnel role in the department
-            Membership.objects.update_or_create(
-                user=req.target_user,
-                department=req.department,
-                defaults={'role': 'AP'}
-            )
+            grant_ap(request.user, req.target_user, req.department)
             req.status = 'A'
         elif action == 'reject':
             req.status = 'R'
