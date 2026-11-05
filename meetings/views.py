@@ -1371,3 +1371,46 @@ def document_history(request, meeting_id):
     events = AuditLog.objects.filter(meeting=meeting).select_related('user').order_by('-timestamp', '-pk')
     page = Paginator(events, 25).get_page(request.GET.get('page'))
     return render(request, 'meetings/document_history.html', {'meeting': meeting, 'page_obj': page})
+
+
+@login_required
+def export_meeting_pdf(request, meeting_id):
+    """Offer a private full-document export; never finalize, archive or sign."""
+    if request.method != 'GET':
+        return HttpResponseNotAllowed(['GET'])
+    from .pdf import capture_document, generate_meeting_pdf, TEMPLATE_VERSION
+    from django.utils.text import slugify
+    from django.utils.http import content_disposition_header
+
+    meeting = get_object_or_404(Meeting, pk=meeting_id)
+    if not is_global_admin(request.user) and not has_membership(request.user, meeting.department, role='AP'):
+        return HttpResponseForbidden('Not authorized to export this document.')
+    if meeting.status not in ('Finished', 'Archived'):
+        return HttpResponseForbidden('Only finalized documents can be exported.')
+    try:
+        document = capture_document(meeting.pk)
+    except Meeting.DoesNotExist:
+        return HttpResponse('Document no longer exists.', status=404)
+    if not is_global_admin(request.user) and not has_membership(request.user, Department(pk=document['department_id']), role='AP'):
+        return HttpResponseForbidden('Not authorized to export this document.')
+    try:
+        pdf_bytes = generate_meeting_pdf(document)
+    except Exception:
+        return HttpResponse('PDF generation is unavailable.', status=503)
+    # Required audit must succeed before any PDF bytes are returned.
+    with transaction.atomic():
+        AuditLog.objects.create(
+            user=request.user, meeting=meeting, department_id=document['department_id'],
+            action='Exported document as PDF', event_type='document.exported',
+            target_type='meeting', target_id=str(meeting.pk),
+            metadata={'format': 'PDF', 'export_scope': 'full_document',
+                      'template_version': TEMPLATE_VERSION, 'lifecycle_status': document['status'],
+                      'attendee_count': len(document['attendees'])},
+        )
+    filename = f"{slugify(document['title'])[:80] or 'meeting'}-{meeting.pk}.pdf"
+    response = HttpResponse(pdf_bytes, content_type='application/pdf')
+    response['Content-Disposition'] = content_disposition_header(True, filename)
+    response['Cache-Control'] = 'private, no-store, max-age=0'
+    response['Pragma'] = 'no-cache'
+    response['X-Content-Type-Options'] = 'nosniff'
+    return response

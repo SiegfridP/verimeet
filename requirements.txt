@@ -4,3 +4,4 @@ cryptography
 python-dotenv
 Pillow
 segno
+WeasyPrint==70.0

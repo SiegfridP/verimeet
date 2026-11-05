@@ -215,6 +215,9 @@
 <body>
   <header>
     <h1>Review Meeting Minutes</h1>
+    {% if meeting.status == 'Finished' or meeting.status == 'Archived' %}
+    <a href="{% url 'export_meeting_pdf' meeting.id %}">Export PDF</a>
+    {% endif %}
     <a href="{% url 'document_history' meeting.id %}">Document History</a>
     <div class="header-badges">
       <span class="dept-badge">{{ department.name }}</span>

@@ -124,6 +124,7 @@ class AuditLog(models.Model):
     @property
     def safe_metadata(self):
         allowed = {
+            'format', 'export_scope', 'template_version', 'lifecycle_status', 'attendee_count',
             'source', 'reason', 'meeting_id', 'department_id', 'actor_id',
             'changed_fields', 'added_ids', 'removed_ids', 'added_count', 'removed_count',
             'participant_count', 'attendance_id', 'officer_id', 'previous_status',

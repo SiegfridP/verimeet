@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Meeting minutes</title>
+<style>
+@page { size: A4; margin: 20mm 17mm; @bottom-right { content: "Page " counter(page) " of " counter(pages); font-size: 9pt; color: #64748b; } }
+body { font: 10pt/1.5 sans-serif; color: #172338; }
+h1 { font-size: 23pt; line-height: 1.2; color: #153d57; overflow-wrap: anywhere; }
+h2 { font-size: 14pt; color: #153d57; break-after: avoid; margin-top: 22pt; }
+.meta { border-top: 3pt solid #287888; padding-top: 10pt; }
+.text { white-space: pre-wrap; overflow-wrap: anywhere; }
+table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 9pt; }
+thead { display: table-header-group; }
+th, td { text-align: left; vertical-align: top; padding: 7pt; border-bottom: 1px solid #cbd5e1; overflow-wrap: anywhere; }
+th { background: #edf4f6; }
+tr { break-inside: avoid; }
+.note { font-size: 9pt; color: #475569; }
+</style></head><body>
+<h1>{{ document.title }}</h1>
+<div class="meta"><strong>{{ document.department_name }}</strong> · {{ document.status }}
+<p>Meeting #{{ document.id }}<br>
+Record created: {{ document.created_at|date:"c" }}<br>
+Record last updated: {{ document.updated_at|date:"c" }}<br>
+Export generated: {{ document.generated_at|date:"c" }}</p></div>
+<p class="note">No separate meeting date is recorded. Creation and update timestamps are not a finalization date.</p>
+<h2>Finalized minutes</h2>
+<div class="text">{{ document.minutes_content }}</div>
+<h2>Attendance and signatures</h2>
+<table><thead><tr><th style="width:25%">Participant / attendance</th><th style="width:30%">Verification / signing time</th><th>Annotation</th></tr></thead><tbody>
+{% for attendee in document.attendees %}
+<tr><td>{{ attendee.name }}<br>{{ attendee.status }}</td>
+<td>{{ attendee.verification }}<br>{% if attendee.signed_at %}{{ attendee.signed_at|date:"c" }}{% else %}No signing timestamp{% endif %}</td>
+<td class="text">{{ attendee.annotation|default:"No annotation" }}</td></tr>
+{% empty %}<tr><td colspan="3">No assigned attendees.</td></tr>{% endfor %}
+</tbody></table>
+<p class="note">Verification applies to stored document data, not these PDF bytes. This PDF is not cryptographically signed. Legacy signatures do not bind the meeting identifier, department identifier or title. Attendance status, display names and timestamps are contextual information, not signed payload fields. Profile signature images are not included.</p>
+</body></html>

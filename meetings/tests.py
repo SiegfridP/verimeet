@@ -4466,3 +4466,200 @@ class Batch09QRCorrectionTests(TestCase):
         self.assertEqual(self.client.get(url).status_code, 403)
         self.assertFalse(AuditLog.objects.exists())
         self.assertFalse(QRUsage.objects.exists())
+
+
+class Batch10PDFTests(TestCase):
+    def setUp(self):
+        self.dept = Department.objects.create(name='PDF department')
+        self.other_dept = Department.objects.create(name='Other PDF department')
+        self.admin = User.objects.create_user(username='pdfadmin', is_admin=True)
+        self.ap = User.objects.create_user(username='pdfap')
+        self.other_ap = User.objects.create_user(username='pdfotherap')
+        self.officer = User.objects.create_user(username='PRIVATE_USERNAME', email='private@example.com', first_name='Jos\u00e9', last_name='Tan')
+        Membership.objects.create(user=self.ap, department=self.dept, role='AP')
+        Membership.objects.create(user=self.other_ap, department=self.other_dept, role='AP')
+        Membership.objects.create(user=self.officer, department=self.dept, role='O')
+        self.meeting = Meeting.objects.create(department=self.dept, title='Minutes / unsafe title',
+            minutes_content='First line\nSecond line \u2014 Caf\u00e9 <img src="https://invalid.test/secret">', status='Finished')
+        self.att = Attendance.objects.create(meeting=self.meeting, user=self.officer, status='Attended')
+        self.url = reverse('export_meeting_pdf', args=[self.meeting.pk])
+
+    def test_permissions_and_methods(self):
+        from unittest.mock import patch
+        self.assertEqual(self.client.get(self.url).status_code, 302)
+        with patch('meetings.pdf.generate_meeting_pdf', return_value=b'%PDF-test'):
+            for user, expected in ((self.admin, 200), (self.ap, 200), (self.other_ap, 403), (self.officer, 403)):
+                self.client.force_login(user)
+                self.assertEqual(self.client.get(self.url).status_code, expected)
+            self.assertEqual(AuditLog.objects.filter(event_type='document.exported').count(), 2)
+        self.client.force_login(self.ap)
+        for method in ('POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS'):
+            self.assertEqual(self.client.generic(method, self.url).status_code, 405)
+
+    def test_statuses_headers_audit_and_no_mutation(self):
+        from unittest.mock import patch
+        self.client.force_login(self.ap)
+        before = list(Meeting.objects.values())
+        attendance_before = list(Attendance.objects.values())
+        with patch('meetings.pdf.generate_meeting_pdf', return_value=b'%PDF-test'):
+            response = self.client.get(self.url)
+        self.assertEqual(response['Content-Type'], 'application/pdf')
+        self.assertIn(f'minutes-unsafe-title-{self.meeting.pk}.pdf', response['Content-Disposition'])
+        self.assertEqual(response['Cache-Control'], 'private, no-store, max-age=0')
+        event = AuditLog.objects.get(event_type='document.exported')
+        self.assertEqual(event.user, self.ap)
+        self.assertEqual(event.meeting, self.meeting)
+        self.assertEqual(event.department, self.dept)
+        self.assertEqual(event.metadata['attendee_count'], 1)
+        self.assertNotIn(self.meeting.minutes_content, str(event.metadata))
+        self.assertEqual(list(Meeting.objects.values()), before)
+        self.assertEqual(list(Attendance.objects.values()), attendance_before)
+        self.meeting.status = 'Archived'
+        self.meeting.save()
+        with patch('meetings.pdf.generate_meeting_pdf', return_value=b'%PDF-test'):
+            self.assertEqual(self.client.get(self.url).status_code, 200)
+        draft = Meeting.objects.create(department=self.dept, title='Draft')
+        self.assertEqual(self.client.get(reverse('export_meeting_pdf', args=[draft.pk])).status_code, 403)
+        self.assertEqual(AuditLog.objects.filter(event_type='document.exported').count(), 2)
+
+    def test_render_and_audit_failures(self):
+        from unittest.mock import patch
+        self.client.force_login(self.ap)
+        with patch('meetings.pdf.generate_meeting_pdf', side_effect=RuntimeError('renderer failed')):
+            self.assertEqual(self.client.get(self.url).status_code, 503)
+        self.assertFalse(AuditLog.objects.exists())
+        with patch('meetings.pdf.generate_meeting_pdf', return_value=b'%PDF-test'):
+            with patch('meetings.views.AuditLog.objects.create', side_effect=RuntimeError('audit failed')):
+                with self.assertRaises(RuntimeError):
+                    self.client.get(self.url)
+        self.assertFalse(AuditLog.objects.exists())
+
+    def test_snapshot_signatures_and_sensitive_exclusions(self):
+        from meetings.pdf import capture_document
+        from meetings.crypto import sign_document_data, build_canonical_signing_payload, build_legacy_signing_payload
+        from django.template.loader import render_to_string
+        from django.utils import timezone
+        self.officer.refresh_from_db()
+        for kind in ('canonical', 'legacy', 'invalid', 'unsigned'):
+            annotation = 'Authorized annotation'
+            payload = (build_canonical_signing_payload(self.meeting.pk, self.dept.pk, self.meeting.title,
+                       self.meeting.minutes_content, annotation) if kind == 'canonical'
+                       else build_legacy_signing_payload(self.meeting.minutes_content, annotation))
+            signature = sign_document_data(self.officer.private_key, payload) if kind != 'invalid' else 'INVALID_SIGNATURE_BYTES'
+            Attendance.objects.filter(pk=self.att.pk).update(has_signed=kind != 'unsigned',
+                annotation=annotation, cryptographic_signature=signature, signed_at=timezone.now())
+            with self.assertNumQueries(1):
+                document = capture_document(self.meeting.pk)
+            expected = {'canonical': 'Valid canonical ECDSA signature', 'legacy': 'Valid legacy ECDSA signature',
+                        'invalid': 'Invalid signature', 'unsigned': 'Unsigned'}[kind]
+            self.assertEqual(document['attendees'][0]['verification'], expected)
+            html = render_to_string('pdf/final_minutes.html', {'document': document})
+            self.assertIn(expected, html)
+            self.assertIn('Jos\u00e9 Tan', html)
+            self.assertIn(annotation, html)
+            self.assertIn('Second line \u2014 Caf\u00e9 &lt;img', html)
+            for secret in (signature, self.officer.private_key, self.officer.public_key, self.officer.username, self.officer.email):
+                self.assertNotIn(secret, html)
+            self.assertFalse(self.officer.signature_image)
+
+    def test_snapshot_is_detached_from_later_updates(self):
+        from meetings.pdf import capture_document
+        document = capture_document(self.meeting.pk)
+        Attendance.objects.filter(pk=self.att.pk).update(status='Late', annotation='Later annotation')
+        self.assertEqual(document['attendees'][0]['status'], 'Attended')
+        self.assertEqual(document['attendees'][0]['annotation'], '')
+
+    def test_resource_fetcher_denies_every_url(self):
+        from meetings.pdf import deny_resource
+        for url in ('https://example.com', 'file:///etc/passwd', 'data:text/plain,secret', '/local/file'):
+            with self.assertRaises(ValueError):
+                deny_resource(url)
+
+    def test_real_renderer_unicode_multiline_and_pagination(self):
+        from meetings.pdf import capture_document, generate_meeting_pdf, deny_resource
+        from django.template.loader import render_to_string
+        from weasyprint import HTML
+        document = capture_document(self.meeting.pk)
+        examples = ('Jos\u00e9', 'Caf\u00e9', 'M\u00fcnchen', '\u65e5\u672c\u8a9e',
+                    'Pangunahing pulong  pagsusuri')
+        document['minutes_content'] = ('\n'.join(examples) + '\nMultiline minutes\n') * 150
+        document['attendees'] *= 70
+        html = render_to_string('pdf/final_minutes.html', {'document': document})
+        layout = HTML(string=html, url_fetcher=deny_resource).render()
+        self.assertGreater(len(layout.pages), 3)
+        pdf = generate_meeting_pdf(document)
+        self.assertTrue(pdf.startswith(b'%PDF-'))
+        self.assertGreater(len(pdf), 1000)
+        import shutil
+        import subprocess
+        import tempfile
+        from pathlib import Path
+        extractor = shutil.which('pdftotext')
+        if extractor is None:
+            bundled = Path('C:/Program Files/Git/ucrt64/bin/pdftotext.exe')
+            self.assertTrue(bundled.is_file(), 'Unicode PDF validation requires an existing pdftotext executable.')
+            extractor = str(bundled)
+        # Xpdf's pdftotext (bundled with Git here) requires a real input path.
+        with tempfile.TemporaryDirectory() as directory:
+            pdf_path = Path(directory) / 'unicode.pdf'
+            text_path = Path(directory) / 'unicode.txt'
+            pdf_path.write_bytes(pdf)
+            result = subprocess.run(
+                [extractor, '-layout', '-enc', 'UTF-8', str(pdf_path), str(text_path)],
+                capture_output=True, timeout=60,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr.decode('utf-8', errors='replace'))
+            extracted = text_path.read_text(encoding='utf-8')
+        for example in examples:
+            self.assertIn(example, extracted)
+        self.assertNotIn('\ufffd', extracted)
+
+    def test_snapshot_deletion_returns_controlled_404(self):
+        from unittest.mock import patch
+        self.client.force_login(self.ap)
+        with patch('meetings.pdf.capture_document', side_effect=Meeting.DoesNotExist('internal detail')):
+            with patch('meetings.pdf.generate_meeting_pdf') as renderer:
+                response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 404)
+        self.assertNotContains(response, 'internal detail', status_code=404)
+        renderer.assert_not_called()
+        self.assertFalse(AuditLog.objects.filter(event_type='document.exported').exists())
+        # Only disappearance is translated into a 404; programming errors propagate.
+        with patch('meetings.pdf.capture_document', side_effect=TypeError('programming error')):
+            with self.assertRaises(TypeError):
+                self.client.get(self.url)
+
+    def test_real_renderer_routes_resources_through_denying_fetcher(self):
+        from unittest.mock import patch
+        from pathlib import Path
+        from meetings.pdf import capture_document, generate_meeting_pdf, deny_resource
+        urls = ('https://example.invalid/private.png', Path(__file__).resolve().as_uri())
+        document = capture_document(self.meeting.pk)
+        # Inject trusted test HTML to force real resource requests. Production content
+        # remains escaped; no resource permissions are relaxed for this test.
+        for url in urls:
+            requested = []
+            def recording_fetcher(resource_url, *args, **kwargs):
+                requested.append(resource_url)
+                return deny_resource(resource_url, *args, **kwargs)
+            html = f'<html><body><img src="{url}"></body></html>'
+            with self.subTest(url=url):
+                with patch('meetings.pdf.render_to_string', return_value=html):
+                    with patch('meetings.pdf.deny_resource', new=recording_fetcher):
+                        with patch('urllib.request.OpenerDirector.open', side_effect=AssertionError('Resource access attempted')) as opener:
+                            # WeasyPrint 70 consults this attribute after the callable
+                            # denies a URL. The current callable has no such attribute,
+                            # so attempted resources abort rendering (fail closed).
+                            with self.assertRaisesRegex(AttributeError, '_fail_on_errors') as error:
+                                generate_meeting_pdf(document)
+                self.assertIsInstance(error.exception.__context__, ValueError)
+                self.assertEqual(str(error.exception.__context__), 'External PDF resources are disabled.')
+                self.assertEqual(requested, [url])
+                opener.assert_not_called()
+
+    def test_export_links_and_officer_exclusion(self):
+        self.client.force_login(self.ap)
+        self.assertContains(self.client.get(reverse('review_meeting', args=[self.meeting.pk])), self.url)
+        self.assertContains(self.client.get(reverse('department_dashboard', args=[self.dept.pk])), self.url)
+        self.client.force_login(self.officer)
+        self.assertNotContains(self.client.get(reverse('department_dashboard', args=[self.dept.pk])), self.url)

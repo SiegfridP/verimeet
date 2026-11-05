@@ -74,6 +74,9 @@
             <td style="padding:0.75rem 0.5rem; font-size:0.85rem; color:#c4c4f0;">{{ meeting.created_at|date:"M d, Y H:i" }}</td>
             <td style="padding:0.75rem 0.5rem; font-size:0.85rem;">{{ meeting.attendees.count }} assigned</td>
             <td style="padding:0.75rem 0.5rem;">
+              {% if meeting.status == 'Finished' or meeting.status == 'Archived' %}
+                <a href="{% url 'export_meeting_pdf' meeting.id %}" class="button">Export PDF</a>
+              {% endif %}
               {% if meeting.status == 'Draft' %}
                 <a href="{% url 'edit_meeting' meeting.id %}" class="button" style="padding:0.35rem 0.7rem; font-size:0.8rem; margin:0 0.25rem 0 0;">Edit</a>
                 <a href="{% url 'review_meeting' meeting.id %}" class="button" style="padding:0.35rem 0.7rem; font-size:0.8rem; background:rgba(255,255,255,0.15); color:#e0e0ff; margin:0 0.25rem 0 0;">Review</a>
