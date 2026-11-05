@@ -13,6 +13,13 @@
     .card{background:rgba(255,255,255,0.08);border-radius:8px;padding:1.5rem;margin-top:1rem;backdrop-filter:blur(4px);}
     a.button{display:inline-block;background:#4fd1c5;color:#1a1a40;padding:0.5rem 1rem;border-radius:4px;margin-top:0.5rem;text-decoration:none;transition:background .2s;}
     a.button:hover{background:#81e6d9;}
+    .status-badge{display:inline-block;padding:0.2rem 0.5rem;border-radius:4px;font-size:0.8rem;font-weight:600;}
+    .status-draft{background:rgba(246,173,85,0.2);color:#f6ad55;}
+    .status-finished{background:rgba(79,209,197,0.2);color:#4fd1c5;}
+    .status-archived{background:rgba(160,174,192,0.2);color:#cbd5e0;}
+    .status-attended{background:rgba(79,209,197,0.2);color:#4fd1c5;}
+    .status-late{background:rgba(246,173,85,0.2);color:#f6ad55;}
+    .status-absent{background:rgba(252,129,129,0.2);color:#fc8181;}
   </style>
 </head>
 <body>
@@ -42,25 +49,22 @@
           <tr style="border-bottom:1px solid rgba(255,255,255,0.06);">
             <td style="padding:0.75rem 0.5rem;">{{ meeting.title }}</td>
             <td style="padding:0.75rem 0.5rem;">
-              <span style="display:inline-block; padding:0.2rem 0.5rem; border-radius:4px; font-size:0.8rem; font-weight:600;
-                {% if meeting.status == 'Draft' %}background:rgba(246,173,85,0.2); color:#f6ad55;
-                {% elif meeting.status == 'Finished' %}background:rgba(79,209,197,0.2); color:#4fd1c5;
-                {% else %}background:rgba(160,174,192,0.2); color:#cbd5e0;{% endif %}">
+              <span class="status-badge {% if meeting.status == 'Draft' %}status-draft{% elif meeting.status == 'Finished' %}status-finished{% else %}status-archived{% endif %}">
                 {{ meeting.get_status_display }}
               </span>
             </td>
             <td style="padding:0.75rem 0.5rem; font-size:0.85rem; color:#c4c4f0;">{{ meeting.created_at|date:"M d, Y" }}</td>
             <td style="padding:0.75rem 0.5rem; font-size:0.85rem;">
               {% if meeting.user_attendance %}
-                <span style="display:inline-block; padding:0.2rem 0.5rem; border-radius:4px; font-size:0.8rem; font-weight:600;
-                  {% if meeting.user_attendance.status == 'Attended' %}background:rgba(79,209,197,0.2); color:#4fd1c5;
-                  {% elif meeting.user_attendance.status == 'Late' %}background:rgba(246,173,85,0.2); color:#f6ad55;
-                  {% else %}background:rgba(252,129,129,0.2); color:#fc8181;{% endif %}">
+                <span class="status-badge {% if meeting.user_attendance.status == 'Attended' %}status-attended{% elif meeting.user_attendance.status == 'Late' %}status-late{% else %}status-absent{% endif %}">
                   {{ meeting.user_attendance.status }}
                 </span>
                 <a href="{% url 'my_attendance' meeting.id %}" style="color:#4fd1c5; text-decoration:none; margin-left:0.5rem;">View</a>
                 {% if meeting.user_attendance.has_signed %}
                   <span style="color:#68d391; font-size:0.75rem; margin-left:0.25rem;">(Signed)</span>
+                  {% if meeting.status != 'Draft' %}
+                    <a href="{% url 'my_signature_verification_qr' meeting.id %}" style="color:#b794f4; text-decoration:none; margin-left:0.5rem; font-size:0.8rem; font-weight:600;">Signature QR</a>
+                  {% endif %}
                 {% endif %}
               {% else %}
                 <span style="color:#a0aec0; font-size:0.8rem;">Not assigned</span>

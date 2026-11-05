@@ -11,13 +11,18 @@ from django.http import HttpResponseForbidden, HttpResponse, HttpResponseBadRequ
 from django.utils import timezone
 from django.contrib import messages
 from django.db import transaction, IntegrityError
-from .models import Meeting, Attendance, AuditLog, QRSession, QRUsage
+from .models import Meeting, Attendance, AuditLog, QRSession, QRUsage, VerificationQR
 from .crypto import (
     generate_hmac_qr_token,
     verify_hmac_qr_token,
     generate_qr_session_token,
     sign_document_data,
     verify_document_signature,
+    generate_verification_token,
+    hash_verification_token,
+    encrypt_verification_token,
+    decrypt_verification_token,
+    verify_attendance_signature,
 )
 from .forms import (
     MeetingForm,
@@ -1051,4 +1056,251 @@ def my_attendance(request, meeting_id):
         'meeting': meeting,
         'department': department,
         'attendance': attendance,
+    })
+
+
+# ==============================================================================
+# Batch 08 — Individual Signature Verification QR System
+# ==============================================================================
+
+def _verify_single_signature(attendance) -> dict:
+    """Cryptographically verifies a single Attendance record's stored ECDSA signature.
+
+    Returns safe metadata only — no private keys, raw tokens, or private annotations.
+    Tries canonical meeting-bound format first, then falls back to legacy format.
+    """
+    meeting = attendance.meeting
+    user = attendance.user
+
+    if not attendance.has_signed or not attendance.cryptographic_signature:
+        return {
+            'valid': False,
+            'format': None,
+            'is_legacy': False,
+            'meeting_bound': False,
+            'reason': 'No signature on record for this attendance entry.',
+        }
+
+    if not user.public_key:
+        return {
+            'valid': False,
+            'format': None,
+            'is_legacy': False,
+            'meeting_bound': False,
+            'reason': 'Signer public key not found on record.',
+        }
+
+    return verify_attendance_signature(
+        public_key_pem=user.public_key,
+        meeting_id=meeting.id,
+        department_id=meeting.department_id,
+        title=meeting.title,
+        minutes_content=meeting.minutes_content,
+        annotation=attendance.annotation or '',
+        signature_hex=attendance.cryptographic_signature,
+    )
+
+
+@login_required
+def my_signature_verification_qr(request, meeting_id):
+    """Officer view: view, generate, or regenerate personal signature verification QR code.
+
+    Available only to the assigned Officer for their own signed Attendance record on a
+    Finished or Archived meeting.
+    Unauthorized users, unsigned records, and Draft meetings return 403.
+    GET is strictly read-only: displays active QR if exists, or an empty state with Generate button.
+    POST generates the QR (or regenerates a new QR, invalidating previous active ones).
+    """
+    if request.method not in ('GET', 'POST'):
+        return HttpResponseNotAllowed(['GET', 'POST'])
+
+    meeting = get_object_or_404(Meeting, id=meeting_id)
+
+    # 1. Department membership check
+    if not user_in_department(request.user, meeting):
+        return HttpResponseForbidden("You do not belong to this department.")
+
+    # 2. Status check: Only Finished or Archived meetings
+    if meeting.status not in ('Finished', 'Archived'):
+        return HttpResponseForbidden("Signature verification QR codes are only available for finalized meetings.")
+
+    # 3. Attendance check: Must be assigned
+    try:
+        attendance = Attendance.objects.select_related('user', 'meeting', 'meeting__department').get(
+            meeting=meeting, user=request.user
+        )
+    except Attendance.DoesNotExist:
+        return HttpResponseForbidden("You are not an assigned participant for this meeting.")
+
+    # 4. Signature check: Must have signed
+    if not attendance.has_signed or not attendance.cryptographic_signature:
+        return HttpResponseForbidden("You must sign this document before generating a signature verification QR code.")
+
+    # POST: Serialize generation for this Attendance where row locks are supported.
+    if request.method == 'POST':
+        try:
+            with transaction.atomic():
+                attendance = Attendance.objects.select_for_update().get(pk=attendance.pk)
+                if not attendance.has_signed or not attendance.cryptographic_signature:
+                    return HttpResponseForbidden("You must sign this document before generating a signature verification QR code.")
+                active_qr = VerificationQR.objects.filter(attendance=attendance, is_revoked=False).first()
+                if active_qr:
+                    active_qr.is_revoked = True
+                    active_qr.revoked_at = timezone.now()
+                    active_qr.revoked_by = request.user
+                    active_qr.save(update_fields=['is_revoked', 'revoked_at', 'revoked_by'])
+
+                raw_token = generate_verification_token()
+                token_hash = hash_verification_token(raw_token)
+                encrypted_token = encrypt_verification_token(raw_token)
+
+                active_qr = VerificationQR.objects.create(
+                    attendance=attendance,
+                    token_hash=token_hash,
+                    encrypted_token=encrypted_token,
+                )
+
+        except IntegrityError:
+            # Roll back revocation as well as the failed replacement.
+            messages.warning(request, "QR generation conflicted with another request. Please review your current QR code and retry if needed.")
+        else:
+            messages.success(request, "Your personal signature verification QR code has been generated.")
+        return redirect('my_signature_verification_qr', meeting_id=meeting.id)
+
+    # GET: strictly read-only
+    active_qr = VerificationQR.objects.filter(attendance=attendance, is_revoked=False).first()
+    raw_token = None
+    if active_qr:
+        try:
+            raw_token = decrypt_verification_token(active_qr.encrypted_token)
+        except Exception:
+            raw_token = None
+
+    public_url = None
+    qr_image_b64 = None
+    if raw_token:
+        verify_path = reverse('verify_individual_signature')
+        public_url = request.build_absolute_uri(f"{verify_path}?token={raw_token}")
+        qr_image_b64 = _generate_qr_png_b64(public_url, scale=7)
+
+    return render(request, 'meetings/verification_qr_display.html', {
+        'meeting': meeting,
+        'attendance': attendance,
+        'verification_qr': active_qr,
+        'public_url': public_url,
+        'qr_image_b64': qr_image_b64,
+        'signer': request.user,
+    })
+
+
+@login_required
+def revoke_my_signature_verification_qr(request, meeting_id):
+    """Revoke personal verification QR code. POST-only action.
+
+    Only the signing Officer may revoke their own QR.
+    Does NOT revoke or alter the underlying ECDSA signature.
+    """
+    if request.method != 'POST':
+        return HttpResponseNotAllowed(['POST'])
+
+    meeting = get_object_or_404(Meeting, id=meeting_id)
+    if not user_in_department(request.user, meeting):
+        return HttpResponseForbidden("You do not belong to this department.")
+
+    if meeting.status not in ('Finished', 'Archived'):
+        return HttpResponseForbidden("Action permitted on finalized meetings only.")
+
+    try:
+        attendance = Attendance.objects.get(meeting=meeting, user=request.user)
+    except Attendance.DoesNotExist:
+        return HttpResponseForbidden("You are not an assigned participant for this meeting.")
+
+    if not attendance.has_signed or not attendance.cryptographic_signature:
+        return HttpResponseForbidden("You have not signed this document.")
+
+    active_qr = VerificationQR.objects.filter(attendance=attendance, is_revoked=False).first()
+    if not active_qr:
+        messages.info(request, "No active verification QR code to revoke.")
+        return redirect('my_signature_verification_qr', meeting_id=meeting.id)
+
+    with transaction.atomic():
+        active_qr.is_revoked = True
+        active_qr.revoked_at = timezone.now()
+        active_qr.revoked_by = request.user
+        active_qr.save(update_fields=['is_revoked', 'revoked_at', 'revoked_by'])
+
+    messages.warning(request, "Signature verification QR code has been revoked.")
+    return redirect('my_signature_verification_qr', meeting_id=meeting.id)
+
+
+def verify_individual_signature(request):
+    """Public read-only verification endpoint for an individual Officer's signature.
+
+    Does NOT require authentication.
+    Does NOT mutate any database state (no audit logs, no scan records, no usage counts).
+    Displays ONLY:
+      - Meeting title
+      - Department name
+      - Document status
+      - Signer display name
+      - Signing timestamp
+      - Signature verification result (canonical / legacy / invalid)
+    For revoked or unsupported tokens/statuses, displays generic messages without revealing
+    meeting, department, or signer metadata.
+    Never exposes other attendees, full minutes, annotations, usernames, public/private keys, or tokens.
+    """
+    if request.method != 'GET':
+        return HttpResponseNotAllowed(['GET'])
+
+    raw_token = request.GET.get('token', '').strip()
+    if not raw_token:
+        return render(request, 'meetings/individual_signature_verification.html', {
+            'status': 'invalid',
+            'error_message': 'No verification token provided.',
+        }, status=400)
+
+    token_hash = hash_verification_token(raw_token)
+    qr_obj = VerificationQR.objects.select_related(
+        'attendance',
+        'attendance__user',
+        'attendance__meeting',
+        'attendance__meeting__department'
+    ).filter(token_hash=token_hash).first()
+
+    if not qr_obj:
+        return render(request, 'meetings/individual_signature_verification.html', {
+            'status': 'invalid',
+            'error_message': 'Invalid verification token. No matching signature record found.',
+        }, status=404)
+
+    if qr_obj.is_revoked:
+        return render(request, 'meetings/individual_signature_verification.html', {
+            'status': 'revoked',
+            'error_message': 'This signature verification QR code has been revoked by the signer and can no longer be used for verification.',
+        })
+
+    meeting = qr_obj.attendance.meeting
+    if meeting.status not in ('Finished', 'Archived'):
+        return render(request, 'meetings/individual_signature_verification.html', {
+            'status': 'unsupported',
+            'error_message': 'This document is in an unsupported status and cannot be verified.',
+        })
+
+    attendance = qr_obj.attendance
+    if not attendance.has_signed or not attendance.cryptographic_signature:
+        return render(request, 'meetings/individual_signature_verification.html', {
+            'status': 'invalid',
+            'error_message': 'No signature record found for this participant.',
+        }, status=404)
+
+    sig_result = _verify_single_signature(attendance)
+    signer = attendance.user
+    signer_display = signer.get_full_name() or signer.username
+
+    return render(request, 'meetings/individual_signature_verification.html', {
+        'status': 'valid' if sig_result.get('valid') else 'invalid',
+        'meeting': meeting,
+        'signer_display': signer_display,
+        'signed_at': attendance.signed_at,
+        'sig_result': sig_result,
     })

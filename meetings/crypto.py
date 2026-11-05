@@ -168,3 +168,106 @@ def verify_hmac_qr_token(meeting_id, timestamp, received_sig, purpose: str = Non
         return hmac.compare_digest(expected_sig, received_sig)
     except (ValueError, TypeError):
         return False
+
+
+# Batch 08 — Separate Document Verification QR helpers
+
+def generate_verification_token() -> str:
+    """Generates an opaque, cryptographically secure 256-bit URL-safe token for public document verification."""
+    return secrets.token_urlsafe(32)
+
+
+def hash_verification_token(raw_token: str) -> str:
+    """Returns the SHA-256 hex digest of a verification token for secure database lookup."""
+    return hashlib.sha256(raw_token.encode('utf-8')).hexdigest()
+
+
+def encrypt_verification_token(raw_token: str) -> str:
+    """Encrypts a verification token at rest using Fernet for persistent AP retrieval."""
+    f = _get_fernet()
+    token_bytes = f.encrypt(raw_token.encode('utf-8'))
+    return token_bytes.decode('utf-8')
+
+
+def decrypt_verification_token(encrypted_token: str) -> str:
+    """Decrypts a stored verification token back to plaintext for AP QR code rendering."""
+    f = _get_fernet()
+    try:
+        plain_bytes = f.decrypt(encrypted_token.encode('utf-8'))
+        return plain_bytes.decode('utf-8')
+    except Exception as exc:
+        raise RuntimeError("Failed to decrypt verification token") from exc
+
+
+def build_canonical_signing_payload(meeting_id, department_id, title: str, minutes_content: str, annotation: str = '') -> str:
+    """Constructs the canonical meeting-bound signing payload string."""
+    minutes = minutes_content or ''
+    ann = annotation or ''
+    return (
+        f"meeting_id:{meeting_id}\n"
+        f"department_id:{department_id}\n"
+        f"title:{title}\n"
+        f"{minutes}\n"
+        f"---ANNOTATION---\n"
+        f"{ann}"
+    )
+
+
+def build_legacy_signing_payload(minutes_content: str, annotation: str = '') -> str:
+    """Constructs the legacy unbound signing payload string (Batch 05 format)."""
+    minutes = minutes_content or ''
+    ann = annotation or ''
+    return f"{minutes}\n---ANNOTATION---\n{ann}"
+
+
+def verify_attendance_signature(public_key_pem: str, meeting_id, department_id, title: str, minutes_content: str, annotation: str, signature_hex: str) -> dict:
+    """Verifies a single attendee signature against canonical and legacy payload formats.
+
+    Returns:
+        dict: {
+            'valid': bool,
+            'format': 'canonical' | 'legacy' | None,
+            'is_legacy': bool,
+            'meeting_bound': bool,
+            'reason': str or None,
+        }
+    """
+    if not public_key_pem or not signature_hex:
+        return {
+            'valid': False,
+            'format': None,
+            'is_legacy': False,
+            'meeting_bound': False,
+            'reason': 'Missing public key or signature on record.',
+        }
+
+    # 1. Canonical meeting-bound check
+    canonical_payload = build_canonical_signing_payload(meeting_id, department_id, title, minutes_content, annotation)
+    if verify_document_signature(public_key_pem, canonical_payload, signature_hex):
+        return {
+            'valid': True,
+            'format': 'canonical',
+            'is_legacy': False,
+            'meeting_bound': True,
+            'reason': None,
+        }
+
+    # 2. Legacy fallback check
+    legacy_payload = build_legacy_signing_payload(minutes_content, annotation)
+    if verify_document_signature(public_key_pem, legacy_payload, signature_hex):
+        return {
+            'valid': True,
+            'format': 'legacy',
+            'is_legacy': True,
+            'meeting_bound': False,
+            'reason': 'Verified using legacy format without meeting ID, department, or title binding.',
+        }
+
+    # 3. Verification failed for both
+    return {
+        'valid': False,
+        'format': None,
+        'is_legacy': False,
+        'meeting_bound': False,
+        'reason': 'Signature verification failed for both canonical and legacy payload formats.',
+    }

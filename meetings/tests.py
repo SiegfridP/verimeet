@@ -3331,3 +3331,642 @@ class Batch07QRAttendanceAndSigningTests(TestCase):
                 action="Recorded attendance via QR as Attended"
             ).exists()
         )
+
+
+
+class Batch08VerificationQRTests(TestCase):
+    """Batch 08: Individual Signature Verification QR System Tests.
+
+    Validates individual proof-of-signature QR generation, secure token storage,
+    token decryption for owner display, regeneration/invalidation, revocation,
+    database UniqueConstraint for one active QR per Attendance,
+    public read-only single-signature verification without authentication,
+    privacy guarantees (generic responses on revoked/unsupported tokens,
+    no leakage of other attendees, full minutes, or annotations),
+    cryptographic signature integrity (canonical vs legacy), tampering detection,
+    and strict isolation from Batch 07 attendance/signing sessions.
+    """
+
+    def setUp(self):
+        from django.utils import timezone
+        from meetings.crypto import (
+            generate_ecdsa_keypair,
+            encrypt_private_key,
+            sign_document_data,
+            build_canonical_signing_payload,
+            build_legacy_signing_payload,
+        )
+
+        self.client = Client()
+        self.dept = Department.objects.create(name='Computer Science', contact_email='cs@example.com')
+        self.other_dept = Department.objects.create(name='Mathematics', contact_email='math@example.com')
+
+        # Global Admin
+        self.global_admin = User.objects.create_user(
+            username='admin_batch08', password='password123', is_admin=True
+        )
+
+        # Department APs
+        self.ap_cs = User.objects.create_user(username='ap_cs_user', password='password123')
+        Membership.objects.create(user=self.ap_cs, department=self.dept, role='AP')
+
+        self.ap_math = User.objects.create_user(username='ap_math_user', password='password123')
+        Membership.objects.create(user=self.ap_math, department=self.other_dept, role='AP')
+
+        # Officers
+        # Officer 1: Signed with canonical meeting-bound signature
+        self.officer1 = User.objects.create_user(
+            username='officer1_cs', first_name='Alice', last_name='Smith', password='password123'
+        )
+        Membership.objects.create(user=self.officer1, department=self.dept, role='O')
+        priv1, pub1 = generate_ecdsa_keypair()
+        User.objects.filter(pk=self.officer1.pk).update(
+            private_key=encrypt_private_key(priv1), public_key=pub1
+        )
+        self.officer1.refresh_from_db()
+        self.priv1_raw = priv1
+
+        # Officer 2: Signed with legacy signature (not meeting-bound)
+        self.officer2 = User.objects.create_user(
+            username='officer2_cs', first_name='Bob', last_name='Jones', password='password123'
+        )
+        Membership.objects.create(user=self.officer2, department=self.dept, role='O')
+        priv2, pub2 = generate_ecdsa_keypair()
+        User.objects.filter(pk=self.officer2.pk).update(
+            private_key=encrypt_private_key(priv2), public_key=pub2
+        )
+        self.officer2.refresh_from_db()
+        self.priv2_raw = priv2
+
+        # Officer 3: Assigned participant who has NOT signed yet
+        self.officer3 = User.objects.create_user(
+            username='officer3_cs', first_name='Charlie', last_name='Brown', password='password123'
+        )
+        Membership.objects.create(user=self.officer3, department=self.dept, role='O')
+
+        # Officer from another department
+        self.officer_math = User.objects.create_user(username='officer_math', password='password123')
+        Membership.objects.create(user=self.officer_math, department=self.other_dept, role='O')
+
+        # Finalized Meeting (Finished)
+        self.finished_meeting = Meeting.objects.create(
+            department=self.dept,
+            title='Curriculum Committee Final Meeting',
+            minutes_content='Finalized minutes: Approved new AI curriculum syllabus.',
+            status='Draft'
+        )
+        self.finished_meeting.status = 'Finished'
+        self.finished_meeting.save()
+
+        # Archived Meeting (transitions Draft -> Finished -> Archived)
+        self.archived_meeting = Meeting.objects.create(
+            department=self.dept,
+            title='Archived Annual Report Meeting',
+            minutes_content='Annual report archived content.',
+            status='Draft'
+        )
+        self.archived_meeting.status = 'Finished'
+        self.archived_meeting.save()
+        self.archived_meeting.status = 'Archived'
+        self.archived_meeting.save()
+
+        # Draft Meeting
+        self.draft_meeting = Meeting.objects.create(
+            department=self.dept,
+            title='Draft Curriculum Brainstorming',
+            minutes_content='Draft notes: Discussion ongoing.',
+            status='Draft'
+        )
+
+        time_now = timezone.now()
+
+        # Attendee 1: Canonical signature on Finished meeting
+        self.ann1 = "Approved curriculum revisions."
+        canonical_payload = build_canonical_signing_payload(
+            self.finished_meeting.id,
+            self.dept.id,
+            self.finished_meeting.title,
+            self.finished_meeting.minutes_content,
+            self.ann1,
+        )
+        sig1 = sign_document_data(self.officer1.private_key, canonical_payload)
+        self.att1 = Attendance.objects.create(
+            meeting=self.finished_meeting,
+            user=self.officer1,
+            status='Attended',
+            has_signed=True,
+            cryptographic_signature=sig1,
+            annotation=self.ann1,
+            signed_at=time_now
+        )
+
+        # Attendee 2: Legacy signature on Finished meeting
+        self.ann2 = "Legacy note agreement."
+        legacy_payload = build_legacy_signing_payload(
+            self.finished_meeting.minutes_content,
+            self.ann2,
+        )
+        sig2 = sign_document_data(self.officer2.private_key, legacy_payload)
+        self.att2 = Attendance.objects.create(
+            meeting=self.finished_meeting,
+            user=self.officer2,
+            status='Late',
+            has_signed=True,
+            cryptographic_signature=sig2,
+            annotation=self.ann2,
+            signed_at=time_now
+        )
+
+        # Attendee 3: Unsigned on Finished meeting
+        self.att3 = Attendance.objects.create(
+            meeting=self.finished_meeting,
+            user=self.officer3,
+            status='Attended',
+            has_signed=False,
+            cryptographic_signature=None,
+            annotation='',
+            signed_at=None
+        )
+
+        # Attendee 1 on Archived meeting (signed)
+        canonical_payload_arch = build_canonical_signing_payload(
+            self.archived_meeting.id,
+            self.dept.id,
+            self.archived_meeting.title,
+            self.archived_meeting.minutes_content,
+            '',
+        )
+        sig1_arch = sign_document_data(self.officer1.private_key, canonical_payload_arch)
+        self.att1_arch = Attendance.objects.create(
+            meeting=self.archived_meeting,
+            user=self.officer1,
+            status='Attended',
+            has_signed=True,
+            cryptographic_signature=sig1_arch,
+            annotation='',
+            signed_at=time_now
+        )
+
+        # Attendee 1 on Draft meeting
+        self.att1_draft = Attendance.objects.create(
+            meeting=self.draft_meeting,
+            user=self.officer1,
+            status='Attended',
+            has_signed=True,
+            cryptographic_signature='abc123',
+            annotation='',
+            signed_at=time_now
+        )
+
+    def test_01_signed_officer_can_generate_own_qr(self):
+        """1. A signed Officer can generate their own personal verification QR via POST."""
+        from meetings.models import VerificationQR
+
+        self.client.force_login(self.officer1)
+        resp = self.client.post(reverse('my_signature_verification_qr', args=[self.finished_meeting.id]))
+        self.assertEqual(resp.status_code, 302)
+
+        # Follow redirect to display page
+        resp_get = self.client.get(resp.url)
+        self.assertEqual(resp_get.status_code, 200)
+        self.assertIn('qr_image_b64', resp_get.context)
+        self.assertIsNotNone(resp_get.context['qr_image_b64'])
+        self.assertEqual(VerificationQR.objects.filter(attendance=self.att1).count(), 1)
+
+    def test_02_unsigned_officer_cannot_generate_qr(self):
+        """2. An unsigned Officer cannot generate a verification QR (403 Forbidden)."""
+        from meetings.models import VerificationQR
+
+        self.client.force_login(self.officer3)
+        resp_get = self.client.get(reverse('my_signature_verification_qr', args=[self.finished_meeting.id]))
+        self.assertEqual(resp_get.status_code, 403)
+
+        resp_post = self.client.post(reverse('my_signature_verification_qr', args=[self.finished_meeting.id]))
+        self.assertEqual(resp_post.status_code, 403)
+
+        self.assertEqual(VerificationQR.objects.filter(attendance=self.att3).count(), 0)
+
+    def test_03_officer_cannot_access_another_officers_qr(self):
+        """3. An Officer cannot access another Officer's verification QR (URL is scoped to user)."""
+        from meetings.models import VerificationQR
+
+        # Officer 1 generates QR
+        self.client.force_login(self.officer1)
+        self.client.post(reverse('my_signature_verification_qr', args=[self.finished_meeting.id]))
+        self.assertEqual(VerificationQR.objects.filter(attendance=self.att1).count(), 1)
+
+        # Officer 2 logs in and requests the endpoint
+        self.client.force_login(self.officer2)
+        resp = self.client.get(reverse('my_signature_verification_qr', args=[self.finished_meeting.id]))
+        self.assertEqual(resp.status_code, 200)
+        # Context must contain Officer 2's attendance, NOT Officer 1's
+        self.assertEqual(resp.context['attendance'], self.att2)
+        self.assertNotEqual(resp.context['attendance'], self.att1)
+
+    def test_04_qr_tied_to_exactly_one_attendance(self):
+        """4. VerificationQR is tied to exactly one Attendance record and resolves meeting/signer."""
+        from meetings.models import VerificationQR
+
+        self.client.force_login(self.officer1)
+        self.client.post(reverse('my_signature_verification_qr', args=[self.finished_meeting.id]))
+        qr = VerificationQR.objects.get(attendance=self.att1)
+
+        self.assertEqual(qr.attendance, self.att1)
+        self.assertEqual(qr.meeting, self.finished_meeting)
+        self.assertEqual(qr.signer, self.officer1)
+
+    def test_05_get_does_not_create_or_modify_qr_records(self):
+        """5. GET requests are strictly read-only and never create or modify QR records."""
+        from meetings.models import VerificationQR
+
+        self.client.force_login(self.officer1)
+        # Officer 1 has signed, but has not generated QR
+        self.assertEqual(VerificationQR.objects.filter(attendance=self.att1).count(), 0)
+
+        # GET request
+        resp = self.client.get(reverse('my_signature_verification_qr', args=[self.finished_meeting.id]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertIsNone(resp.context['verification_qr'])
+        self.assertIsNone(resp.context['qr_image_b64'])
+
+        # DB must still have 0 records
+        self.assertEqual(VerificationQR.objects.filter(attendance=self.att1).count(), 0)
+
+    def test_06_post_generates_qr(self):
+        """6. POST explicitly generates the verification QR."""
+        from meetings.models import VerificationQR
+        from meetings.crypto import decrypt_verification_token
+
+        self.client.force_login(self.officer1)
+        resp = self.client.post(reverse('my_signature_verification_qr', args=[self.finished_meeting.id]))
+        self.assertEqual(resp.status_code, 302)
+
+        qr = VerificationQR.objects.filter(attendance=self.att1).first()
+        self.assertIsNotNone(qr)
+        self.assertFalse(qr.is_revoked)
+        raw_token = decrypt_verification_token(qr.encrypted_token)
+        self.assertTrue(bool(raw_token))
+
+    def test_07_regeneration_revokes_previous_qr_and_creates_new_one(self):
+        """7. Regeneration invalidates previous active QR and creates a new one."""
+        from meetings.models import VerificationQR
+        from meetings.crypto import decrypt_verification_token
+
+        self.client.force_login(self.officer1)
+        # First POST generates QR 1
+        self.client.post(reverse('my_signature_verification_qr', args=[self.finished_meeting.id]))
+        qr1 = VerificationQR.objects.get(attendance=self.att1)
+        token1 = decrypt_verification_token(qr1.encrypted_token)
+
+        # Second POST regenerates QR 2
+        self.client.post(reverse('my_signature_verification_qr', args=[self.finished_meeting.id]))
+        all_qrs = VerificationQR.objects.filter(attendance=self.att1)
+        self.assertEqual(all_qrs.count(), 2)
+
+        old_qr = all_qrs.get(is_revoked=True)
+        new_qr = all_qrs.get(is_revoked=False)
+        self.assertEqual(old_qr.id, qr1.id)
+        token2 = decrypt_verification_token(new_qr.encrypted_token)
+        self.assertNotEqual(token1, token2)
+
+    def test_08_unique_active_qr_constraint(self):
+        """8. Database UniqueConstraint prevents multiple active QR records for one Attendance."""
+        from django.db import IntegrityError
+        from meetings.models import VerificationQR
+        from meetings.crypto import hash_verification_token, encrypt_verification_token
+
+        self.client.force_login(self.officer1)
+        self.client.post(reverse('my_signature_verification_qr', args=[self.finished_meeting.id]))
+        self.assertEqual(VerificationQR.objects.filter(attendance=self.att1, is_revoked=False).count(), 1)
+
+        # Direct DB attempt to create a second non-revoked QR for the same attendance must fail
+        with self.assertRaises(IntegrityError):
+            VerificationQR.objects.create(
+                attendance=self.att1,
+                token_hash=hash_verification_token('another_secret_token_123'),
+                encrypted_token=encrypt_verification_token('another_secret_token_123'),
+                is_revoked=False,
+            )
+
+    def test_09_only_signing_officer_can_revoke_their_qr(self):
+        """9. Only the signing Officer can revoke their own QR."""
+        from meetings.models import VerificationQR
+
+        self.client.force_login(self.officer1)
+        self.client.post(reverse('my_signature_verification_qr', args=[self.finished_meeting.id]))
+        qr = VerificationQR.objects.get(attendance=self.att1)
+        self.assertFalse(qr.is_revoked)
+
+        # Officer 2 attempts to revoke Officer 1's QR (Officer 2's session only has Officer 2's attendance)
+        self.client.force_login(self.officer2)
+        resp_o2 = self.client.post(reverse('revoke_my_signature_verification_qr', args=[self.finished_meeting.id]))
+        # Officer 2 has no active QR, so redirects with info message without touching Officer 1's QR
+        qr.refresh_from_db()
+        self.assertFalse(qr.is_revoked)
+
+        # Officer 1 revokes their own QR
+        self.client.force_login(self.officer1)
+        resp_o1 = self.client.post(reverse('revoke_my_signature_verification_qr', args=[self.finished_meeting.id]))
+        self.assertEqual(resp_o1.status_code, 302)
+        qr.refresh_from_db()
+        self.assertTrue(qr.is_revoked)
+        self.assertEqual(qr.revoked_by, self.officer1)
+
+    def test_10_revoking_qr_does_not_affect_underlying_signature(self):
+        """10. Revoking a QR does not delete or modify the Attendance cryptographic signature."""
+        from meetings.models import VerificationQR
+
+        self.client.force_login(self.officer1)
+        self.client.post(reverse('my_signature_verification_qr', args=[self.finished_meeting.id]))
+        self.client.post(reverse('revoke_my_signature_verification_qr', args=[self.finished_meeting.id]))
+
+        self.att1.refresh_from_db()
+        self.assertTrue(self.att1.has_signed)
+        self.assertIsNotNone(self.att1.cryptographic_signature)
+        self.assertIsNotNone(self.att1.signed_at)
+
+    def test_11_draft_meetings_cannot_generate_verification_qr(self):
+        """11. Draft meetings cannot generate or view verification QR codes."""
+        from meetings.models import VerificationQR
+
+        self.client.force_login(self.officer1)
+        resp_get = self.client.get(reverse('my_signature_verification_qr', args=[self.draft_meeting.id]))
+        self.assertEqual(resp_get.status_code, 403)
+
+        resp_post = self.client.post(reverse('my_signature_verification_qr', args=[self.draft_meeting.id]))
+        self.assertEqual(resp_post.status_code, 403)
+        self.assertEqual(VerificationQR.objects.filter(attendance=self.att1_draft).count(), 0)
+
+    def test_12_finished_and_archived_meetings_are_supported(self):
+        """12. Both Finished and Archived meetings are supported."""
+        from meetings.models import VerificationQR
+
+        self.client.force_login(self.officer1)
+        # Finished
+        resp_fin = self.client.post(reverse('my_signature_verification_qr', args=[self.finished_meeting.id]))
+        self.assertEqual(resp_fin.status_code, 302)
+        self.assertEqual(VerificationQR.objects.filter(attendance=self.att1).count(), 1)
+
+        # Archived
+        resp_arch = self.client.post(reverse('my_signature_verification_qr', args=[self.archived_meeting.id]))
+        self.assertEqual(resp_arch.status_code, 302)
+        self.assertEqual(VerificationQR.objects.filter(attendance=self.att1_arch).count(), 1)
+
+    def test_13_unknown_and_revoked_tokens_produce_safe_generic_responses(self):
+        """13. Unknown and revoked tokens return generic responses without leaking meeting or signer info."""
+        from meetings.models import VerificationQR
+        from meetings.crypto import decrypt_verification_token
+
+        # 1. Unknown token -> 404, generic error
+        anon = Client()
+        resp_unk = anon.get(f"{reverse('verify_individual_signature')}?token=non_existent_token_999")
+        self.assertEqual(resp_unk.status_code, 404)
+        self.assertEqual(resp_unk.context['status'], 'invalid')
+        self.assertNotIn('Alice Smith', resp_unk.content.decode('utf-8'))
+        self.assertNotIn(self.finished_meeting.title, resp_unk.content.decode('utf-8'))
+
+        # 2. Revoked token -> 200, generic revoked status, NO meeting title or signer exposed!
+        self.client.force_login(self.officer1)
+        self.client.post(reverse('my_signature_verification_qr', args=[self.finished_meeting.id]))
+        qr = VerificationQR.objects.get(attendance=self.att1)
+        raw_token = decrypt_verification_token(qr.encrypted_token)
+        self.client.post(reverse('revoke_my_signature_verification_qr', args=[self.finished_meeting.id]))
+
+        resp_rev = anon.get(f"{reverse('verify_individual_signature')}?token={raw_token}")
+        self.assertEqual(resp_rev.status_code, 200)
+        self.assertEqual(resp_rev.context['status'], 'revoked')
+        content_rev = resp_rev.content.decode('utf-8')
+        self.assertIn('Verification QR Code Revoked', content_rev)
+        self.assertNotIn('Alice Smith', content_rev)
+        self.assertNotIn(self.finished_meeting.title, content_rev)
+
+    def test_14_unsupported_meeting_statuses_do_not_expose_info(self):
+        """14. Unsupported meeting statuses do not expose meeting or signer information."""
+        from meetings.models import VerificationQR
+        from meetings.crypto import decrypt_verification_token
+
+        self.client.force_login(self.officer1)
+        self.client.post(reverse('my_signature_verification_qr', args=[self.finished_meeting.id]))
+        qr = VerificationQR.objects.get(attendance=self.att1)
+        raw_token = decrypt_verification_token(qr.encrypted_token)
+
+        # Simulate meeting transition to unsupported status
+        Meeting.objects.filter(pk=self.finished_meeting.pk).update(status='Draft')
+
+        anon = Client()
+        resp = anon.get(f"{reverse('verify_individual_signature')}?token={raw_token}")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['status'], 'unsupported')
+        content = resp.content.decode('utf-8')
+        self.assertIn('Unsupported Document Status', content)
+        self.assertNotIn('Alice Smith', content)
+        self.assertNotIn(self.finished_meeting.title, content)
+
+    def test_15_valid_canonical_signatures_verify_successfully(self):
+        """15. Valid canonical signatures verify successfully on the public endpoint."""
+        from meetings.models import VerificationQR
+        from meetings.crypto import decrypt_verification_token
+
+        self.client.force_login(self.officer1)
+        self.client.post(reverse('my_signature_verification_qr', args=[self.finished_meeting.id]))
+        qr = VerificationQR.objects.get(attendance=self.att1)
+        token = decrypt_verification_token(qr.encrypted_token)
+
+        anon = Client()
+        resp = anon.get(f"{reverse('verify_individual_signature')}?token={token}")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['status'], 'valid')
+        self.assertTrue(resp.context['sig_result']['valid'])
+        self.assertTrue(resp.context['sig_result']['meeting_bound'])
+        self.assertFalse(resp.context['sig_result']['is_legacy'])
+
+        content = resp.content.decode('utf-8')
+        self.assertIn('Verified (Canonical)', content)
+        self.assertIn('Alice Smith', content)
+        self.assertIn(self.finished_meeting.title, content)
+
+    def test_16_valid_legacy_signatures_verify_with_clear_legacy_notice(self):
+        """16. Valid legacy signatures verify with a clear legacy notice."""
+        from meetings.models import VerificationQR
+        from meetings.crypto import decrypt_verification_token
+
+        self.client.force_login(self.officer2)
+        self.client.post(reverse('my_signature_verification_qr', args=[self.finished_meeting.id]))
+        qr = VerificationQR.objects.get(attendance=self.att2)
+        token = decrypt_verification_token(qr.encrypted_token)
+
+        anon = Client()
+        resp = anon.get(f"{reverse('verify_individual_signature')}?token={token}")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['status'], 'valid')
+        self.assertTrue(resp.context['sig_result']['valid'])
+        self.assertFalse(resp.context['sig_result']['meeting_bound'])
+        self.assertTrue(resp.context['sig_result']['is_legacy'])
+
+        content = resp.content.decode('utf-8')
+        self.assertIn('Verified (Legacy)', content)
+        self.assertIn('Legacy format notice', content)
+        self.assertIn('Bob Jones', content)
+
+    def test_17_tampered_signatures_or_content_produce_invalid_result(self):
+        """17. Tampered signatures or document content produce an invalid verification result."""
+        from meetings.models import VerificationQR
+        from meetings.crypto import decrypt_verification_token
+
+        self.client.force_login(self.officer1)
+        self.client.post(reverse('my_signature_verification_qr', args=[self.finished_meeting.id]))
+        qr = VerificationQR.objects.get(attendance=self.att1)
+        token = decrypt_verification_token(qr.encrypted_token)
+
+        # Alter document minutes content
+        Meeting.objects.filter(pk=self.finished_meeting.pk).update(
+            minutes_content="Tampered minutes text after signing."
+        )
+
+        anon = Client()
+        resp = anon.get(f"{reverse('verify_individual_signature')}?token={token}")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['status'], 'invalid')
+        self.assertFalse(resp.context['sig_result']['valid'])
+        self.assertIn('Integrity Warning: Invalid Signature', resp.content.decode('utf-8'))
+
+    def test_18_public_verification_exposes_no_other_signers_records_or_secrets(self):
+        """18. Public verification exposes no other signers, attendance records, minutes, or annotations."""
+        from meetings.models import VerificationQR
+        from meetings.crypto import decrypt_verification_token
+
+        self.client.force_login(self.officer1)
+        self.client.post(reverse('my_signature_verification_qr', args=[self.finished_meeting.id]))
+        qr = VerificationQR.objects.get(attendance=self.att1)
+        token = decrypt_verification_token(qr.encrypted_token)
+
+        anon = Client()
+        resp = anon.get(f"{reverse('verify_individual_signature')}?token={token}")
+        content = resp.content.decode('utf-8')
+
+        # Allowed fields
+        self.assertIn('Alice Smith', content)
+        self.assertIn(self.finished_meeting.title, content)
+        self.assertIn(self.dept.name, content)
+
+        # Forbidden fields
+        self.assertNotIn('Bob Jones', content)
+        self.assertNotIn('officer2_cs', content)
+        self.assertNotIn('Charlie Brown', content)
+        self.assertNotIn('officer3_cs', content)
+        self.assertNotIn('Finalized minutes: Approved new AI curriculum syllabus.', content)
+        self.assertNotIn(self.ann1, content)
+        self.assertNotIn(self.ann2, content)
+        self.assertNotIn(qr.token_hash, content)
+        self.assertNotIn(qr.encrypted_token, content)
+
+    def test_19_public_verification_does_not_mutate_db_or_create_logs(self):
+        """19. Public verification does not create scan logs or modify database records."""
+        from meetings.models import VerificationQR
+        from meetings.crypto import decrypt_verification_token
+
+        self.client.force_login(self.officer1)
+        self.client.post(reverse('my_signature_verification_qr', args=[self.finished_meeting.id]))
+        qr = VerificationQR.objects.get(attendance=self.att1)
+        token = decrypt_verification_token(qr.encrypted_token)
+
+        anon = Client()
+        audit_before = AuditLog.objects.count()
+        qr_count_before = VerificationQR.objects.count()
+        att_count_before = Attendance.objects.count()
+
+        resp = anon.get(f"{reverse('verify_individual_signature')}?token={token}")
+        self.assertEqual(resp.status_code, 200)
+
+        self.assertEqual(AuditLog.objects.count(), audit_before)
+        self.assertEqual(VerificationQR.objects.count(), qr_count_before)
+        self.assertEqual(Attendance.objects.count(), att_count_before)
+
+    def test_20_batch07_qr_attendance_and_signing_unaffected(self):
+        """20. Batch 07 QR attendance and signing workflows remain unaffected."""
+        from meetings.models import VerificationQR
+        from meetings.crypto import decrypt_verification_token
+
+        self.client.force_login(self.officer1)
+        self.client.post(reverse('my_signature_verification_qr', args=[self.finished_meeting.id]))
+        qr = VerificationQR.objects.get(attendance=self.att1)
+        token = decrypt_verification_token(qr.encrypted_token)
+
+        # Verification token rejected by Batch 07 attendance scanner
+        self.client.force_login(self.officer3)
+        resp_scan = self.client.get(f"{reverse('scan_attendance_qr', args=[self.finished_meeting.id])}?token={token}")
+        self.assertEqual(resp_scan.status_code, 403)
+
+        # Verification token rejected by Batch 07 signing endpoint
+        resp_sign = self.client.get(f"{reverse('sign_meeting', args=[self.finished_meeting.id])}?token={token}")
+        self.assertEqual(resp_sign.status_code, 403)
+
+        # No Batch 07 records created
+        self.assertEqual(QRSession.objects.filter(meeting=self.finished_meeting).count(), 0)
+        self.assertEqual(QRUsage.objects.count(), 0)
+
+    def test_21_canonical_and_legacy_signing_payload_consistency(self):
+        """21. Cryptographic payload builders are deterministic and compatible with Batch 05."""
+        from meetings.crypto import build_canonical_signing_payload, build_legacy_signing_payload
+
+        p1 = build_canonical_signing_payload(1, 2, "Test Title", "Test Minutes", "Test Ann")
+        expected_canonical = (
+            "meeting_id:1\n"
+            "department_id:2\n"
+            "title:Test Title\n"
+            "Test Minutes\n"
+            "---ANNOTATION---\n"
+            "Test Ann"
+        )
+        self.assertEqual(p1, expected_canonical)
+
+        p2 = build_legacy_signing_payload("Test Minutes", "Test Ann")
+        expected_legacy = (
+            "Test Minutes\n"
+            "---ANNOTATION---\n"
+            "Test Ann"
+        )
+        self.assertEqual(p2, expected_legacy)
+
+    def test_owner_qr_rejects_unsupported_methods(self):
+        from meetings.models import VerificationQR
+
+        self.client.force_login(self.officer1)
+        url = reverse('my_signature_verification_qr', args=[self.finished_meeting.id])
+        for method in ('PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'):
+            with self.subTest(method=method):
+                response = self.client.generic(method, url)
+                self.assertEqual(response.status_code, 405)
+                self.assertEqual(response['Allow'], 'GET, POST')
+        self.assertFalse(VerificationQR.objects.exists())
+
+    def test_public_verification_rejects_unsupported_methods(self):
+        url = reverse('verify_individual_signature')
+        for method in ('POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'):
+            with self.subTest(method=method):
+                response = self.client.generic(method, url)
+                self.assertEqual(response.status_code, 405)
+                self.assertEqual(response['Allow'], 'GET')
+
+    def test_generation_uniqueness_conflict_rolls_back_revocation(self):
+        from unittest.mock import patch
+        from django.db import IntegrityError
+        from meetings.models import VerificationQR
+
+        self.client.force_login(self.officer1)
+        url = reverse('my_signature_verification_qr', args=[self.finished_meeting.id])
+        self.client.post(url)
+        qr = VerificationQR.objects.get(attendance=self.att1)
+        signature = self.att1.cryptographic_signature
+        signed_at = self.att1.signed_at
+        with patch('meetings.views.VerificationQR.objects.create', side_effect=IntegrityError('unique conflict')):
+            response = self.client.post(url)
+        self.assertRedirects(response, url)
+        qr.refresh_from_db()
+        self.assertFalse(qr.is_revoked)
+        self.assertIsNone(qr.revoked_at)
+        self.assertIsNone(qr.revoked_by)
+        self.assertEqual(VerificationQR.objects.filter(attendance=self.att1).count(), 1)
+        self.att1.refresh_from_db()
+        self.assertEqual(self.att1.cryptographic_signature, signature)
+        self.assertEqual(self.att1.signed_at, signed_at)

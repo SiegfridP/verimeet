@@ -169,6 +169,16 @@
         <strong>Notice:</strong> Attendance status is officially managed and verified by Authorized Personnel. Officers cannot modify attendance records.
       </div>
 
+      {% if attendance.has_signed and meeting.status != 'Draft' %}
+        <div style="margin-top: 1.5rem; padding: 1rem; background: rgba(183, 148, 244, 0.1); border: 1px solid rgba(183, 148, 244, 0.3); border-radius: 8px;">
+          <h4 style="margin: 0 0 0.5rem 0; color: #d6bcfa;">Signature Verification</h4>
+          <p style="margin: 0 0 0.75rem 0; font-size: 0.85rem; color: #c4c4f0;">
+            You have signed this document. You can generate or view your personal signature verification QR code.
+          </p>
+          <a href="{% url 'my_signature_verification_qr' meeting.id %}" class="button" style="background: #9f7aea; color: #ffffff;">View My Signature Verification QR</a>
+        </div>
+      {% endif %}
+
       <div style="margin-top: 1.5rem;">
         <a href="{% url 'department_dashboard' dept_id=department.id %}" class="button">Back to Dashboard</a>
       </div>

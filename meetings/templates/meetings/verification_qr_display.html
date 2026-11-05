@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>My Signature Verification QR — {{ meeting.title }} — VeriMeet</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: 'Inter', sans-serif;
+      background: linear-gradient(135deg, #0d0d2b, #1a1a40);
+      color: #e0e0ff;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      background: rgba(255, 255, 255, 0.08);
+      padding: 1.25rem 2rem;
+      backdrop-filter: blur(10px);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 1rem;
+    }
+    header h1 {
+      font-size: 1.4rem;
+      margin: 0;
+      font-weight: 600;
+    }
+    .header-badges {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .badge {
+      padding: 0.35rem 0.75rem;
+      border-radius: 9999px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    .badge-dept {
+      background: rgba(79, 209, 197, 0.2);
+      color: #4fd1c5;
+    }
+    .badge-active {
+      background: rgba(79, 209, 197, 0.25);
+      color: #4fd1c5;
+      border: 1px solid #4fd1c5;
+    }
+    .badge-revoked {
+      background: rgba(252, 129, 129, 0.25);
+      color: #fc8181;
+      border: 1px solid #fc8181;
+    }
+    .badge-neutral {
+      background: rgba(156, 163, 175, 0.2);
+      color: #cbd5e0;
+      border: 1px solid #4b5563;
+    }
+    .container {
+      max-width: 760px;
+      margin: 2rem auto;
+      padding: 0 1.5rem;
+      width: 100%;
+      flex: 1;
+    }
+    .card {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 12px;
+      padding: 2rem;
+      text-align: center;
+      margin-bottom: 1.5rem;
+      backdrop-filter: blur(8px);
+    }
+    .qr-box {
+      background: #ffffff;
+      padding: 1.5rem;
+      border-radius: 12px;
+      display: inline-block;
+      margin: 1.5rem auto;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
+    }
+    .qr-image {
+      display: block;
+      width: 260px;
+      height: 260px;
+      image-rendering: pixelated;
+    }
+    .meta-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem;
+      text-align: left;
+      margin: 1.5rem 0;
+      padding: 1rem;
+      background: rgba(0, 0, 0, 0.25);
+      border-radius: 8px;
+    }
+    .meta-item {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+    .meta-label {
+      font-size: 0.75rem;
+      color: #94a3b8;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .meta-value {
+      font-size: 0.95rem;
+      color: #ffffff;
+      font-weight: 500;
+    }
+    .url-box {
+      background: rgba(0, 0, 0, 0.35);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 8px;
+      padding: 0.85rem 1rem;
+      margin: 1.25rem 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      text-align: left;
+      word-break: break-all;
+    }
+    .url-text {
+      color: #818cf8;
+      font-family: monospace;
+      font-size: 0.85rem;
+      text-decoration: none;
+    }
+    .url-text:hover {
+      text-decoration: underline;
+    }
+    .actions {
+      display: flex;
+      justify-content: center;
+      gap: 1rem;
+      flex-wrap: wrap;
+      margin-top: 1.5rem;
+    }
+    .btn {
+      padding: 0.65rem 1.25rem;
+      border-radius: 6px;
+      font-weight: 600;
+      font-size: 0.9rem;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      border: none;
+      font-family: inherit;
+      transition: all 0.2s;
+    }
+    .btn-primary {
+      background: #6366f1;
+      color: #ffffff;
+    }
+    .btn-primary:hover {
+      background: #4f46e5;
+    }
+    .btn-danger {
+      background: rgba(239, 68, 68, 0.2);
+      color: #f87171;
+      border: 1px solid #ef4444;
+    }
+    .btn-danger:hover {
+      background: rgba(239, 68, 68, 0.3);
+    }
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.1);
+      color: #e0e0ff;
+    }
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.18);
+    }
+    .notice {
+      background: rgba(99, 102, 241, 0.1);
+      border-left: 4px solid #6366f1;
+      padding: 0.9rem 1.25rem;
+      border-radius: 0 8px 8px 0;
+      margin: 1.25rem 0;
+      font-size: 0.85rem;
+      color: #c7d2fe;
+      line-height: 1.5;
+      text-align: left;
+    }
+    .messages {
+      list-style: none;
+      padding: 0;
+      margin: 0 0 1.5rem 0;
+    }
+    .message {
+      padding: 0.75rem 1rem;
+      border-radius: 6px;
+      margin-bottom: 0.5rem;
+      font-size: 0.9rem;
+    }
+    .message.success {
+      background: rgba(16, 185, 129, 0.2);
+      color: #34d399;
+      border: 1px solid #10b981;
+    }
+    .message.warning {
+      background: rgba(245, 158, 11, 0.2);
+      color: #fbbf24;
+      border: 1px solid #f59e0b;
+    }
+    .message.info {
+      background: rgba(99, 102, 241, 0.2);
+      color: #818cf8;
+      border: 1px solid #6366f1;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Personal Signature Verification QR</h1>
+    <div class="header-badges">
+      <span class="badge badge-dept">{{ meeting.department.name }}</span>
+      {% if not verification_qr %}
+        <span class="badge badge-neutral">Not Generated</span>
+      {% elif verification_qr.is_revoked %}
+        <span class="badge badge-revoked">Revoked</span>
+      {% else %}
+        <span class="badge badge-active">Active</span>
+      {% endif %}
+    </div>
+  </header>
+
+  <div class="container">
+    {% if messages %}
+      <ul class="messages">
+        {% for message in messages %}
+          <li class="message {{ message.tags }}">{{ message }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+
+    <div class="card">
+      <h2 style="margin: 0 0 0.5rem 0; color: #ffffff;">{{ meeting.title }}</h2>
+      <p style="color: #94a3b8; font-size: 0.9rem; margin: 0 0 1.25rem 0;">
+        Personal Cryptographic Proof of Signature
+      </p>
+
+      <div class="meta-grid">
+        <div class="meta-item">
+          <span class="meta-label">Signer</span>
+          <span class="meta-value">{{ signer.get_full_name|default:signer.username }}</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Document Status</span>
+          <span class="meta-value">{{ meeting.get_status_display }}</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Signed At</span>
+          <span class="meta-value">{{ attendance.signed_at|date:"M d, Y H:i:s" }}</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">QR Status</span>
+          <span class="meta-value">
+            {% if not verification_qr %}
+              <span style="color: #94a3b8; font-weight: 600;">Not Generated</span>
+            {% elif verification_qr.is_revoked %}
+              <span style="color: #fc8181; font-weight: 600;">Revoked</span>
+            {% else %}
+              <span style="color: #4fd1c5; font-weight: 600;">Active</span>
+            {% endif %}
+          </span>
+        </div>
+      </div>
+
+      {% if qr_image_b64 and verification_qr and not verification_qr.is_revoked %}
+        <div class="qr-box">
+          <img
+            class="qr-image"
+            src="data:image/png;base64,{{ qr_image_b64 }}"
+            alt="Signature Verification QR Code"
+          />
+        </div>
+
+        <div class="url-box">
+          <a href="{{ public_url }}" target="_blank" class="url-text" id="public-verify-link">
+            {{ public_url }}
+          </a>
+        </div>
+
+        <div class="notice">
+          <strong>Privacy Guarantee:</strong> When scanned by anyone, this QR code verifies only your signature on this document. It does not disclose other participants, attendance statuses, full minutes, or private notes.
+        </div>
+      {% elif verification_qr and verification_qr.is_revoked %}
+        <div class="notice" style="border-left-color: #ef4444; background: rgba(239, 68, 68, 0.1); color: #fca5a5;">
+          <strong>This verification QR code is revoked.</strong> It cannot be used to verify your signature. You may generate a new verification QR code below at any time.
+        </div>
+      {% else %}
+        <div class="notice">
+          <strong>No verification QR generated yet.</strong> You have signed this finalized document. Click below to generate your personal signature verification QR code.
+        </div>
+      {% endif %}
+
+      <div class="actions">
+        <form method="post" action="{% url 'my_signature_verification_qr' meeting.id %}">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-primary" id="btn-generate-qr">
+            {% if not verification_qr %}
+              Generate Verification QR
+            {% elif verification_qr.is_revoked %}
+              Generate New QR Code
+            {% else %}
+              Regenerate QR Code
+            {% endif %}
+          </button>
+        </form>
+
+        {% if verification_qr and not verification_qr.is_revoked %}
+          <form method="post" action="{% url 'revoke_my_signature_verification_qr' meeting.id %}" onsubmit="return confirm('Revoke this signature verification QR code? The public link will no longer verify your signature.');">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-danger" id="btn-revoke-qr">Revoke QR Code</button>
+          </form>
+        {% endif %}
+
+        <a href="{% url 'my_attendance' meeting.id %}" class="btn btn-secondary">My Attendance</a>
+        <a href="{% url 'department_dashboard' dept_id=meeting.department.id %}" class="btn btn-secondary">Dashboard</a>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

@@ -83,6 +83,10 @@ class Attendance(models.Model):
     def __str__(self):
         return f"{self.user.username} - {self.meeting.title} ({self.status})"
 
+    @property
+    def verification_qr(self):
+        return self.verification_qrs.filter(is_revoked=False).first()
+
 class AuditLog(models.Model):
     department = models.ForeignKey(Department, on_delete=models.CASCADE)
     meeting = models.ForeignKey(Meeting, on_delete=models.CASCADE)
@@ -142,3 +146,55 @@ class QRUsage(models.Model):
 
     def __str__(self):
         return f"{self.user.username} - {self.qr_session.purpose} on {self.qr_session.meeting.title}"
+
+
+class VerificationQR(models.Model):
+    """Batch 08: Individual signature verification QR code for a signed Attendance record.
+
+    Completely separate from Batch 07 attendance/signing QRSession/QRUsage.
+    Each QR belongs to exactly one Attendance record.
+    The signer is the owner; the token proves their personal signed presence.
+    """
+    attendance = models.ForeignKey(
+        Attendance,
+        on_delete=models.CASCADE,
+        related_name='verification_qrs',
+    )
+    token_hash = models.CharField(max_length=64, unique=True, db_index=True)
+    encrypted_token = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    is_revoked = models.BooleanField(default=False)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    revoked_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='revoked_verification_qrs'
+    )
+
+    class Meta:
+        ordering = ['-created_at']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['attendance'],
+                condition=models.Q(is_revoked=False),
+                name='unique_active_verification_qr_per_attendance'
+            )
+        ]
+
+    def __str__(self):
+        status = 'Revoked' if self.is_revoked else 'Active'
+        return f"{self.attendance.meeting.title} — {self.attendance.user.username} Signature Verification QR ({status})"
+
+    @property
+    def is_active(self):
+        return not self.is_revoked
+
+    @property
+    def meeting(self):
+        return self.attendance.meeting
+
+    @property
+    def signer(self):
+        return self.attendance.user

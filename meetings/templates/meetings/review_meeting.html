@@ -318,7 +318,7 @@
             {% csrf_token %}
             <button type="submit" class="button btn-finalize" id="btn-finalize-meeting">Finalize & Lock for Signing</button>
           </form>
-        {% elif meeting.status == 'Finished' %}
+        {% elif meeting.status == 'Finished' or meeting.status == 'Archived' %}
           <a href="{% url 'meeting_attendance' meeting.id %}" class="button btn-secondary" id="btn-attendance-from-review">Manage Attendance</a>
           <a href="{% url 'generate_attendance_qr' meeting.id %}" class="button btn-secondary">Attendance QR</a>
           <a href="{% url 'generate_signing_qr' meeting.id %}" class="button btn-secondary">Signing QR</a>

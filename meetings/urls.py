@@ -23,4 +23,8 @@ urlpatterns = [
     path('<int:meeting_id>/attendance/<int:attendance_id>/update/', views.update_attendance_status, name='update_attendance_status'),
     path('<int:meeting_id>/attendance/<int:attendance_id>/verify/', views.verify_signature, name='verify_signature'),
     path('<int:meeting_id>/my-attendance/', views.my_attendance, name='my_attendance'),
+    # Batch 08 — Individual Signature Verification QR
+    path('<int:meeting_id>/qr/my-signature/', views.my_signature_verification_qr, name='my_signature_verification_qr'),
+    path('<int:meeting_id>/qr/my-signature/revoke/', views.revoke_my_signature_verification_qr, name='revoke_my_signature_verification_qr'),
+    path('verify/', views.verify_individual_signature, name='verify_individual_signature'),
 ]
