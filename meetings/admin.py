@@ -91,8 +91,14 @@ class AttendanceAdmin(admin.ModelAdmin):
 
     def save_model(self, request, obj, form, change):
         with transaction.atomic():
+            original_meeting_id = (Attendance.objects.filter(pk=obj.pk).values_list('meeting_id', flat=True).first()
+                                   if change else None)
+            if change and original_meeting_id is None:
+                raise PermissionDenied('Attendance no longer exists. Please reload.')
+            lock_mutable_meetings([obj.meeting_id] + ([original_meeting_id] if change else []))
             previous = Attendance.objects.select_for_update().filter(pk=obj.pk).first() if change else None
-            lock_mutable_meetings([obj.meeting_id] + ([previous.meeting_id] if previous else []))
+            if change and (previous is None or previous.meeting_id != original_meeting_id):
+                raise PermissionDenied('Attendance changed during this operation. Nothing was saved; please retry.')
             if self._protected(previous):
                 raise PermissionDenied('Signed attendance is read-only in Admin.')
             if any(getattr(obj, field) != (getattr(previous, field) if previous else default)
@@ -113,9 +119,14 @@ class AttendanceAdmin(admin.ModelAdmin):
 
     def delete_model(self, request, obj):
         with transaction.atomic():
+            original_meeting_id = Attendance.objects.filter(pk=obj.pk).values_list('meeting_id', flat=True).first()
+            if original_meeting_id is None:
+                return
+            lock_mutable_meetings([original_meeting_id])
             persisted = Attendance.objects.select_for_update().filter(pk=obj.pk).first()
+            if persisted is not None and persisted.meeting_id != original_meeting_id:
+                raise PermissionDenied('Attendance changed during deletion. Nothing was deleted; please retry.')
             if persisted is not None:
-                lock_mutable_meetings([persisted.meeting_id])
                 if self._protected(persisted):
                     raise PermissionDenied('Signed attendance cannot be deleted.')
                 self._record(request, persisted, persisted, 'attendance.deleted', 'Deleted attendance assignment')
@@ -123,12 +134,16 @@ class AttendanceAdmin(admin.ModelAdmin):
 
     def delete_queryset(self, request, queryset):
         with transaction.atomic():
-            objects = list(queryset.select_for_update())
-            lock_mutable_meetings([obj.meeting_id for obj in objects])
+            associations = dict(queryset.values_list('pk', 'meeting_id'))
+            lock_mutable_meetings(associations.values())
+            objects = list(Attendance.objects.filter(pk__in=associations).order_by('pk').select_for_update())
+            if len(objects) != len(associations) or any(obj.meeting_id != associations[obj.pk] for obj in objects):
+                raise PermissionDenied('Attendance changed during deletion. Nothing was deleted; please retry.')
             if any(self._protected(obj) for obj in objects):
                 raise PermissionDenied('Protected attendance cannot be deleted; nothing was deleted.')
             for obj in objects:
-                self.delete_model(request, obj)
+                self._record(request, obj, obj, 'attendance.deleted', 'Deleted attendance assignment')
+                super().delete_model(request, obj)
 
 
 @admin.register(AuditLog)
