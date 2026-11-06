@@ -4461,6 +4461,130 @@ class Batch09SessionAuditTests(TestCase):
         self.assertEqual(AuditLog.objects.filter(event_type='qr.generated').count(), 2)
 
 
+class QRGenerationLifecycleTests(TestCase):
+    setUp = Batch07QRAttendanceAndSigningTests.setUp
+    routes = ('projector_qr_view', 'generate_attendance_qr', 'generate_signing_qr')
+
+    def test_lifecycle_changes_before_guard_reject_without_generation(self):
+        from unittest.mock import patch
+        from meetings.attendance_integrity import lock_mutable_meetings
+
+        self.client.force_login(self.ap)
+        for route in self.routes:
+            # Draft also exercises the fresh Finished check after a successful guard.
+            statuses = ('Archived',) if route == 'generate_attendance_qr' else ('Archived', 'Draft')
+            for status in statuses:
+                with self.subTest(route=route, status=status):
+                    Meeting.objects.filter(pk=self.meeting.pk).update(status='Finished')
+
+                    def change_then_guard(meeting_ids):
+                        Meeting.objects.filter(pk=self.meeting.pk).update(status=status)
+                        lock_mutable_meetings(meeting_ids)
+
+                    with patch('meetings.views.lock_mutable_meetings', side_effect=change_then_guard) as guard:
+                        response = self.client.get(reverse(route, args=[self.meeting.pk]))
+                    guard.assert_called_once_with([self.meeting.pk])
+                    self.assertEqual(response.status_code, 403)
+                    self.assertFalse(QRSession.objects.exists())
+                    self.assertFalse(AuditLog.objects.filter(event_type='qr.generated').exists())
+
+    def test_projector_reuse_revalidates_lifecycle_before_lookup(self):
+        from unittest.mock import patch
+        from meetings.attendance_integrity import lock_mutable_meetings
+
+        self.client.force_login(self.ap)
+        url = reverse('projector_qr_view', args=[self.meeting.pk])
+        self.assertEqual(self.client.get(url).status_code, 200)
+        sessions = list(QRSession.objects.values())
+        audits = list(AuditLog.objects.values())
+        for status in ('Archived', 'Draft'):
+            with self.subTest(status=status):
+                Meeting.objects.filter(pk=self.meeting.pk).update(status='Finished')
+
+                def change_then_guard(meeting_ids):
+                    Meeting.objects.filter(pk=self.meeting.pk).update(status=status)
+                    lock_mutable_meetings(meeting_ids)
+
+                with patch('meetings.views.lock_mutable_meetings', side_effect=change_then_guard), patch(
+                    'meetings.views.QRSession.objects.filter', side_effect=AssertionError('premature lookup')
+                ):
+                    self.assertEqual(self.client.get(url).status_code, 403)
+                self.assertEqual(list(QRSession.objects.values()), sessions)
+                self.assertEqual(list(AuditLog.objects.values()), audits)
+
+    def test_archived_rejected_including_existing_projector_session(self):
+        self.client.force_login(self.ap)
+        self.client.get(reverse('projector_qr_view', args=[self.meeting.pk]))
+        sessions = list(QRSession.objects.values())
+        audits = list(AuditLog.objects.values())
+        Meeting.objects.filter(pk=self.meeting.pk).update(status='Archived')
+        for route in self.routes:
+            with self.subTest(route=route):
+                self.assertEqual(self.client.get(reverse(route, args=[self.meeting.pk])).status_code, 403)
+                self.assertEqual(list(QRSession.objects.values()), sessions)
+                self.assertEqual(list(AuditLog.objects.values()), audits)
+
+    def test_signing_and_projector_audit_failure_rolls_back_session(self):
+        from unittest.mock import patch
+
+        self.client.force_login(self.ap)
+        for route in ('generate_signing_qr', 'projector_qr_view'):
+            with self.subTest(route=route):
+                with patch('meetings.views.AuditLog.objects.create', side_effect=RuntimeError('audit failure')):
+                    with self.assertRaises(RuntimeError):
+                        self.client.get(reverse(route, args=[self.meeting.pk]))
+                self.assertFalse(QRSession.objects.exists())
+                self.assertFalse(AuditLog.objects.exists())
+
+    def test_guard_and_fresh_status_precede_session_and_audit_operations(self):
+        from unittest.mock import patch
+        from meetings.attendance_integrity import lock_mutable_meetings
+
+        self.client.force_login(self.ap)
+        original_refresh = Meeting.refresh_from_db
+        original_filter = QRSession.objects.filter
+        original_create = QRSession.objects.create
+        original_audit = AuditLog.objects.create
+        for route in self.routes:
+            with self.subTest(route=route):
+                events = []
+
+                def guard(meeting_ids):
+                    lock_mutable_meetings(meeting_ids)
+                    events.append('guard')
+
+                def refresh(instance, *args, **kwargs):
+                    result = original_refresh(instance, *args, **kwargs)
+                    events.append('refresh')
+                    return result
+
+                def lookup(*args, **kwargs):
+                    self.assertEqual(events[:2], ['guard', 'refresh'])
+                    events.append('lookup')
+                    return original_filter(*args, **kwargs)
+
+                def create(*args, **kwargs):
+                    self.assertEqual(events[:2], ['guard', 'refresh'])
+                    events.append('create')
+                    return original_create(*args, **kwargs)
+
+                def audit(*args, **kwargs):
+                    self.assertIn('create', events)
+                    events.append('audit')
+                    return original_audit(*args, **kwargs)
+
+                with patch('meetings.views.lock_mutable_meetings', side_effect=guard), patch.object(
+                    Meeting, 'refresh_from_db', refresh
+                ), patch('meetings.views.QRSession.objects.filter', side_effect=lookup), patch(
+                    'meetings.views.QRSession.objects.create', side_effect=create
+                ), patch('meetings.views.AuditLog.objects.create', side_effect=audit):
+                    response = self.client.get(reverse(route, args=[self.meeting.pk]))
+                self.assertEqual(response.status_code, 200 if route == 'projector_qr_view' else 302)
+                self.assertEqual(events[-2:], ['create', 'audit'])
+                if route == 'projector_qr_view':
+                    self.assertEqual(events, ['guard', 'refresh', 'lookup', 'create', 'audit'])
+
+
 class Batch09MeetingAdminAuditTests(TestCase):
     def test_meeting_admin_and_attendance_admin_events(self):
         from django.contrib import admin

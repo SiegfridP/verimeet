@@ -167,7 +167,12 @@ def projector_qr_view(request, meeting_id):
     if not can_access or meeting.status != 'Finished':
         return HttpResponseForbidden()
 
-    # Reuse or create active signing QR session
+    lock_mutable_meetings([meeting.pk])
+    meeting.refresh_from_db(fields=['status'])
+    if meeting.status != 'Finished':
+        return HttpResponseForbidden()
+
+    # Reuse or create active signing QR session under the Meeting guard.
     qr_session = QRSession.objects.filter(
         meeting=meeting,
         purpose=QRSession.PURPOSE_SIGNING,
@@ -219,6 +224,11 @@ def generate_attendance_qr(request, meeting_id):
     if meeting.status == 'Archived':
         return HttpResponseForbidden("Cannot generate attendance QR for an archived meeting.")
 
+    lock_mutable_meetings([meeting.pk])
+    meeting.refresh_from_db(fields=['status'])
+    if meeting.status == 'Archived':
+        return HttpResponseForbidden("Cannot generate attendance QR for an archived meeting.")
+
     token = generate_qr_session_token()
     expires_at = timezone.now() + datetime.timedelta(seconds=3600)
     qr_session = QRSession.objects.create(
@@ -253,6 +263,11 @@ def generate_signing_qr(request, meeting_id):
     if not can_access:
         return HttpResponseForbidden("You are not authorized to generate QR codes for this department.")
 
+    if meeting.status != 'Finished':
+        return HttpResponseForbidden("Signing QR codes can only be generated for Finished meetings.")
+
+    lock_mutable_meetings([meeting.pk])
+    meeting.refresh_from_db(fields=['status'])
     if meeting.status != 'Finished':
         return HttpResponseForbidden("Signing QR codes can only be generated for Finished meetings.")
 
