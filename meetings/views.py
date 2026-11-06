@@ -384,6 +384,21 @@ def scan_attendance_qr(request, meeting_id):
 
     lock_mutable_meetings([meeting.pk])
 
+    if qr_session:
+        # Lock order: Meeting, QRSession, then Attendance. Do not reuse the
+        # authorization snapshot taken before waiting for the Meeting guard.
+        qr_session = QRSession.objects.select_for_update().filter(
+            pk=qr_session.pk, token=qr_token, meeting=meeting
+        ).first()
+        if not qr_session:
+            return HttpResponseForbidden("Invalid QR code.")
+        if qr_session.purpose != QRSession.PURPOSE_ATTENDANCE:
+            return HttpResponseForbidden("Signing QR tokens cannot be used to record attendance.")
+        if qr_session.is_revoked:
+            return HttpResponseForbidden("This QR code has been revoked.")
+        if qr_session.is_expired:
+            return HttpResponseForbidden("This QR code has expired.")
+
     # 3. Check Officer is an assigned participant for this meeting
     try:
         attendance = Attendance.objects.get(meeting=meeting, user=request.user)
@@ -422,6 +437,10 @@ def scan_attendance_qr(request, meeting_id):
 
                 if attendance_now.has_signed:
                     return HttpResponseForbidden("Attendance cannot be modified because you have already digitally signed this meeting document.")
+
+                # Expiration can pass while waiting for the Attendance lock.
+                if qr_session.is_expired:
+                    return HttpResponseForbidden("This QR code has expired.")
 
                 # Try to create the QRUsage record first.  The unique_together constraint
                 # (qr_session, user) means only one concurrent request can succeed.
@@ -476,6 +495,8 @@ def scan_attendance_qr(request, meeting_id):
     else:
         # HMAC path: use conditional UPDATE to atomically record attendance only once.
         # The filter on status='Absent' + status_updated_at=None ensures idempotency.
+        if not verify_hmac_qr_token(meeting.id, timestamp, received_sig, purpose='attendance'):
+            return HttpResponseForbidden("Invalid or expired QR code.")
         updated = Attendance.objects.filter(
             pk=attendance.pk,
             has_signed=False,
@@ -604,6 +625,24 @@ def sign_meeting(request, meeting_id):
         # This conditional update guarantees that concurrent requests or revoked attendance status cannot succeed.
         with transaction.atomic():
             lock_mutable_meetings([meeting.pk])
+            if qr_session:
+                # Acquire authorization after the Meeting guard and before Attendance.
+                qr_session = QRSession.objects.select_for_update().filter(
+                    pk=qr_session.pk, token=qr_token, meeting=meeting
+                ).first()
+                if not qr_session:
+                    return HttpResponseForbidden("Invalid QR code.")
+                if qr_session.purpose != QRSession.PURPOSE_SIGNING:
+                    return HttpResponseForbidden("Attendance QR tokens cannot be used for signing.")
+                if qr_session.is_revoked:
+                    return HttpResponseForbidden("This QR code has been revoked.")
+                if qr_session.is_expired:
+                    return HttpResponseForbidden("This QR code has expired.")
+            else:
+                # The HMAC was authenticated above; recheck its age after waiting.
+                token_age = int(time.time()) - ts
+                if token_age < 0 or token_age > 3600:
+                    return HttpResponseForbidden("Invalid or expired QR code.")
             updated = Attendance.objects.filter(
                 pk=attendance.pk,
                 has_signed=False,

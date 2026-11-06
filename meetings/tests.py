@@ -2481,6 +2481,108 @@ class Batch07QRAttendanceAndSigningTests(TestCase):
             status='Absent',
         )
 
+    def _assert_stale_qr_authorization_rejected(self, purpose, change):
+        from datetime import timedelta
+        from unittest.mock import patch
+        from django.utils import timezone
+        from meetings.attendance_integrity import lock_mutable_meetings
+        from meetings.crypto import generate_qr_session_token
+
+        if purpose == 'signing':
+            Attendance.objects.filter(pk=self.att1.pk).update(status='Attended')
+        session = QRSession.objects.create(
+            meeting=self.meeting, purpose=purpose, created_by=self.ap,
+            token=generate_qr_session_token(),
+            expires_at=timezone.now() + timedelta(hours=1),
+        )
+        self.client.force_login(self.officer1)
+        before = list(Attendance.objects.order_by('pk').values())
+        audit_count = AuditLog.objects.count()
+        usage_count = QRUsage.objects.count()
+
+        def change_after_guard(meeting_ids):
+            lock_mutable_meetings(meeting_ids)
+            # Deterministically change persisted authorization after the initial
+            # validation. This is an interleaving simulation, not a concurrency test.
+            sessions = QRSession.objects.filter(pk=session.pk)
+            if change == 'revoked':
+                sessions.update(is_revoked=True)
+            elif change == 'expired':
+                sessions.update(expires_at=timezone.now() - timedelta(seconds=1))
+            elif change == 'deleted':
+                sessions.delete()
+            elif change == 'purpose':
+                sessions.update(purpose='attendance' if purpose == 'signing' else 'signing')
+
+        route = 'sign_meeting' if purpose == 'signing' else 'scan_attendance_qr'
+        url = reverse(route, args=[self.meeting.pk]) + f'?token={session.token}'
+        with patch('meetings.views.lock_mutable_meetings', side_effect=change_after_guard) as guard:
+            if purpose == 'signing':
+                response = self.client.post(url, {'annotation': 'Must not be saved'})
+            else:
+                response = self.client.get(url)
+        guard.assert_called_once_with([self.meeting.pk])
+        self.assertEqual(response.status_code, 403)
+        self.assertContains(response, {
+            'revoked': 'revoked', 'expired': 'expired',
+            'deleted': 'Invalid QR code', 'purpose': 'cannot be used',
+        }[change], status_code=403)
+        self.assertEqual(list(Attendance.objects.order_by('pk').values()), before)
+        self.assertEqual(QRUsage.objects.count(), usage_count)
+        self.assertEqual(AuditLog.objects.count(), audit_count)
+
+    def test_signing_qr_revoked_after_initial_validation(self):
+        self._assert_stale_qr_authorization_rejected('signing', 'revoked')
+
+    def test_signing_qr_expired_after_initial_validation(self):
+        self._assert_stale_qr_authorization_rejected('signing', 'expired')
+
+    def test_attendance_qr_revoked_after_initial_validation(self):
+        self._assert_stale_qr_authorization_rejected('attendance', 'revoked')
+
+    def test_attendance_qr_expired_after_initial_validation(self):
+        self._assert_stale_qr_authorization_rejected('attendance', 'expired')
+
+    def test_qr_deleted_or_purpose_changed_after_initial_validation(self):
+        for purpose in ('signing', 'attendance'):
+            for change in ('deleted', 'purpose'):
+                with self.subTest(purpose=purpose, change=change):
+                    self._assert_stale_qr_authorization_rejected(purpose, change)
+
+    def test_hmac_expires_at_final_authorization_boundary(self):
+        import time
+        from unittest.mock import patch
+        from meetings.attendance_integrity import lock_mutable_meetings
+        from meetings.crypto import generate_hmac_qr_token
+
+        self.client.force_login(self.officer1)
+        for purpose, token_purpose in (('signing', None), ('signing', 'signing'),
+                                       ('attendance', 'attendance')):
+            with self.subTest(purpose=purpose, token_purpose=token_purpose):
+                Attendance.objects.filter(pk=self.att1.pk).update(
+                    status='Attended' if purpose == 'signing' else 'Absent')
+                before = list(Attendance.objects.order_by('pk').values())
+                timestamp = str(int(time.time()))
+                token = generate_hmac_qr_token(self.meeting.pk, timestamp, purpose=token_purpose)
+                route = 'sign_meeting' if purpose == 'signing' else 'scan_attendance_qr'
+                url = reverse(route, args=[self.meeting.pk]) + f'?t={timestamp}&sig={token}'
+
+                with patch('time.time', return_value=int(timestamp)) as clock:
+                    def expire_after_guard(meeting_ids):
+                        lock_mutable_meetings(meeting_ids)
+                        clock.return_value = int(timestamp) + 3601
+
+                    with patch('meetings.views.lock_mutable_meetings', side_effect=expire_after_guard) as guard:
+                        if purpose == 'signing':
+                            response = self.client.post(url, {'annotation': 'Must not be saved'})
+                        else:
+                            response = self.client.get(url)
+                guard.assert_called_once_with([self.meeting.pk])
+                self.assertContains(response, 'Invalid or expired QR code', status_code=403)
+                self.assertEqual(list(Attendance.objects.order_by('pk').values()), before)
+                self.assertFalse(QRUsage.objects.exists())
+                self.assertFalse(AuditLog.objects.exists())
+
     # 1. QR Generation & Authorization
     def test_ap_can_generate_attendance_qr_for_own_department(self):
         """AP can generate an Attendance QR code for a meeting in their department."""
