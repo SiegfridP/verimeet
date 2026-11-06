@@ -23,4 +23,6 @@
   </style>
 </head>
 <body><main>
-<h1>Officer Dashboard</h1>{% include 'accounts/messages.html' %}<h2>Department: {{ department.name }}</h2><p>Your role: Officer</p><p>All department meetings are listed. Attendance, signing, and verification details belong only to your own assignment.</p>{% include 'accounts/meeting_list.html' %}</main></body></html>
+<h1>Officer Dashboard</h1>{% include 'accounts/messages.html' %}<h2>Department: {{ department.name }}</h2><p>Your role: Officer</p><p>All department meetings are listed. Attendance, signing, and verification details belong only to your own assignment.</p>
+{% if switch_departments %}<nav aria-label="Switch department">Switch department: {% for dept in switch_departments %}<a href="{% url 'department_dashboard' dept.pk %}?{{ filter_query }}" {% if department.pk == dept.pk %}aria-current="page"{% endif %}>{{ dept.name }}</a>{% endfor %}</nav>{% endif %}
+{% include 'accounts/meeting_list.html' %}</main></body></html>

@@ -82,6 +82,17 @@ def has_membership(user, department, role=None):
     except Membership.DoesNotExist:
         return False
 
+
+def active_department_for_user(user):
+    membership = (Membership.objects.filter(user=user, department__is_active=True)
+                  .order_by('department_id', 'pk').first())
+    if membership:
+        return membership.department
+    # Membership records are authoritative, including inactive-only memberships.
+    if user.department_id and not Membership.objects.filter(user=user).exists():
+        return Department.objects.filter(pk=user.department_id, is_active=True).first()
+    return None
+
 @login_required
 @transaction.atomic
 def admin_dashboard(request):
@@ -128,7 +139,7 @@ def department_dashboard(request, dept_id=None):
         department = get_object_or_404(Department, pk=dept_id, is_active=True)
     else:
         # pick first membership if only one, otherwise require explicit dept_id
-        memberships = Membership.objects.filter(user=request.user)
+        memberships = Membership.objects.filter(user=request.user, department__is_active=True)
         if memberships.count() == 1:
             department = memberships.first().department
         else:
@@ -137,12 +148,14 @@ def department_dashboard(request, dept_id=None):
     # Global authority takes precedence over department membership.
     membership = Membership.objects.filter(user=request.user, department=department).first()
     global_admin = is_global_admin(request.user)
-    if not global_admin and not membership and request.user.department_id != department.id:
-        return HttpResponseForbidden('No membership in this department')
+    if not global_admin and not membership:
+        if (request.user.department_id != department.id
+                or Membership.objects.filter(user=request.user).exists()):
+            return HttpResponseForbidden('No membership in this department')
     can_manage = global_admin or (membership and membership.role == 'AP')
     departments = Department.objects.filter(is_active=True).order_by('name', 'pk')
     if not global_admin:
-        departments = departments.filter(memberships__user=request.user, memberships__role='AP')
+        departments = departments.filter(memberships__user=request.user)
     return render(request, 'accounts/authorized_dashboard.html' if can_manage else 'accounts/member_dashboard.html', {
         **meeting_list_context(request, department.meeting_set.all(), officer=not can_manage),
         'department': department, 'membership': membership, 'global_admin': global_admin,
@@ -309,11 +322,9 @@ def routing_view(request):
         return redirect('admin_dashboard')
 
     # Resolve active department via Membership or legacy department
-    membership = Membership.objects.filter(user=request.user).select_related('department').first()
-    if membership:
-        return redirect('department_dashboard', dept_id=membership.department_id)
-    if request.user.department:
-        return redirect('department_dashboard', dept_id=request.user.department.id)
+    department = active_department_for_user(request.user)
+    if department:
+        return redirect('department_dashboard', dept_id=department.pk)
 
     # No department assigned – show waiting room
     return redirect('waiting_room')
@@ -321,7 +332,6 @@ def routing_view(request):
 @login_required
 def waiting_room(request):
     """The default page for users without an assigned department."""
-    has_membership_record = Membership.objects.filter(user=request.user).exists()
-    if has_membership_record or request.user.department:
+    if is_global_admin(request.user) or active_department_for_user(request.user):
         return redirect('routing_view')
     return render(request, 'accounts/waiting_room.html')

@@ -104,13 +104,98 @@ class Batch11DashboardTests(TestCase):
         self.assertNotContains(response, 'not-rendered')
         self.assertNotContains(response, 'PRIVATE SIGNATURE')
 
-    def test_switcher_only_managed_departments(self):
+    def test_switcher_includes_memberships_with_department_scoped_roles(self):
         Membership.objects.create(user=self.ap, department=self.other, role='O')
         response = self.dashboard(self.ap)
-        self.assertNotContains(response, reverse('department_dashboard', args=[self.other.pk]))
+        self.assertContains(response, reverse('department_dashboard', args=[self.other.pk]))
+        officer_context = self.dashboard(self.ap, dept=self.other)
+        self.assertTemplateUsed(officer_context, 'accounts/member_dashboard.html')
+        self.assertNotContains(officer_context, 'Create Meeting')
+        self.assertContains(officer_context, reverse('department_dashboard', args=[self.dept.pk]))
         Membership.objects.filter(user=self.ap, department=self.other).update(role='AP')
         self.assertContains(self.dashboard(self.ap, {'q': 'record'}),
                             reverse('department_dashboard', args=[self.other.pk]) + '?q=record')
+
+    def test_officer_switcher_excludes_inactive_and_unjoined_departments(self):
+        Membership.objects.create(user=self.officer, department=self.other, role='O')
+        inactive = Department.objects.create(name='Inactive', is_active=False)
+        Membership.objects.create(user=self.officer, department=inactive, role='AP')
+        unjoined = Department.objects.create(name='Unjoined')
+        for department in (self.dept, self.other):
+            response = self.dashboard(self.officer, {'q': 'record'}, dept=department)
+            self.assertTemplateUsed(response, 'accounts/member_dashboard.html')
+            for target in (self.dept, self.other):
+                self.assertContains(response, reverse('department_dashboard', args=[target.pk]) + '?q=record')
+            for target in (inactive, unjoined):
+                self.assertNotContains(response, reverse('department_dashboard', args=[target.pk]))
+            self.assertNotContains(response, 'Create Meeting')
+        self.assertEqual(self.dashboard(self.officer, dept=inactive).status_code, 404)
+
+    def test_active_routing_is_deterministic_and_precedes_legacy(self):
+        # First-created membership is inactive; active selection uses department PK.
+        inactive = Department.objects.create(name='Inactive', is_active=False)
+        user = User.objects.create_user(username='multi-routing', department=inactive)
+        Membership.objects.create(user=user, department=self.other, role='O')
+        Membership.objects.create(user=user, department=self.dept, role='AP')
+        self.client.force_login(user)
+        self.assertRedirects(self.client.get(reverse('routing_view')),
+                             reverse('department_dashboard', args=[self.dept.pk]))
+        User.objects.filter(pk=user.pk).update(department=self.other)
+        self.assertRedirects(self.client.get(reverse('routing_view')),
+                             reverse('department_dashboard', args=[self.dept.pk]))
+
+    def test_inactive_only_memberships_and_legacy_stay_in_waiting_room(self):
+        Department.objects.filter(pk=self.dept.pk).update(is_active=False)
+        legacy = User.objects.create_user(username='inactive-legacy', department=self.dept)
+        Membership.objects.filter(user=legacy).delete()
+        for user in (self.officer, legacy):
+            self.client.force_login(user)
+            if user == legacy:
+                Membership.objects.filter(user=legacy).delete()
+            self.assertRedirects(self.client.get(reverse('routing_view')), reverse('waiting_room'))
+            self.assertContains(self.client.get(reverse('waiting_room')), 'Waiting Room')
+
+    def test_active_legacy_fallback_remains_officer_without_membership_creation(self):
+        user = User.objects.create_user(username='active-legacy', department=self.dept)
+        self.client.force_login(user)
+        Membership.objects.filter(user=user).delete()
+        self.assertRedirects(self.client.get(reverse('routing_view')),
+                             reverse('department_dashboard', args=[self.dept.pk]))
+        response = self.client.get(reverse('department_dashboard', args=[self.dept.pk]))
+        self.assertTemplateUsed(response, 'accounts/member_dashboard.html')
+        self.assertNotContains(response, 'Create Meeting')
+        self.assertFalse(Membership.objects.filter(user=user).exists())
+
+    def test_memberships_block_unrelated_active_legacy_access(self):
+        # Set the stale pointer after login so the user-save compatibility signal
+        # does not create a membership for the legacy department.
+        self.client.force_login(self.officer)
+        User.objects.filter(pk=self.officer.pk).update(department=self.other)
+        legacy_url = reverse('department_dashboard', args=[self.other.pk])
+        self.assertRedirects(self.client.get(reverse('routing_view')),
+                             reverse('department_dashboard', args=[self.dept.pk]))
+        self.assertEqual(self.client.get(legacy_url).status_code, 403)
+        Department.objects.filter(pk=self.dept.pk).update(is_active=False)
+        self.assertRedirects(self.client.get(reverse('routing_view')), reverse('waiting_room'))
+        self.assertContains(self.client.get(reverse('waiting_room')), 'Waiting Room')
+        self.assertEqual(self.client.get(legacy_url).status_code, 403)
+        self.assertFalse(Membership.objects.filter(user=self.officer, department=self.other).exists())
+
+    def test_global_precedence_and_staff_distinction_with_inactive_memberships(self):
+        Department.objects.filter(pk=self.dept.pk).update(is_active=False)
+        superuser = User.objects.create_user(username='super-routing', is_superuser=True)
+        staff = User.objects.create_user(username='staff-routing', is_staff=True)
+        Membership.objects.create(user=staff, department=self.dept, role='AP')
+        for user in (self.admin, superuser):
+            self.client.force_login(user)
+            self.assertRedirects(self.client.get(reverse('routing_view')), reverse('admin_dashboard'))
+            response = self.client.get(reverse('waiting_room'), follow=True)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.redirect_chain[-1][0], reverse('admin_dashboard'))
+            self.assertEqual(self.client.get(reverse('department_dashboard', args=[self.other.pk])).status_code, 200)
+        self.client.force_login(staff)
+        self.assertRedirects(self.client.get(reverse('routing_view')), reverse('waiting_room'))
+        self.assertEqual(self.client.get(reverse('admin_dashboard')).status_code, 403)
 
     def test_legacy_dashboard_does_not_create_membership(self):
         legacy = User.objects.create_user(username='legacy', department=self.dept)
