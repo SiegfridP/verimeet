@@ -101,6 +101,7 @@
     Scan with your mobile device to review the finalized minutes, attach an optional annotation, and submit your ECDSA digital signature.
   </p>
 
+  {% if qr_session %}
   <div class="qr-card">
     <img
       src="data:image/png;base64,{{ qr_image_b64 }}"
@@ -114,6 +115,11 @@
     Direct Signing Link:<br />
     <a href="{{ signing_url }}" id="signing-link" target="_blank">{{ signing_url }}</a>
   </div>
+
+  {% else %}
+  <p>No active signing QR code is available.</p>
+  <form method="post">{% csrf_token %}<button type="submit">Generate Signing QR</button></form>
+  {% endif %}
 
   <div class="nav-links">
     <a href="{% url 'review_meeting' meeting.id %}">&larr; Return to Meeting Review</a>

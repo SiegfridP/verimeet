@@ -162,12 +162,15 @@ def _generate_qr_png_b64(url: str, scale: int = 6) -> str:
 @transaction.atomic
 def projector_qr_view(request, meeting_id):
     """Displays the QR code for the projector."""
+    if request.method not in ('GET', 'POST'):
+        return HttpResponseNotAllowed(['GET', 'POST'])
     meeting = get_object_or_404(Meeting, id=meeting_id)
     can_access = is_global_admin(request.user) or has_membership(request.user, meeting.department, role='AP')
     if not can_access or meeting.status != 'Finished':
         return HttpResponseForbidden()
 
-    lock_mutable_meetings([meeting.pk])
+    if request.method == 'POST':
+        lock_mutable_meetings([meeting.pk])
     meeting.refresh_from_db(fields=['status'])
     if meeting.status != 'Finished':
         return HttpResponseForbidden()
@@ -180,7 +183,7 @@ def projector_qr_view(request, meeting_id):
         expires_at__gt=timezone.now()
     ).first()
 
-    if not qr_session:
+    if not qr_session and request.method == 'POST':
         token = generate_qr_session_token()
         expires_at = timezone.now() + datetime.timedelta(seconds=3600)
         qr_session = QRSession.objects.create(
@@ -198,8 +201,9 @@ def projector_qr_view(request, meeting_id):
             action="Generated Signing QR code"
         )
 
-    signing_url = request.build_absolute_uri(reverse('sign_meeting', args=[meeting.id])) + f"?token={qr_session.token}"
-    qr_image_b64 = _generate_qr_png_b64(signing_url, scale=8)
+    signing_url = (request.build_absolute_uri(reverse('sign_meeting', args=[meeting.id])) + f"?token={qr_session.token}"
+                   if qr_session else None)
+    qr_image_b64 = _generate_qr_png_b64(signing_url, scale=8) if signing_url else None
 
     return render(request, 'meetings/qr_projector.html', {
         'meeting': meeting,
@@ -216,6 +220,8 @@ def generate_attendance_qr(request, meeting_id):
     Authorized Personnel generates an Attendance QR code for an eligible meeting.
     Draft and Finished meetings are eligible; Archived meetings are locked.
     """
+    if request.method != 'POST':
+        return HttpResponseNotAllowed(['POST'])
     meeting = get_object_or_404(Meeting, id=meeting_id)
     can_access = is_global_admin(request.user) or has_membership(request.user, meeting.department, role='AP')
     if not can_access:
@@ -258,6 +264,8 @@ def generate_signing_qr(request, meeting_id):
     Authorized Personnel generates a Signing QR code for an eligible Finished meeting.
     Draft and Archived meetings cannot have Signing QR codes.
     """
+    if request.method != 'POST':
+        return HttpResponseNotAllowed(['POST'])
     meeting = get_object_or_404(Meeting, id=meeting_id)
     can_access = is_global_admin(request.user) or has_membership(request.user, meeting.department, role='AP')
     if not can_access:
@@ -364,6 +372,8 @@ def scan_attendance_qr(request, meeting_id):
     Officer view to record attendance by scanning the Attendance QR code.
     Validates token, purpose, expiration, revocation, assignment, and existing state.
     """
+    if request.method not in ('GET', 'POST'):
+        return HttpResponseNotAllowed(['GET', 'POST'])
     meeting = get_object_or_404(Meeting, id=meeting_id)
 
     # 1. Department membership check
@@ -397,9 +407,12 @@ def scan_attendance_qr(request, meeting_id):
     else:
         return HttpResponseForbidden("Missing security token.")
 
-    lock_mutable_meetings([meeting.pk])
+    if meeting.status == 'Archived':
+        return HttpResponseForbidden('Archived meeting attendance is read-only.')
+    if request.method == 'POST':
+        lock_mutable_meetings([meeting.pk])
 
-    if qr_session:
+    if qr_session and request.method == 'POST':
         # Lock order: Meeting, QRSession, then Attendance. Do not reuse the
         # authorization snapshot taken before waiting for the Meeting guard.
         qr_session = QRSession.objects.select_for_update().filter(
@@ -424,6 +437,13 @@ def scan_attendance_qr(request, meeting_id):
     #    check is re-confirmed inside the atomic block below).
     if attendance.has_signed:
         return HttpResponseForbidden("Attendance cannot be modified because you have already digitally signed this meeting document.")
+
+    if request.method == 'GET':
+        return render(request, 'meetings/qr_attendance_confirm.html', {
+            'meeting': meeting, 'attendance': attendance, 'qr_token': qr_token,
+            'timestamp': timestamp, 'sig': received_sig,
+            'purpose': request.GET.get('purpose', ''),
+        })
 
     # 5. Record attendance atomically.
     #

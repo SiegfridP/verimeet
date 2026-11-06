@@ -43,11 +43,11 @@ class AttendanceIntegrityTests(TestCase):
         self.client.force_login(self.officer)
         url = reverse('scan_attendance_qr', args=[self.meeting.pk])
         Meeting.objects.filter(pk=self.meeting.pk).update(status='Archived')
-        self.assertEqual(self.client.get(url, {'token': session.token}).status_code, 403)
+        self.assertEqual(self.client.post(url, {'token': session.token}).status_code, 403)
         self.assertFalse(QRUsage.objects.exists())
         self.assertFalse(AuditLog.objects.exists())
         Meeting.objects.filter(pk=self.meeting.pk).update(status='Finished')
-        self.assertEqual(self.client.get(url, {'token': session.token}).status_code, 200)
+        self.assertEqual(self.client.post(url, {'token': session.token}).status_code, 200)
 
     def test_admin_archive_create_edit_reassign_delete(self):
         for destination in (self.meeting, self.archived):
@@ -102,7 +102,7 @@ class AttendanceIntegrityTests(TestCase):
             return original(queryset, **kwargs)
         self.client.force_login(self.officer)
         with patch.object(QuerySet, 'update', archive_before_write):
-            response = self.client.get(reverse('scan_attendance_qr', args=[self.meeting.pk]), {'token': session.token})
+            response = self.client.post(reverse('scan_attendance_qr', args=[self.meeting.pk]), {'token': session.token})
         self.assertEqual(response.status_code, 403)
         self.att.refresh_from_db()
         self.assertEqual(self.att.status, 'Absent')

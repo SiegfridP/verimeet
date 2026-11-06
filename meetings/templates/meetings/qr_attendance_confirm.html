@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Confirm attendance</title></head>
+<body>
+<h1>Confirm attendance</h1>
+<p>{{ meeting.title }} — {{ meeting.department.name }}</p>
+<p>Your current attendance: {{ attendance.status }}. Confirm to record your attendance.</p>
+<form method="post" action="{% url 'scan_attendance_qr' meeting.pk %}">
+  {% csrf_token %}
+  {% if qr_token %}<input type="hidden" name="token" value="{{ qr_token }}">{% else %}
+  <input type="hidden" name="t" value="{{ timestamp }}">
+  <input type="hidden" name="sig" value="{{ sig }}">
+  <input type="hidden" name="purpose" value="{{ purpose }}">
+  {% endif %}
+  <button type="submit">Confirm attendance</button>
+</form>
+<a href="{% url 'department_dashboard' meeting.department_id %}">Return to Dashboard</a>
+</body></html>
