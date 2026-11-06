@@ -208,24 +208,18 @@
     </div>
   </header>
   <main>
-    {% if messages %}
-      <div class="messages">
-        {% for message in messages %}
-          <div class="message">{{ message }}</div>
-        {% endfor %}
-      </div>
-    {% endif %}
+    {% include 'accounts/messages.html' %}
 
     <div class="card">
       <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
         <div>
           <h2 style="margin: 0; font-size: 1.35rem; color: #ffffff;">{{ meeting.title }}</h2>
           <p style="margin: 0.25rem 0 0 0; color: #a0aec0; font-size: 0.9rem;">
-            Status: <strong>{{ meeting.get_status_display }}</strong> &bull; Department: <strong>{{ department.name }}</strong>
+            Status: <strong>{{ meeting.status }}</strong> &bull; Department: <strong>{{ department.name }}</strong>
           </p>
         </div>
         <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
-          <a href="{% url 'generate_attendance_qr' meeting.id %}" class="button">Project Attendance QR</a>
+          {% if meeting.status != 'Archived' %}<a href="{% url 'generate_attendance_qr' meeting.id %}" class="button">Project Attendance QR</a>{% endif %}
           <a href="{% url 'review_meeting' meeting.id %}" class="button btn-secondary">Review Document</a>
           <a href="{% url 'department_dashboard' dept_id=department.id %}" class="button btn-secondary">Dashboard</a>
         </div>
@@ -283,7 +277,7 @@
                   {% endif %}
                 </td>
                 <td>
-                  <form method="post" action="{% url 'update_attendance_status' meeting.id att.id %}" class="update-form">
+                  {% if meeting.status != 'Archived' %}<form method="post" action="{% url 'update_attendance_status' meeting.id att.id %}" class="update-form">
                     {% csrf_token %}
                     <select name="status" aria-label="Attendance status for {{ att.user.username }}">
                       {% for val, label in status_choices %}
@@ -291,7 +285,7 @@
                       {% endfor %}
                     </select>
                     <button type="submit">Update</button>
-                  </form>
+                  </form>{% else %}Read-only{% endif %}
                 </td>
               </tr>
             {% endfor %}

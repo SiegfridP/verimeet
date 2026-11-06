@@ -226,7 +226,7 @@
       {% elif meeting.status == 'Finished' %}
         <span class="badge-finished">FINISHED (Locked for Signing)</span>
       {% else %}
-        <span class="badge-archived">{{ meeting.get_status_display }}</span>
+        <span class="badge-archived">{{ meeting.status }}</span>
       {% endif %}
     </div>
   </header>
@@ -250,7 +250,7 @@
         </div>
         <div class="meta-item">
           <span class="meta-label">Current Status</span>
-          <span class="meta-value">{{ meeting.get_status_display }}</span>
+          <span class="meta-value">{{ meeting.status }}</span>
         </div>
         <div class="meta-item">
           <span class="meta-label">Created At</span>
@@ -311,7 +311,7 @@
     </div>
 
     <div class="card">
-      <h2 class="section-title">Actions</h2>
+      <h2 class="section-title" id="qr-workflows">Actions</h2>
       <div class="actions-row">
         {% if meeting.status == 'Draft' %}
           <a href="{% url 'edit_meeting' meeting.id %}" class="button" id="btn-edit-from-review">Edit Minutes</a>
@@ -322,7 +322,7 @@
             {% csrf_token %}
             <button type="submit" class="button btn-finalize" id="btn-finalize-meeting">Finalize & Lock for Signing</button>
           </form>
-        {% elif meeting.status == 'Finished' or meeting.status == 'Archived' %}
+        {% elif meeting.status == 'Finished' %}
           <a href="{% url 'meeting_attendance' meeting.id %}" class="button btn-secondary" id="btn-attendance-from-review">Manage Attendance</a>
           <a href="{% url 'generate_attendance_qr' meeting.id %}" class="button btn-secondary">Attendance QR</a>
           <a href="{% url 'generate_signing_qr' meeting.id %}" class="button btn-secondary">Signing QR</a>

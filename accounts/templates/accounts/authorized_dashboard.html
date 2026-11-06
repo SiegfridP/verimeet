@@ -19,89 +19,10 @@
     .status-other {background:rgba(160,174,192,0.2);color:#cbd5e0;}
   </style>
 </head>
-<body>
-  <header><h1>Authorized Personnel Dashboard</h1></header>
-  <main>
-    {% if messages %}
-      {% for message in messages %}
-        <div style="background: rgba(79, 209, 197, 0.15); border: 1px solid #4fd1c5; color: #81e6d9; padding: 0.75rem 1rem; border-radius: 6px; margin-bottom: 1rem;">
-          {{ message }}
-        </div>
-      {% endfor %}
-    {% endif %}
-    <section class="card">
-      <h2>Department: {{ department.name }}</h2>
-      <p>Your role: {{ membership.get_role_display }}</p>
-    </section>
-    <section class="card">
-      <h3>Actions</h3>
-      <a href="{% url 'create_meeting_dept' dept_id=department.id %}" class="button" id="btn-create-meeting">Create Meeting</a>
-      <a href="{% url 'invite_member' dept_id=department.id %}" class="button">Invite an Officer</a>
-      <a href="{% url 'request_authorized_personnel' dept_id=department.id %}" class="button">Request Authorized Personnel</a>
-    </section>
-    <section class="card">
-      <h3>Department Meetings</h3>
-      {% if meetings %}
-      <table style="width:100%; border-collapse:collapse; margin-top:1rem;">
-        <thead>
-          <tr style="text-align:left; border-bottom:1px solid rgba(255,255,255,0.15);">
-            <th style="padding:0.75rem 0.5rem;">Title</th>
-            <th style="padding:0.75rem 0.5rem;">Status</th>
-            <th style="padding:0.75rem 0.5rem;">Created</th>
-            <th style="padding:0.75rem 0.5rem;">Assigned Signers</th>
-            <th style="padding:0.75rem 0.5rem;">Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for meeting in meetings %}
-          <tr style="border-bottom:1px solid rgba(255,255,255,0.06);">
-            <td style="padding:0.75rem 0.5rem;"><strong>{{ meeting.title }}</strong></td>
-            <td style="padding:0.75rem 0.5rem;">
-              {% if meeting.status == 'Draft' %}
-                <span class="status-badge status-draft">
-                  {{ meeting.get_status_display }}
-                </span>
-              {% elif meeting.status == 'Finished' %}
-                <span class="status-badge status-finished">
-                  {{ meeting.get_status_display }}
-                </span>
-              {% else %}
-                <span class="status-badge status-other">
-                  {{ meeting.get_status_display }}
-                </span>
-              {% endif %}
-            </td>
-            <td style="padding:0.75rem 0.5rem; font-size:0.85rem; color:#c4c4f0;">{{ meeting.created_at|date:"M d, Y H:i" }}</td>
-            <td style="padding:0.75rem 0.5rem; font-size:0.85rem;">{{ meeting.attendees.count }} assigned</td>
-            <td style="padding:0.75rem 0.5rem;">
-              {% if meeting.status == 'Finished' or meeting.status == 'Archived' %}
-                <a href="{% url 'export_meeting_pdf' meeting.id %}" class="button">Export PDF</a>
-              {% endif %}
-              {% if meeting.status == 'Draft' %}
-                <a href="{% url 'edit_meeting' meeting.id %}" class="button" style="padding:0.35rem 0.7rem; font-size:0.8rem; margin:0 0.25rem 0 0;">Edit</a>
-                <a href="{% url 'review_meeting' meeting.id %}" class="button" style="padding:0.35rem 0.7rem; font-size:0.8rem; background:rgba(255,255,255,0.15); color:#e0e0ff; margin:0 0.25rem 0 0;">Review</a>
-                <a href="{% url 'meeting_attendance' meeting.id %}" class="button" style="padding:0.35rem 0.7rem; font-size:0.8rem; background:rgba(79,209,197,0.25); color:#81e6d9; margin:0 0.25rem 0 0;">Attendance</a>
-                <a href="{% url 'generate_attendance_qr' meeting.id %}" class="button" style="padding:0.35rem 0.7rem; font-size:0.8rem; background:rgba(129,230,217,0.2); color:#4fd1c5; margin:0 0.25rem 0 0;">Attendance QR</a>
-                <a href="{% url 'assign_participants' meeting.id %}" class="button" style="padding:0.35rem 0.7rem; font-size:0.8rem; margin:0 0.25rem 0 0;">Assign Participants</a>
-                <form method="post" action="{% url 'lock_meeting' meeting.id %}" style="display:inline;" onsubmit="return confirm('Lock this meeting for signing?');">
-                  {% csrf_token %}
-                  <button type="submit" class="button" style="padding:0.35rem 0.7rem; font-size:0.8rem; background:#f6ad55; color:#1a1a40; margin:0; border:none; border-radius:4px; cursor:pointer; font-family:inherit; font-weight:600;">Lock for Signing</button>
-                </form>
-              {% elif meeting.status == 'Finished' %}
-                <a href="{% url 'review_meeting' meeting.id %}" class="button" style="padding:0.35rem 0.7rem; font-size:0.8rem; background:rgba(255,255,255,0.15); color:#e0e0ff; margin:0 0.25rem 0 0;">View</a>
-                <a href="{% url 'meeting_attendance' meeting.id %}" class="button" style="padding:0.35rem 0.7rem; font-size:0.8rem; background:rgba(79,209,197,0.25); color:#81e6d9; margin:0 0.25rem 0 0;">Attendance</a>
-                <a href="{% url 'generate_attendance_qr' meeting.id %}" class="button" style="padding:0.35rem 0.7rem; font-size:0.8rem; background:rgba(129,230,217,0.2); color:#4fd1c5; margin:0 0.25rem 0 0;">Attendance QR</a>
-                <a href="{% url 'projector_qr_view' meeting.id %}" class="button" style="padding:0.35rem 0.7rem; font-size:0.8rem; margin:0;">Projector QR</a>
-              {% endif %}
-            </td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-      {% else %}
-        <p style="color:#9a9ac8; font-size:0.9rem;">No meetings found for this department. Click "Create Meeting" to get started.</p>
-      {% endif %}
-    </section>
-  </main>
-</body>
-</html>
+<body><main>
+{% include 'accounts/messages.html' %}
+{% if global_admin %}<h1>Global Admin — Department Dashboard</h1><a href="{% url 'admin_dashboard' %}">Global Admin Dashboard</a>{% else %}<h1>Authorized Personnel Dashboard</h1>{% endif %}
+<h2>Department: {{ department.name }}</h2><p>Your role: {% if global_admin %}Global Admin{% else %}Authorized Personnel{% endif %}</p>
+{% if switch_departments %}<nav aria-label="Switch department">Switch department: {% for dept in switch_departments %}<a href="{% url 'department_dashboard' dept.pk %}?{{ filter_query }}" {% if department.pk == dept.pk %}aria-current="page"{% endif %}>{{ dept.name }}</a>{% endfor %}</nav>{% endif %}
+<nav><a id="btn-create-meeting" href="{% url 'create_meeting_dept' department.pk %}">Create Meeting</a><a href="{% url 'invite_member' department.pk %}">Invite an Officer</a><a href="{% url 'request_authorized_personnel' department.pk %}">Request Authorized Personnel</a></nav>
+{% include 'accounts/meeting_list.html' %}</main></body></html>

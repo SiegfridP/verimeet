@@ -1,0 +1,29 @@
+<style>section{margin:1.5rem 0}table{width:100%;border-collapse:collapse}td,th{padding:.75rem;text-align:left;border-bottom:1px solid #80809055}td a,td button{margin:.25rem;display:inline-block}label{display:inline-block;margin:.5rem}input,select,button{font:inherit;padding:.4rem}table{display:block;overflow-x:auto}nav{margin:1rem 0}nav a{margin-right:1rem}</style>
+<section><h2>Meetings</h2>
+<form method="get">
+<label>Title <input name="q" value="{{ filters.q }}" maxlength="200"></label>
+<label>Lifecycle <select name="status"><option value="">All</option>{% for value in lifecycle_choices %}<option value="{{ value }}" {% if filters.status == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label>
+{% if global_overview %}<label>Department <select name="department"><option value="">All departments</option>{% for dept in departments %}<option value="{{ dept.pk }}" {% if department_filter == dept.pk|stringformat:'s' %}selected{% endif %}>{{ dept.name }}</option>{% endfor %}</select></label>{% endif %}
+{% if officer_list %}
+<label>Assignment <select name="assignment"><option value="">All meetings</option><option value="assigned" {% if filters.assignment == 'assigned' %}selected{% endif %}>Assigned</option><option value="unassigned" {% if filters.assignment == 'unassigned' %}selected{% endif %}>Not Assigned</option></select></label>
+<label>Your attendance <select name="attendance"><option value="">All</option>{% for value in attendance_choices %}<option {% if filters.attendance == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label>
+<label>Your signing <select name="signing"><option value="">All</option><option value="signed" {% if filters.signing == 'signed' %}selected{% endif %}>Signed</option><option value="eligible" {% if filters.signing == 'eligible' %}selected{% endif %}>Eligible to sign</option><option value="awaiting" {% if filters.signing == 'awaiting' %}selected{% endif %}>Awaiting attendance</option><option value="unavailable" {% if filters.signing == 'unavailable' %}selected{% endif %}>Signing unavailable</option></select></label>
+{% endif %}<button type="submit">Filter</button> <a href="{{ request.path }}">Reset filters</a></form>
+<table><thead><tr><th>Title</th><th>Department</th><th>Lifecycle</th><th>Created</th><th>{% if officer_list %}Your assignment / attendance / signing{% else %}Assigned{% endif %}</th><th>Actions</th></tr></thead><tbody>
+{% for meeting in meetings %}<tr>
+<td><strong>{{ meeting.title }}</strong></td><td>{{ meeting.department.name }}</td><td><span class="status-badge {% if meeting.status == 'Draft' %}status-draft{% elif meeting.status == 'Finished' %}status-finished{% else %}status-other{% endif %}">{{ meeting.status }}</span></td><td>{{ meeting.created_at|date:'M d, Y H:i' }}</td>
+{% if officer_list %}<td>{% if meeting.user_attendance %}Assigned · {{ meeting.user_attendance.status }} · {{ meeting.signing_label }}{% if meeting.user_attendance.has_signed %} {{ meeting.user_attendance.signed_at|date:'M d, Y H:i' }}{% endif %}{% else %}Not Assigned{% endif %}</td>
+<td>{% if meeting.user_attendance %}<a href="{% url 'my_attendance' meeting.pk %}">My attendance details</a>
+{% if meeting.user_attendance.has_signed and meeting.user_attendance.cryptographic_signature and meeting.status != 'Draft' %}<a href="{% url 'my_signature_verification_qr' meeting.pk %}">My Signature QR</a>{% endif %}
+{% if meeting.signing_label == 'Eligible to sign' %}<p>Scan the signing QR provided by Authorized Personnel to sign.</p>{% elif meeting.signing_label == 'Awaiting attendance' %}<p>Attendance must be recorded as Attended or Late before signing.</p>{% endif %}{% else %}Informational meeting listing{% endif %}</td>
+{% else %}<td>{{ meeting.assigned_count }} assigned</td><td>
+<a href="{% url 'review_meeting' meeting.pk %}">Review</a> <a href="{% url 'document_history' meeting.pk %}">Document History</a>
+{% if meeting.status == 'Draft' %}
+<a href="{% url 'edit_meeting' meeting.pk %}">Edit</a> <a href="{% url 'assign_participants' meeting.pk %}">Assign Participants &amp; Signers</a>
+<form method="post" action="{% url 'lock_meeting' meeting.pk %}" style="display:inline">{% csrf_token %}<button>Finalize &amp; Lock for Signing</button></form>
+{% elif meeting.status == 'Finished' %}<a href="{% url 'meeting_attendance' meeting.pk %}">Attendance</a> <a href="{% url 'review_meeting' meeting.pk %}#qr-workflows">QR workflows</a>
+{% endif %}
+{% if meeting.status == 'Finished' or meeting.status == 'Archived' %}<a href="{% url 'export_meeting_pdf' meeting.pk %}">Export PDF</a>{% endif %}</td>{% endif %}
+</tr>{% empty %}<tr><td colspan="6">{% if has_meetings %}No meetings match these filters.{% else %}No meetings found.{% endif %}</td></tr>{% endfor %}
+</tbody></table>
+<nav aria-label="Meeting pages">{% if page_obj.has_previous %}<a href="?{{ filter_query }}&amp;page={{ page_obj.previous_page_number }}">Previous</a>{% endif %} Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }} {% if page_obj.has_next %}<a href="?{{ filter_query }}&amp;page={{ page_obj.next_page_number }}">Next</a>{% endif %}</nav></section>

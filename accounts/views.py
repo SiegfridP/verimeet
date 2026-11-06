@@ -6,6 +6,67 @@ from django import forms
 from django.utils import timezone
 from django.db import transaction
 from .audit import record, grant_ap
+from django.contrib import messages
+from django.core.paginator import Paginator
+from django.db.models import Count, Exists, OuterRef, Prefetch
+
+
+def meeting_list_context(request, queryset, officer=False):
+    """Filter an already authorized meeting scope; personal data is always user-bound."""
+    from meetings.models import Attendance
+    filters = {'q': request.GET.get('q', '').strip()[:200]}
+    choices = {'status': ('Draft', 'Finished', 'Archived')}
+    if officer:
+        choices.update(assignment=('assigned', 'unassigned'),
+                       attendance=('Attended', 'Late', 'Absent'),
+                       signing=('signed', 'eligible', 'awaiting', 'unavailable'))
+    for key, allowed in choices.items():
+        value = request.GET.get(key, '')
+        filters[key] = value if value in allowed else ''
+    has_meetings = queryset.exists()
+    if filters['q']:
+        queryset = queryset.filter(title__icontains=filters['q'])
+    if filters['status']:
+        queryset = queryset.filter(status=filters['status'])
+    if officer:
+        own = Attendance.objects.filter(meeting_id=OuterRef('pk'), user=request.user)
+        queryset = queryset.annotate(assigned=Exists(own), signed=Exists(own.filter(has_signed=True)),
+                                    eligible_attendance=Exists(own.filter(status__in=('Attended', 'Late'))))
+        if filters['assignment']:
+            queryset = queryset.filter(assigned=filters['assignment'] == 'assigned')
+        if filters['attendance']:
+            queryset = queryset.filter(Exists(own.filter(status=filters['attendance'])))
+        signing = filters['signing']
+        if signing == 'signed':
+            queryset = queryset.filter(signed=True)
+        elif signing == 'eligible':
+            queryset = queryset.filter(assigned=True, signed=False, eligible_attendance=True, status='Finished')
+        elif signing == 'awaiting':
+            queryset = queryset.filter(assigned=True, signed=False, eligible_attendance=False, status='Finished')
+        elif signing == 'unavailable':
+            queryset = queryset.filter(assigned=True, signed=False).exclude(status='Finished')
+        queryset = queryset.prefetch_related(Prefetch('attendees',
+            queryset=Attendance.objects.filter(user=request.user), to_attr='own_attendances'))
+    else:
+        queryset = queryset.annotate(assigned_count=Count('attendees'))
+    page = Paginator(queryset.select_related('department').order_by('-created_at', '-pk'), 20).get_page(request.GET.get('page'))
+    for meeting in page:
+        if officer:
+            meeting.user_attendance = next(iter(meeting.own_attendances), None)
+            att = meeting.user_attendance
+            meeting.signing_label = ('Not Assigned' if att is None else 'Signed' if att.has_signed
+                else 'Signing unavailable' if meeting.status != 'Finished' else 'Eligible to sign'
+                if att.status in ('Attended', 'Late') else 'Awaiting attendance')
+    from django.http import QueryDict
+    params = QueryDict(mutable=True)
+    params.update({key: value for key, value in filters.items() if value})
+    department_value = request.GET.get('department', '')
+    if department_value.isascii() and department_value.isdecimal() and len(department_value) < 10:
+        params['department'] = department_value
+    return {'meetings': page, 'page_obj': page, 'filters': filters,
+            'filter_query': params.urlencode(), 'has_meetings': has_meetings,
+            'officer_list': officer, 'lifecycle_choices': ('Draft', 'Finished', 'Archived'),
+            'attendance_choices': ('Attended', 'Late', 'Absent')}
 
 # Helper decorators
 
@@ -43,11 +104,19 @@ def admin_dashboard(request):
         req.reviewed_at = timezone.now()
         req.reviewer = request.user
         req.save()
+        messages.success(request, 'Role-elevation request processed.')
         return redirect('admin_dashboard')
 
-    departments = Department.objects.filter(is_active=True)
-    pending_requests = RoleElevationRequest.objects.filter(status='P')
+    departments = Department.objects.filter(is_active=True).order_by('name', 'pk')
+    pending_requests = RoleElevationRequest.objects.filter(status='P').select_related('target_user', 'department')
+    from meetings.models import Meeting
+    queryset = Meeting.objects.all()
+    department_filter = request.GET.get('department', '')
+    if department_filter.isascii() and department_filter.isdecimal() and len(department_filter) < 10:
+        queryset = queryset.filter(department_id=int(department_filter))
     return render(request, 'accounts/admin_dashboard.html', {
+        **meeting_list_context(request, queryset),
+        'global_admin': True, 'global_overview': True, 'can_manage': True, 'department_filter': department_filter,
         'departments': departments,
         'pending_requests': pending_requests,
     })
@@ -65,46 +134,19 @@ def department_dashboard(request, dept_id=None):
         else:
             return HttpResponseBadRequest('Department ID required')
 
-    # Resolve membership and role (or Global Admin bypass)
-    try:
-        membership = Membership.objects.get(user=request.user, department=department)
-        role = membership.role
-    except Membership.DoesNotExist:
-        if is_global_admin(request.user):
-            membership = None
-            role = 'AP'
-        elif request.user.department_id == department.id:
-            role = 'O'
-            membership, _ = Membership.objects.get_or_create(
-                user=request.user, department=department, defaults={'role': role}
-            )
-        else:
-            return HttpResponseForbidden('No membership in this department')
-
-    if hasattr(department, 'meeting_set'):
-        meetings = list(department.meeting_set.all().order_by('-created_at'))
-        from meetings.models import Attendance
-        user_attendances = {
-            att.meeting_id: att for att in Attendance.objects.filter(
-                meeting__in=meetings, user=request.user
-            )
-        }
-        for m in meetings:
-            m.user_attendance = user_attendances.get(m.id)
-    else:
-        meetings = []
-    user_memberships = Membership.objects.filter(user=request.user).select_related('department')
-
-    if role == 'AP':
-        template = 'accounts/authorized_dashboard.html'
-    else:
-        template = 'accounts/member_dashboard.html'
-
-    return render(request, template, {
-        'department': department,
-        'membership': membership,
-        'meetings': meetings,
-        'user_memberships': user_memberships,
+    # Global authority takes precedence over department membership.
+    membership = Membership.objects.filter(user=request.user, department=department).first()
+    global_admin = is_global_admin(request.user)
+    if not global_admin and not membership and request.user.department_id != department.id:
+        return HttpResponseForbidden('No membership in this department')
+    can_manage = global_admin or (membership and membership.role == 'AP')
+    departments = Department.objects.filter(is_active=True).order_by('name', 'pk')
+    if not global_admin:
+        departments = departments.filter(memberships__user=request.user, memberships__role='AP')
+    return render(request, 'accounts/authorized_dashboard.html' if can_manage else 'accounts/member_dashboard.html', {
+        **meeting_list_context(request, department.meeting_set.all(), officer=not can_manage),
+        'department': department, 'membership': membership, 'global_admin': global_admin,
+        'can_manage': can_manage, 'switch_departments': departments,
     })
 
 # ---------- Invitation Views ----------
@@ -137,6 +179,7 @@ def invite_member(request, dept_id):
             pending.delete()
             invitation = Invitation.objects.create(email=email, department=department, inviter=request.user, role=role)
             record(request.user, 'invitation.created', invitation, department)
+            messages.success(request, 'Officer invitation created. Any previous pending invitation was replaced.')
             return redirect('department_dashboard', dept_id=department.id)
     else:
         form = InvitationForm()
@@ -195,11 +238,15 @@ def request_authorized_personnel(request, dept_id):
             target_user = User.objects.filter(email=target_email).first()
             if not target_user:
                 return HttpResponseBadRequest('Target user does not exist')
-            RoleElevationRequest.objects.get_or_create(
+            elevation, created = RoleElevationRequest.objects.get_or_create(
                 department=department,
                 target_user=target_user,
                 defaults={'requester': request.user, 'note': note}
             )
+            if created:
+                messages.success(request, 'Role-elevation request submitted.')
+            else:
+                messages.info(request, 'A role-elevation request already exists for this user and department.')
             return redirect('department_dashboard', dept_id=department.id)
     else:
         form = ElevationRequestForm()
@@ -228,6 +275,7 @@ def review_elevation_requests(request):
         req.reviewed_at = timezone.now()
         req.reviewer = request.user
         req.save()
+        messages.success(request, 'Role-elevation request processed.')
         return redirect('review_elevation_requests')
     pending = RoleElevationRequest.objects.filter(status='P')
     return render(request, 'accounts/review_elevation_requests.html', {'pending_requests': pending})

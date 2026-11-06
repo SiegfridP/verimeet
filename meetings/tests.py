@@ -864,9 +864,10 @@ class Batch04DraftEditingReviewFinalizationTests(TestCase):
         self.assertContains(r, '<span class="status-badge status-draft">')
         self.assertContains(r, '<span class="status-badge status-finished">')
         self.assertContains(r, '<span class="status-badge status-other">')
-        self.assertContains(r, self.draft_meeting.get_status_display())
-        self.assertContains(r, self.finished_meeting.get_status_display())
-        self.assertContains(r, archived_meeting.get_status_display())
+        self.assertContains(r, '>Draft</span>')
+        self.assertContains(r, '>Finished</span>')
+        self.assertContains(r, '>Archived</span>')
+        self.assertNotContains(r, 'PDF Generated')
 
     def test_lock_meeting_consistency_with_finalize_meeting(self):
         """lock_meeting endpoint requires POST, enforces AP authorization, and updates status atomically."""

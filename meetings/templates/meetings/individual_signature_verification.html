@@ -305,7 +305,7 @@
           <span class="meta-value">
             <span
               class="badge {% if meeting.status == 'Finished' or meeting.status == 'Archived' %}badge-success{% else %}badge-warning{% endif %}">
-              {{ meeting.get_status_display }}
+              {{ meeting.status }}
             </span>
           </span>
         </div>

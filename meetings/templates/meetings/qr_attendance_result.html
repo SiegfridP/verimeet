@@ -185,7 +185,7 @@
     </div>
 
     <a href="{% url 'my_attendance' meeting.id %}" class="button">View My Attendance Details</a>
-    <a href="{% url 'officer_dashboard' %}" class="secondary-link">Return to Dashboard</a>
+    <a href="{% url 'department_dashboard' meeting.department_id %}" class="secondary-link">Return to Dashboard</a>
   </div>
 </body>
 </html>

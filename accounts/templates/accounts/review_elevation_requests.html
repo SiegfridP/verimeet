@@ -20,7 +20,7 @@
 </head>
 <body>
   <header><h1>Pending Role Elevation Requests</h1></header>
-  <main>
+  <main>{% include 'accounts/messages.html' %}
     {% if pending_requests %}
       <form method="post">{% csrf_token %}
         <table>

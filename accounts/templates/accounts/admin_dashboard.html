@@ -44,7 +44,7 @@
   <header>
     <h1>Global Admin Dashboard</h1>
   </header>
-  <main>
+  <main>{% include 'accounts/messages.html' %}<nav><a href="{% url 'review_elevation_requests' %}">Review role-elevation requests</a>{% if user.is_staff %}<a href="{% url 'admin:accounts_department_changelist' %}">Department management</a>{% endif %}</nav>
     <section>
       <h2>Departments</h2>
       <table>
@@ -54,7 +54,7 @@
         <tbody>
           {% for dept in departments %}
           <tr>
-            <td>{{ dept.name }}</td>
+            <td><a href="{% url 'department_dashboard' dept.pk %}">{{ dept.name }}</a></td>
             <td>{{ dept.contact_email }}</td>
             <td>{{ dept.is_active|yesno:"Active,Inactive" }}</td>
           </tr>
@@ -91,6 +91,6 @@
         <p>No pending requests.</p>
       {% endif %}
     </section>
-  </main>
+{% include 'accounts/meeting_list.html' %}  </main>
 </body>
 </html>

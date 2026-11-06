@@ -13,6 +13,7 @@ from django.contrib import messages
 from django.db import transaction, IntegrityError
 from django.core.paginator import Paginator
 from .models import Meeting, Attendance, AuditLog, QRSession, QRUsage, VerificationQR
+from .attendance_integrity import lock_mutable_meetings
 from .crypto import (
     generate_hmac_qr_token,
     verify_hmac_qr_token,
@@ -631,6 +632,7 @@ def sign_meeting(request, meeting_id):
                 event_type='signature.created', target_type='attendance', target_id=str(attendance.pk), metadata={'attendance_id': attendance.pk, 'officer_id': attendance.user_id, 'signed_at': Attendance.objects.get(pk=attendance.pk).signed_at.isoformat(), 'annotation_included': bool(annotation)},
                 action="Signed document with annotation"
             )
+        messages.success(request, 'Your document signature was recorded successfully.')
         return redirect('department_dashboard', dept_id=meeting.department_id)
 
     form = SignMeetingForm()
@@ -798,7 +800,10 @@ def assign_participants(request, meeting_id):
                         action=f"Updated participant assignments for meeting '{meeting.title[:50]}'"
                     )
 
-            messages.success(request, "Participant assignments updated successfully.")
+            if to_add or removed_ids:
+                messages.success(request, "Participant assignments updated successfully.")
+            else:
+                messages.info(request, "Participant assignments are unchanged.")
             return redirect('department_dashboard', dept_id=department.id)
     else:
         assigned_user_ids = meeting.attendees.values_list('user_id', flat=True)
@@ -853,7 +858,10 @@ def edit_meeting(request, meeting_id):
                         event_type='meeting.edited', target_type='meeting', target_id=str(meeting.pk), metadata={'changed_fields': sorted(form.changed_data)},
                         action=f"Edited draft meeting minutes for '{updated_meeting.title[:50]}'"
                     )
-            messages.success(request, f"Meeting '{updated_meeting.title}' updated successfully.")
+            if form.has_changed():
+                messages.success(request, f"Meeting '{updated_meeting.title}' updated successfully.")
+            else:
+                messages.info(request, 'No changes to save.')
             return redirect('department_dashboard', dept_id=department.id)
     else:
         form = MeetingEditForm(instance=meeting)
