@@ -3606,6 +3606,59 @@ class Batch08VerificationQRTests(TestCase):
             signed_at=time_now
         )
 
+    def _privacy_verification_url(self, attendance):
+        from meetings.models import VerificationQR
+        from meetings.crypto import decrypt_verification_token
+        self.client.force_login(attendance.user)
+        response = self.client.post(reverse('my_signature_verification_qr', args=[attendance.meeting_id]))
+        self.assertEqual(response.status_code, 302)
+        qr = VerificationQR.objects.get(attendance=attendance, is_revoked=False)
+        return reverse('verify_individual_signature') + '?token=' + decrypt_verification_token(qr.encrypted_token)
+
+    def test_public_signer_names_are_private_for_valid_and_invalid_signatures(self):
+        names = (('Alice', 'Smith', 'Alice Smith'), ('Alice', '', 'Alice'),
+                 ('', 'Smith', 'Smith'), ('', '', 'Name not provided'),
+                 ('  \t', '\n  ', 'Name not provided'))
+        anonymous = Client()
+        for attendance, legacy in ((self.att1, False), (self.att2, True), (self.att1_arch, False)):
+            url = self._privacy_verification_url(attendance)
+            original_signature = attendance.cryptographic_signature
+            username = f'PRIVATE_SIGNER_USERNAME_NEVER_PUBLIC_{attendance.user_id}'
+            for valid in (True, False):
+                Attendance.objects.filter(pk=attendance.pk).update(
+                    cryptographic_signature=original_signature if valid else 'invalid-signature')
+                for first, last, expected in names:
+                    with self.subTest(meeting=attendance.meeting.status, legacy=legacy,
+                                      valid=valid, first=first, last=last):
+                        User.objects.filter(pk=attendance.user_id).update(
+                            username=username, first_name=first, last_name=last)
+                        response = anonymous.get(url)
+                        self.assertEqual(response.status_code, 200)
+                        self.assertEqual(response.context['signer_display'], expected)
+                        self.assertNotIn(username, response.context['signer_display'])
+                        self.assertContains(response, expected)
+                        self.assertNotContains(response, username)
+                        self.assertEqual(response.context['status'], 'valid' if valid else 'invalid')
+                        self.assertEqual(response.context['sig_result']['valid'], valid)
+                        if valid:
+                            self.assertEqual(response.context['sig_result']['is_legacy'], legacy)
+                            self.assertEqual(response.context['sig_result']['meeting_bound'], not legacy)
+
+    def test_missing_name_unknown_and_revoked_tokens_stay_generic(self):
+        username = 'PRIVATE_MISSING_NAME_SIGNER_USERNAME'
+        User.objects.filter(pk=self.officer1.pk).update(username=username, first_name='', last_name='')
+        url = self._privacy_verification_url(self.att1)
+        self.client.post(reverse('revoke_my_signature_verification_qr', args=[self.finished_meeting.pk]))
+        anonymous = Client()
+        for target, expected_status in ((url, 200),
+                (reverse('verify_individual_signature') + '?token=unknown-privacy-token', 404)):
+            response = anonymous.get(target)
+            self.assertEqual(response.status_code, expected_status)
+            self.assertIsNone(response.context.get('signer_display'))
+            self.assertNotContains(response, username, status_code=expected_status)
+            self.assertNotContains(response, 'Name not provided', status_code=expected_status)
+            self.assertNotContains(response, self.finished_meeting.title, status_code=expected_status)
+
     def test_01_signed_officer_can_generate_own_qr(self):
         """1. A signed Officer can generate their own personal verification QR via POST."""
         from meetings.models import VerificationQR

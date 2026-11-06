@@ -1371,7 +1371,7 @@ def verify_individual_signature(request):
 
     sig_result = _verify_single_signature(attendance)
     signer = attendance.user
-    signer_display = signer.get_full_name() or signer.username
+    signer_display = signer.get_full_name().strip() or 'Name not provided'
 
     return render(request, 'meetings/individual_signature_verification.html', {
         'status': 'valid' if sig_result.get('valid') else 'invalid',
