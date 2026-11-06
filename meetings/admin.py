@@ -1,6 +1,27 @@
 from django.contrib import admin
 from .models import Meeting, Attendance, AuditLog
 from django.db import transaction
+from django.core.exceptions import PermissionDenied
+from django import forms
+from .attendance_integrity import lock_mutable_meetings
+
+
+class AttendanceAdminForm(forms.ModelForm):
+    class Meta:
+        model = Attendance
+        fields = '__all__'
+
+    def clean(self):
+        data = super().clean()
+        previous = Attendance.objects.filter(pk=self.instance.pk).first()
+        meetings = [data.get('meeting')]
+        if previous:
+            meetings.append(previous.meeting)
+            if previous.has_signed or previous.cryptographic_signature or previous.signed_at:
+                raise forms.ValidationError('Signed attendance is read-only in Admin.')
+        if any(meeting and meeting.status == 'Archived' for meeting in meetings):
+            raise forms.ValidationError('Archived meeting attendance is read-only.')
+        return data
 
 class MeetingAdmin(admin.ModelAdmin):
     list_display = ('title', 'department', 'status', 'created_at', 'updated_at')
@@ -34,6 +55,21 @@ class MeetingAdmin(admin.ModelAdmin):
 admin.site.register(Meeting, MeetingAdmin)
 @admin.register(Attendance)
 class AttendanceAdmin(admin.ModelAdmin):
+    form = AttendanceAdminForm
+
+    def _protected(self, obj):
+        return obj and (obj.has_signed or obj.cryptographic_signature or obj.signed_at
+                        or obj.meeting.status == 'Archived')
+
+    def get_readonly_fields(self, request, obj=None):
+        if self._protected(obj):
+            return [field.name for field in Attendance._meta.fields]
+        # Signing material is produced only by the signing workflow.
+        return ['has_signed', 'cryptographic_signature', 'signed_at', 'annotation']
+
+    def has_delete_permission(self, request, obj=None):
+        return not self._protected(obj) and super().has_delete_permission(request, obj)
+
     def _record(self, request, obj, previous, event_type, action):
         AuditLog.objects.create(
             user=request.user, meeting=obj.meeting, department=obj.meeting.department,
@@ -56,6 +92,16 @@ class AttendanceAdmin(admin.ModelAdmin):
     def save_model(self, request, obj, form, change):
         with transaction.atomic():
             previous = Attendance.objects.select_for_update().filter(pk=obj.pk).first() if change else None
+            lock_mutable_meetings([obj.meeting_id] + ([previous.meeting_id] if previous else []))
+            if self._protected(previous):
+                raise PermissionDenied('Signed attendance is read-only in Admin.')
+            if any(getattr(obj, field) != (getattr(previous, field) if previous else default)
+                   for field, default in (('has_signed', False), ('cryptographic_signature', None),
+                                          ('signed_at', None), ('annotation', None))):
+                # Blank strings and NULL are equivalent for unsigned material.
+                if any(getattr(obj, field) or (previous and getattr(previous, field))
+                       for field in ('has_signed', 'cryptographic_signature', 'signed_at', 'annotation')):
+                    raise PermissionDenied('Signature fields may only be set by the signing workflow.')
             super().save_model(request, obj, form, change)
             if previous is None:
                 self._record(request, obj, None, 'attendance.created', 'Created attendance assignment')
@@ -69,12 +115,19 @@ class AttendanceAdmin(admin.ModelAdmin):
         with transaction.atomic():
             persisted = Attendance.objects.select_for_update().filter(pk=obj.pk).first()
             if persisted is not None:
+                lock_mutable_meetings([persisted.meeting_id])
+                if self._protected(persisted):
+                    raise PermissionDenied('Signed attendance cannot be deleted.')
                 self._record(request, persisted, persisted, 'attendance.deleted', 'Deleted attendance assignment')
                 super().delete_model(request, persisted)
 
     def delete_queryset(self, request, queryset):
         with transaction.atomic():
-            for obj in queryset:
+            objects = list(queryset.select_for_update())
+            lock_mutable_meetings([obj.meeting_id for obj in objects])
+            if any(self._protected(obj) for obj in objects):
+                raise PermissionDenied('Protected attendance cannot be deleted; nothing was deleted.')
+            for obj in objects:
                 self.delete_model(request, obj)
 
 

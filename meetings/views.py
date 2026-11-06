@@ -381,6 +381,8 @@ def scan_attendance_qr(request, meeting_id):
     else:
         return HttpResponseForbidden("Missing security token.")
 
+    lock_mutable_meetings([meeting.pk])
+
     # 3. Check Officer is an assigned participant for this meeting
     try:
         attendance = Attendance.objects.get(meeting=meeting, user=request.user)
@@ -440,6 +442,7 @@ def scan_attendance_qr(request, meeting_id):
                     updated = Attendance.objects.filter(
                         pk=attendance.pk,
                         has_signed=False,
+                        meeting__status__in=('Draft', 'Finished'),
                         status=attendance_now.status,
                         status_updated_at=attendance_now.status_updated_at,
                     ).update(
@@ -448,6 +451,8 @@ def scan_attendance_qr(request, meeting_id):
                     )
                     if updated == 0:
                         _usage.delete()
+                        if Meeting.objects.filter(pk=meeting.pk, status='Archived').exists():
+                            return HttpResponseForbidden('Archived meeting attendance is read-only.')
                         current = Attendance.objects.get(pk=attendance.pk)
                         if not current.has_signed:
                             return HttpResponseForbidden(
@@ -475,11 +480,14 @@ def scan_attendance_qr(request, meeting_id):
             has_signed=False,
             status='Absent',
             status_updated_at__isnull=True,
+            meeting__status__in=('Draft', 'Finished'),
         ).update(
             status='Attended',
             status_updated_at=timezone.now(),
         )
         if updated == 0:
+            if Meeting.objects.filter(pk=meeting.pk, status='Archived').exists():
+                return HttpResponseForbidden('Archived meeting attendance is read-only.')
             current = Attendance.objects.filter(pk=attendance.pk).first()
             if current and current.has_signed:
                 return HttpResponseForbidden(
@@ -594,9 +602,11 @@ def sign_meeting(request, meeting_id):
         # Atomically persist the signature and audit record only if still unsigned and eligible.
         # This conditional update guarantees that concurrent requests or revoked attendance status cannot succeed.
         with transaction.atomic():
+            lock_mutable_meetings([meeting.pk])
             updated = Attendance.objects.filter(
                 pk=attendance.pk,
                 has_signed=False,
+                meeting__status='Finished',
                 status__in=['Attended', 'Late']
             ).update(
                 annotation=annotation,
@@ -755,6 +765,7 @@ def assign_participants(request, meeting_id):
         return HttpResponseForbidden("Cannot modify participant assignments for a locked or finalized meeting.")
 
     if request.method == 'POST':
+        lock_mutable_meetings([meeting.pk])
         form = AssignParticipantsForm(request.POST, department=department, meeting=meeting)
         if form.is_valid():
             selected_users = form.cleaned_data.get('participants') or []
@@ -992,6 +1003,7 @@ def meeting_attendance(request, meeting_id):
 
     # Allow AP to update attendance status directly via POST if attendance_id and status are provided
     if request.method == 'POST':
+        lock_mutable_meetings([meeting.pk])
         attendance_id = request.POST.get('attendance_id')
         attendance = get_object_or_404(Attendance.objects.select_for_update(), id=attendance_id, meeting=meeting)
 
@@ -1041,6 +1053,8 @@ def update_attendance_status(request, meeting_id, attendance_id):
 
     if not is_global_admin(request.user) and not has_membership(request.user, department, role='AP'):
         return HttpResponseForbidden("You are not authorized to manage attendance for this department.")
+
+    lock_mutable_meetings([meeting.pk])
 
     attendance = get_object_or_404(Attendance.objects.select_for_update(), id=attendance_id, meeting=meeting)
 
