@@ -1,6 +1,7 @@
 from django.test import TestCase, Client
 from django.urls import reverse, resolve
 from django.conf import settings
+from allauth.account.models import EmailAddress
 from accounts.models import Department, User, Membership, Invitation, RoleElevationRequest
 
 class RoutingAndAuthTests(TestCase):
@@ -203,7 +204,8 @@ class MultiDepartmentAndRBACTests(TestCase):
         # Accept as a new user
         new_user = User.objects.create_user(username='new_officer', password='password123')
         self.client.force_login(new_user)
-        r_accept = self.client.get(reverse('accept_invitation', args=[inv.token]))
+        EmailAddress.objects.create(user=new_user, email=inv.email, verified=True)
+        r_accept = self.client.post(reverse('accept_invitation', args=[inv.token]))
         self.assertEqual(r_accept.status_code, 302)
 
         m = Membership.objects.get(user=new_user, department=self.dept_a)
@@ -228,7 +230,8 @@ class MultiDepartmentAndRBACTests(TestCase):
         inv = Invitation.objects.create(email='ap_new@example.com', department=self.dept_a, inviter=self.ap_user_a)
 
         self.client.force_login(self.ap_user_a)
-        r = self.client.get(reverse('accept_invitation', args=[inv.token]))
+        EmailAddress.objects.create(user=self.ap_user_a, email=inv.email, verified=True)
+        r = self.client.post(reverse('accept_invitation', args=[inv.token]))
         self.assertEqual(r.status_code, 302)
 
         m = Membership.objects.get(user=self.ap_user_a, department=self.dept_a)
@@ -241,7 +244,8 @@ class MultiDepartmentAndRBACTests(TestCase):
         new_user = User.objects.create_user(username='legacy_user', password='password123')
         self.client.force_login(new_user)
 
-        r = self.client.get(reverse('accept_invitation', args=[inv.token]))
+        EmailAddress.objects.create(user=new_user, email=inv.email, verified=True)
+        r = self.client.post(reverse('accept_invitation', args=[inv.token]))
         self.assertEqual(r.status_code, 302)
 
         m = Membership.objects.get(user=new_user, department=self.dept_a)
@@ -345,7 +349,8 @@ class Batch09AdministrativeAuditTests(TestCase):
         self.assertEqual(AuditLog.objects.filter(event_type='invitation.revoked').count(), 1)
         invitation = Invitation.objects.get(accepted=False)
         self.client.force_login(self.target)
-        self.client.get(reverse('accept_invitation', args=[invitation.token]))
+        EmailAddress.objects.create(user=self.target, email=invitation.email, verified=True)
+        self.client.post(reverse('accept_invitation', args=[invitation.token]))
         event = AuditLog.objects.get(event_type='membership.added')
         self.assertEqual(event.user, self.target)
         self.assertEqual(event.metadata['user_id'], self.target.pk)

@@ -1,0 +1,15 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>VeriMeet invitation</title></head><body>
+<h1>Officer invitation</h1><p>Join {{ invitation.department.name }} as an Officer.</p>
+<p>Expires {{ invitation.expires_at|date:"c" }}. Authentication does not extend this deadline.</p>
+{% if eligible %}
+<form method="post">{% csrf_token %}<button type="submit">Accept invitation</button></form>
+{% elif user.is_authenticated %}
+<p>You must verify the email address this invitation was sent to on this account before accepting.</p>
+<a href="{% url 'account_email' %}">Manage and verify email addresses</a>
+<a href="{% url 'account_logout' %}?next={{ invitation_path|urlencode }}">Switch account</a>
+{% else %}
+<a href="{% url 'account_login' %}?next={{ invitation_path|urlencode }}">Log in (including Google)</a>
+<a href="{% url 'account_signup' %}?next={{ invitation_path|urlencode }}">Register</a>
+{% endif %}
+<p>You can reopen the original invitation link to resume. Nothing is accepted until you submit confirmation.</p>
+</body></html>

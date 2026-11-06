@@ -172,53 +172,73 @@ def invite_member(request, dept_id):
             email = form.cleaned_data['email']
             # Invitations strictly grant canonical Officer role
             role = 'O'
-            # Avoid duplicate pending invitations
-            pending = Invitation.objects.select_for_update().filter(email=email, department=department, accepted=False)
-            for old_invitation in pending:
-                record(request.user, 'invitation.revoked', old_invitation, department)
-            pending.delete()
-            invitation = Invitation.objects.create(email=email, department=department, inviter=request.user, role=role)
-            record(request.user, 'invitation.created', invitation, department)
-            messages.success(request, 'Officer invitation created. Any previous pending invitation was replaced.')
-            return redirect('department_dashboard', dept_id=department.id)
+            from django.core.mail import send_mail
+            from django.template.loader import render_to_string
+            from django.urls import reverse
+            from django.conf import settings
+            try:
+                with transaction.atomic():
+                    # Serialize replacements per department, including on SQLite.
+                    from django.db.models import F
+                    if not Department.objects.filter(pk=department.pk, is_active=True).update(name=F('name')):
+                        return HttpResponseForbidden('Department is inactive.')
+                    pending = list(Invitation.objects.filter(email=email, department=department, accepted=False))
+                    invitation = Invitation.objects.create(email=email, department=department, inviter=request.user, role=role)
+                    acceptance_url = request.build_absolute_uri(reverse('accept_invitation', args=[invitation.token]))
+                    body = render_to_string('accounts/invitation_email.txt', {
+                        'department': department, 'invitation': invitation, 'acceptance_url': acceptance_url})
+                    record(request.user, 'invitation.created', invitation, department)
+                    for old in pending:
+                        record(request.user, 'invitation.revoked', old, department)
+                        old.delete()
+                    if send_mail('VeriMeet Officer invitation', body, settings.DEFAULT_FROM_EMAIL, [email], fail_silently=False) != 1:
+                        raise RuntimeError('Mail not accepted')
+            except Exception:
+                form.add_error(None, 'Invitation could not be sent. Please retry. Any previous invitation remains valid.')
+            else:
+                messages.success(request, 'Invitation submitted to the configured email backend. Console delivery is development output only.')
+                return redirect('department_dashboard', dept_id=department.id)
     else:
         form = InvitationForm()
     return render(request, 'accounts/invite.html', {'form': form, 'department': department})
 
-@transaction.atomic
 def accept_invitation(request, token):
-    invitation = get_object_or_404(Invitation, token=token)
-    if not invitation.is_valid():
-        return HttpResponseBadRequest('Invalid or expired invitation')
-    if not request.user.is_authenticated:
-        # Store token in session and redirect to login
-        request.session['pending_invite_token'] = token
-        return redirect('account_login')
-    # Grant canonical Officer role (mapping legacy 'S' or 'O' to 'O')
-    role_to_grant = 'O'
-    membership, created = Membership.objects.get_or_create(
-        user=request.user,
-        department=invitation.department,
-        defaults={'role': role_to_grant}
-    )
-    if created:
-        record(request.user, 'membership.added', membership, invitation.department,
-               {'user_id': request.user.pk, 'new_role': role_to_grant})
-    # Ensure accepting an invitation does not downgrade an existing Authorized Personnel
-    if not created and membership.role not in ('AP',):
-        previous_role = membership.role
-        membership.role = role_to_grant
-        membership.save(update_fields=['role'])
-        if previous_role != role_to_grant:
-            record(request.user, 'user.role_changed', membership, invitation.department,
-                   {'user_id': request.user.pk, 'previous_role': previous_role, 'new_role': role_to_grant})
-
-    invitation.accepted = True
-    invitation.accepted_at = timezone.now()
-    invitation.save()
-    request.session.pop('pending_invite_token', None)
-    return redirect('department_dashboard', dept_id=invitation.department.id)
-
+    from allauth.account.utils import has_verified_email
+    from django.http import HttpResponseNotAllowed
+    from django.urls import reverse
+    if request.method not in ('GET', 'POST'):
+        return HttpResponseNotAllowed(['GET', 'POST'])
+    invitation = get_object_or_404(Invitation.objects.select_related('department'), token=token)
+    if not invitation.is_valid() or not invitation.department.is_active:
+        return HttpResponseBadRequest('Invitation is unavailable or expired.')
+    request.session['pending_invite_token'] = token
+    eligible = request.user.is_authenticated and has_verified_email(request.user, invitation.email)
+    if request.method == 'POST':
+        if not eligible:
+            return HttpResponseForbidden('Log in with a verified matching email before accepting.')
+        with transaction.atomic():
+            from django.db.models import F
+            # Shared lock order with replacement; no timestamp or lifecycle mutation.
+            if not Department.objects.filter(pk=invitation.department_id, is_active=True).update(name=F('name')):
+                return HttpResponseBadRequest('Invitation is unavailable.')
+            invitation = get_object_or_404(Invitation.objects.select_for_update(), token=token)
+            if not has_verified_email(request.user, invitation.email):
+                return HttpResponseForbidden('Verified matching email required.')
+            consumed = Invitation.objects.filter(pk=invitation.pk, accepted=False,
+                expires_at__gt=timezone.now(), department__is_active=True).update(accepted=True, accepted_at=timezone.now())
+            if consumed != 1:
+                return HttpResponseBadRequest('Invitation is unavailable or expired.')
+            membership, created = Membership.objects.get_or_create(user=request.user,
+                department_id=invitation.department_id, defaults={'role': 'O'})
+            if created:
+                record(request.user, 'membership.added', membership, invitation.department,
+                       {'user_id': request.user.pk, 'new_role': 'O'})
+            record(request.user, 'invitation.accepted', invitation, invitation.department)
+        request.session.pop('pending_invite_token', None)
+        messages.success(request, 'Invitation accepted. Your department membership is available.')
+        return redirect('department_dashboard', dept_id=invitation.department_id)
+    return render(request, 'accounts/accept_invitation.html', {'invitation': invitation,
+        'eligible': eligible, 'invitation_path': reverse('accept_invitation', args=[token])})
 # ---------- Role Elevation Request Views ----------
 class ElevationRequestForm(forms.Form):
     target_email = forms.EmailField(label='User Email')
