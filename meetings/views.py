@@ -768,6 +768,9 @@ def assign_participants(request, meeting_id):
 
     if request.method == 'POST':
         lock_mutable_meetings([meeting.pk])
+        meeting.refresh_from_db()
+        if meeting.status != 'Draft':
+            return HttpResponseForbidden("Cannot modify participant assignments for a locked or finalized meeting.")
         form = AssignParticipantsForm(request.POST, department=department, meeting=meeting)
         if form.is_valid():
             selected_users = form.cleaned_data.get('participants') or []

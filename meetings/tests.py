@@ -478,6 +478,42 @@ class MeetingCreationAndAssignmentTests(TestCase):
         self.assertEqual(attendees, {self.officer2.id})
         self.assertFalse(meeting.attendees.filter(user=self.officer1).exists())
 
+    def test_assign_participants_revalidates_lifecycle_after_write_guard(self):
+        from unittest.mock import patch
+        from meetings.attendance_integrity import lock_mutable_meetings
+
+        for actor in (self.ap_user, self.global_admin):
+            for status in ('Finished', 'Archived'):
+                with self.subTest(actor=actor.username, status=status):
+                    meeting = Meeting.objects.create(department=self.dept, title='Assignment race')
+                    original = Attendance.objects.create(meeting=meeting, user=self.officer1)
+                    self.client.force_login(actor)
+
+                    def change_lifecycle_then_guard(meeting_ids):
+                        # Deterministic interleaving at the write boundary, not a row-lock test.
+                        Meeting.objects.filter(pk=meeting.pk).update(status=status)
+                        lock_mutable_meetings(meeting_ids)
+
+                    with patch('meetings.views.lock_mutable_meetings', side_effect=change_lifecycle_then_guard) as guard:
+                        response = self.client.post(reverse('assign_participants', args=[meeting.pk]),
+                                                    {'participants': [self.officer2.pk]})
+                    self.assertEqual(response.status_code, 403)
+                    guard.assert_called_once_with([meeting.pk])
+                    self.assertEqual(list(meeting.attendees.values_list('pk', 'user_id')),
+                                     [(original.pk, self.officer1.pk)])
+                    self.assertFalse(AuditLog.objects.filter(meeting=meeting,
+                                     event_type='meeting.participants_changed').exists())
+
+    def test_global_admin_assigns_draft_participants(self):
+        meeting = Meeting.objects.create(department=self.dept, title='Global assignment')
+        self.client.force_login(self.global_admin)
+        response = self.client.post(reverse('assign_participants', args=[meeting.pk]),
+                                    {'participants': [self.officer1.pk]})
+        self.assertRedirects(response, reverse('department_dashboard', args=[self.dept.pk]))
+        self.assertEqual(list(meeting.attendees.values_list('user_id', flat=True)), [self.officer1.pk])
+        self.assertEqual(AuditLog.objects.filter(meeting=meeting,
+                         event_type='meeting.participants_changed').count(), 1)
+
     def test_assign_participants_denied_for_officers_and_other_ap(self):
         """Officers and APs from other departments cannot access or modify assignments."""
         meeting = Meeting.objects.create(department=self.dept, title='Isolation Meeting', status='Draft')
