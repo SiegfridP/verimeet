@@ -1,3 +1,4 @@
+{% load dashboard_navigation %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -164,8 +165,8 @@
         Signing this document creates an immutable ECDSA cryptographic signature bound to the meeting title, department, finalized minutes, and your optional annotation. Once signed, your signature and annotation cannot be modified or withdrawn.
       </div>
 
-      <form method="post" action="{% url 'sign_meeting' meeting.id %}">
-        {% csrf_token %}
+      <form method="post" action="{% dashboard_url 'sign_meeting' meeting.id %}">
+        {% csrf_token %}{% dashboard_field %}
         <input type="hidden" name="token" value="{{ qr_token }}" />
         <input type="hidden" name="t" value="{{ timestamp }}" />
         <input type="hidden" name="sig" value="{{ sig }}" />

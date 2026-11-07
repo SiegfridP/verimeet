@@ -1,3 +1,4 @@
+{% load dashboard_navigation %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -44,7 +45,7 @@
   <header>
     <h1>Global Admin Dashboard</h1>
   </header>
-  <main>{% include 'accounts/messages.html' %}<nav><a href="{% url 'review_elevation_requests' %}">Review role-elevation requests</a>{% if user.is_staff %}<a href="{% url 'admin:accounts_department_changelist' %}">Department management</a>{% endif %}</nav>
+  <main>{% include 'accounts/messages.html' %}<nav><a href="{% dashboard_url 'review_elevation_requests' %}">Review role-elevation requests</a>{% if user.is_staff %}<a href="{% url 'admin:accounts_department_changelist' %}">Department management</a>{% endif %}</nav>
     <section>
       <h2>Departments</h2>
       <table>
@@ -54,7 +55,7 @@
         <tbody>
           {% for dept in departments %}
           <tr>
-            <td><a href="{% url 'department_dashboard' dept.pk %}">{{ dept.name }}</a></td>
+            <td><a href="{% dashboard_entry_url dept.pk %}">{{ dept.name }}</a></td>
             <td>{{ dept.contact_email }}</td>
             <td>{{ dept.is_active|yesno:"Active,Inactive" }}</td>
           </tr>
@@ -67,7 +68,7 @@
     <section>
       <h2>Pending Role Elevation Requests</h2>
       {% if pending_requests %}
-        <form method="post">{% csrf_token %}
+        <form method="post">{% csrf_token %}{% dashboard_field %}
           <table>
             <thead>
               <tr><th>User</th><th>Department</th><th>Note</th><th>Action</th></tr>

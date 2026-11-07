@@ -1,3 +1,4 @@
+{% load dashboard_navigation %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -163,7 +164,7 @@
       </div>
 
       <form method="post" id="edit-meeting-form">
-        {% csrf_token %}
+        {% csrf_token %}{% dashboard_field %}
 
         <div class="form-group">
           <label for="id_title">Meeting Title / Subject <span style="color:#fc8181;">*</span></label>
@@ -185,9 +186,9 @@
 
         <div class="actions-row">
           <button type="submit" class="button" id="btn-save-meeting">Save Changes</button>
-          <a href="{% url 'review_meeting' meeting.id %}" class="button btn-secondary" id="btn-review-meeting">Review & Preview</a>
-          <a href="{% url 'assign_participants' meeting.id %}" class="button btn-secondary" id="btn-assign-participants">Assign Participants</a>
-          <a href="{% url 'department_dashboard' dept_id=department.id %}" class="button btn-secondary">Cancel</a>
+          <a href="{% dashboard_url 'review_meeting' meeting.id %}" class="button btn-secondary" id="btn-review-meeting">Review & Preview</a>
+          <a href="{% dashboard_url 'assign_participants' meeting.id %}" class="button btn-secondary" id="btn-assign-participants">Assign Participants</a>
+          <a href="{% dashboard_url 'department_dashboard' dept_id=department.id %}" class="button btn-secondary">Cancel</a>
         </div>
       </form>
     </div>

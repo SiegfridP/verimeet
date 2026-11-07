@@ -1,3 +1,4 @@
+{% load dashboard_navigation %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -118,13 +119,13 @@
 
   {% else %}
   <p>No active signing QR code is available.</p>
-  <form method="post">{% csrf_token %}<button type="submit">Generate Signing QR</button></form>
+  <form method="post">{% csrf_token %}{% dashboard_field %}<button type="submit">Generate Signing QR</button></form>
   {% endif %}
 
   <div class="nav-links">
-    <a href="{% url 'review_meeting' meeting.id %}">&larr; Return to Meeting Review</a>
-    <a href="{% url 'meeting_attendance' meeting.id %}">Manage Attendance</a>
-    <a href="{% url 'department_dashboard' meeting.department.id %}">Dashboard</a>
+    <a href="{% dashboard_url 'review_meeting' meeting.id %}">&larr; Return to Meeting Review</a>
+    <a href="{% dashboard_url 'meeting_attendance' meeting.id %}">Manage Attendance</a>
+    <a href="{% dashboard_url 'department_dashboard' meeting.department.id %}">Dashboard</a>
   </div>
 </body>
 </html>

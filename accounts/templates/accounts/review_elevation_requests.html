@@ -1,3 +1,4 @@
+{% load dashboard_navigation %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -22,7 +23,7 @@
   <header><h1>Pending Role Elevation Requests</h1></header>
   <main>{% include 'accounts/messages.html' %}
     {% if pending_requests %}
-      <form method="post">{% csrf_token %}
+      <form method="post">{% csrf_token %}{% dashboard_field %}
         <table>
           <thead>
             <tr><th>User</th><th>Department</th><th>Note</th><th>Action</th></tr>
@@ -45,7 +46,7 @@
     {% else %}
       <p>No pending requests.</p>
     {% endif %}
-    <p><a href="{% url 'admin_dashboard' %}">← Back to Admin Dashboard</a></p>
+    <p><a href="{% overview_url %}">← Back to Admin Dashboard</a></p>
   </main>
 </body>
 </html>

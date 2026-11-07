@@ -1,3 +1,4 @@
+{% load dashboard_navigation %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -167,7 +168,7 @@
       {% endif %}
 
       <form method="post" id="create-meeting-form">
-        {% csrf_token %}
+        {% csrf_token %}{% dashboard_field %}
         <input type="hidden" name="department_id" value="{{ department.id }}" />
 
         <div class="form-group">
@@ -214,7 +215,7 @@
 
         <div class="actions-row">
           <button type="submit" class="button" id="submit-create-meeting">Create Meeting</button>
-          <a href="{% url 'department_dashboard' dept_id=department.id %}" class="button btn-secondary">Cancel</a>
+          <a href="{% dashboard_url 'department_dashboard' dept_id=department.id %}" class="button btn-secondary">Cancel</a>
         </div>
       </form>
     </div>

@@ -1,3 +1,4 @@
+{% load dashboard_navigation %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -171,7 +172,7 @@
       {% endif %}
 
       <form method="post" id="assign-participants-form">
-        {% csrf_token %}
+        {% csrf_token %}{% dashboard_field %}
 
         <div class="form-group">
           <label>Eligible Department Members</label>
@@ -199,7 +200,7 @@
 
         <div class="actions-row">
           <button type="submit" class="button" id="submit-assign-participants">Save Assignments</button>
-          <a href="{% url 'department_dashboard' dept_id=department.id %}" class="button btn-secondary">Back to Dashboard</a>
+          <a href="{% dashboard_url 'department_dashboard' dept_id=department.id %}" class="button btn-secondary">Back to Dashboard</a>
         </div>
       </form>
     </div>

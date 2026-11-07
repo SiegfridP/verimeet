@@ -1,9 +1,10 @@
+{% load dashboard_navigation %}
 <!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><title>Document History</title></head>
 <body>
 <h1>Document History</h1>
-<p>{{ meeting.title }} — {{ meeting.department.name }}</p><nav><a href="{% url 'review_meeting' meeting.pk %}">Review meeting</a> <a href="{% url 'department_dashboard' meeting.department_id %}">Department Dashboard</a></nav>
+<p>{{ meeting.title }} — {{ meeting.department.name }}</p><nav><a href="{% dashboard_url 'review_meeting' meeting.pk %}">Review meeting</a> <a href="{% dashboard_url 'department_dashboard' meeting.department_id %}">Department Dashboard</a></nav>
 <table>
 <thead><tr><th>Event</th><th>Type</th><th>Actor</th><th>Timestamp</th><th>Target</th><th>Details</th></tr></thead>
 <tbody>
@@ -15,8 +16,8 @@
 {% empty %}<tr><td colspan="6">No document history recorded.</td></tr>{% endfor %}
 </tbody></table>
 <nav aria-label="History pages">
-{% if page_obj.has_previous %}<a href="?page={{ page_obj.previous_page_number }}">Previous</a>{% endif %}
+{% if page_obj.has_previous %}<a href="?page={{ page_obj.previous_page_number }}&amp;{% dashboard_query %}">Previous</a>{% endif %}
 <span>Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span>
-{% if page_obj.has_next %}<a href="?page={{ page_obj.next_page_number }}">Next</a>{% endif %}
+{% if page_obj.has_next %}<a href="?page={{ page_obj.next_page_number }}&amp;{% dashboard_query %}">Next</a>{% endif %}
 </nav>
 </body></html>

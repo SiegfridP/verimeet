@@ -1,3 +1,4 @@
+{% load dashboard_navigation %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -68,13 +69,13 @@
       <ul class="dept-list">
         {% for dept in departments %}
           <li>
-            <a class="dept-link" href="{% url 'create_meeting_dept' dept_id=dept.id %}">
+            <a class="dept-link" href="{% dashboard_url 'create_meeting_dept' dept_id=dept.id %}">
               {{ dept.name }}
             </a>
           </li>
         {% endfor %}
       </ul>
-      <p><a href="{% url 'routing_view' %}" style="color:#4fd1c5; text-decoration:none;">← Return to Main</a></p>
+      <p><a href="{% dashboard_url 'routing_view' %}" style="color:#4fd1c5; text-decoration:none;">← Return to Main</a></p>
     </div>
   </main>
 </body>

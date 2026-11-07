@@ -35,6 +35,7 @@ from .forms import (
     MAX_ANNOTATION_LENGTH,
 )
 from accounts.models import Membership, Department, User
+from accounts.dashboard_context import workflow_redirect
 from accounts.views import is_global_admin, has_membership
 
 def user_in_department(user, meeting):
@@ -131,7 +132,7 @@ def _finalize_meeting_internal(request, meeting_id):
         )
 
     messages.success(request, f"Meeting '{meeting.title}' has been finalized and locked for signing.")
-    return redirect('department_dashboard', dept_id=department.id)
+    return workflow_redirect(request, 'department_dashboard', dept_id=department.id)
 
 
 @login_required
@@ -254,7 +255,7 @@ def generate_attendance_qr(request, meeting_id):
     )
 
     messages.success(request, "Attendance QR code generated successfully.")
-    return redirect('view_qr_session', meeting_id=meeting.id, session_id=qr_session.id)
+    return workflow_redirect(request, 'view_qr_session', meeting_id=meeting.id, session_id=qr_session.id)
 
 
 @login_required
@@ -298,7 +299,7 @@ def generate_signing_qr(request, meeting_id):
     )
 
     messages.success(request, "Signing QR code generated successfully.")
-    return redirect('view_qr_session', meeting_id=meeting.id, session_id=qr_session.id)
+    return workflow_redirect(request, 'view_qr_session', meeting_id=meeting.id, session_id=qr_session.id)
 
 
 @login_required
@@ -362,7 +363,7 @@ def revoke_qr_session(request, meeting_id, session_id):
         )
         messages.success(request, f"{qr_session.get_purpose_display()} QR code has been revoked.")
 
-    return redirect('view_qr_session', meeting_id=meeting.id, session_id=qr_session.id)
+    return workflow_redirect(request, 'view_qr_session', meeting_id=meeting.id, session_id=qr_session.id)
 
 
 @login_required
@@ -707,7 +708,7 @@ def sign_meeting(request, meeting_id):
                 action="Signed document with annotation"
             )
         messages.success(request, 'Your document signature was recorded successfully.')
-        return redirect('department_dashboard', dept_id=meeting.department_id)
+        return workflow_redirect(request, 'department_dashboard', dept_id=meeting.department_id)
 
     form = SignMeetingForm()
     return render(request, 'meetings/sign_document.html', {
@@ -812,7 +813,7 @@ def create_meeting(request, dept_id=None):
                 )
 
             messages.success(request, f"Meeting '{meeting.title}' created successfully.")
-            return redirect('department_dashboard', dept_id=department.id)
+            return workflow_redirect(request, 'department_dashboard', dept_id=department.id)
     else:
         form = MeetingForm(department=department)
 
@@ -881,7 +882,7 @@ def assign_participants(request, meeting_id):
                 messages.success(request, "Participant assignments updated successfully.")
             else:
                 messages.info(request, "Participant assignments are unchanged.")
-            return redirect('department_dashboard', dept_id=department.id)
+            return workflow_redirect(request, 'department_dashboard', dept_id=department.id)
     else:
         assigned_user_ids = meeting.attendees.values_list('user_id', flat=True)
         initial_participants = User.objects.filter(id__in=assigned_user_ids)
@@ -939,7 +940,7 @@ def edit_meeting(request, meeting_id):
                 messages.success(request, f"Meeting '{updated_meeting.title}' updated successfully.")
             else:
                 messages.info(request, 'No changes to save.')
-            return redirect('department_dashboard', dept_id=department.id)
+            return workflow_redirect(request, 'department_dashboard', dept_id=department.id)
     else:
         form = MeetingEditForm(instance=meeting)
 
@@ -1111,7 +1112,7 @@ def meeting_attendance(request, meeting_id):
                 action=f"Changed attendance for {attendance.user.username} from {old_status} to {cleaned_status}"
             )
             messages.success(request, f"Updated attendance for {attendance.user.username} to {cleaned_status}.")
-        return redirect('meeting_attendance', meeting_id=meeting.id)
+        return workflow_redirect(request, 'meeting_attendance', meeting_id=meeting.id)
 
     attendees = meeting.attendees.select_related('user').order_by('user__username')
 
@@ -1164,7 +1165,7 @@ def update_attendance_status(request, meeting_id, attendance_id):
         )
         messages.success(request, f"Updated attendance for {attendance.user.username} to {new_status}.")
 
-    return redirect('meeting_attendance', meeting_id=meeting.id)
+    return workflow_redirect(request, 'meeting_attendance', meeting_id=meeting.id)
 
 
 @login_required
@@ -1310,7 +1311,7 @@ def my_signature_verification_qr(request, meeting_id):
             messages.warning(request, "QR generation conflicted with another request. Please review your current QR code and retry if needed.")
         else:
             messages.success(request, "Your personal signature verification QR code has been generated.")
-        return redirect('my_signature_verification_qr', meeting_id=meeting.id)
+        return workflow_redirect(request, 'my_signature_verification_qr', meeting_id=meeting.id)
 
     # GET: strictly read-only
     active_qr = VerificationQR.objects.filter(attendance=attendance, is_revoked=False).first()
@@ -1368,7 +1369,7 @@ def revoke_my_signature_verification_qr(request, meeting_id):
     active_qr = VerificationQR.objects.filter(attendance=attendance, is_revoked=False).first()
     if not active_qr:
         messages.info(request, "No active verification QR code to revoke.")
-        return redirect('my_signature_verification_qr', meeting_id=meeting.id)
+        return workflow_redirect(request, 'my_signature_verification_qr', meeting_id=meeting.id)
 
     with transaction.atomic():
         active_qr.is_revoked = True
@@ -1383,7 +1384,7 @@ def revoke_my_signature_verification_qr(request, meeting_id):
         )
 
     messages.warning(request, "Signature verification QR code has been revoked.")
-    return redirect('my_signature_verification_qr', meeting_id=meeting.id)
+    return workflow_redirect(request, 'my_signature_verification_qr', meeting_id=meeting.id)
 
 
 def verify_individual_signature(request):

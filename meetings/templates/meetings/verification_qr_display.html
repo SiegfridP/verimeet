@@ -1,3 +1,4 @@
+{% load dashboard_navigation %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -310,8 +311,8 @@
       {% endif %}
 
       <div class="actions">
-        <form method="post" action="{% url 'my_signature_verification_qr' meeting.id %}">
-          {% csrf_token %}
+        <form method="post" action="{% dashboard_url 'my_signature_verification_qr' meeting.id %}">
+          {% csrf_token %}{% dashboard_field %}
           <button type="submit" class="btn btn-primary" id="btn-generate-qr">
             {% if not verification_qr %}
               Generate Verification QR
@@ -324,14 +325,14 @@
         </form>
 
         {% if verification_qr and not verification_qr.is_revoked %}
-          <form method="post" action="{% url 'revoke_my_signature_verification_qr' meeting.id %}" onsubmit="return confirm('Revoke this signature verification QR code? The public link will no longer verify your signature.');">
-            {% csrf_token %}
+          <form method="post" action="{% dashboard_url 'revoke_my_signature_verification_qr' meeting.id %}" onsubmit="return confirm('Revoke this signature verification QR code? The public link will no longer verify your signature.');">
+            {% csrf_token %}{% dashboard_field %}
             <button type="submit" class="btn btn-danger" id="btn-revoke-qr">Revoke QR Code</button>
           </form>
         {% endif %}
 
-        <a href="{% url 'my_attendance' meeting.id %}" class="btn btn-secondary">My Attendance</a>
-        <a href="{% url 'department_dashboard' dept_id=meeting.department.id %}" class="btn btn-secondary">Dashboard</a>
+        <a href="{% dashboard_url 'my_attendance' meeting.id %}" class="btn btn-secondary">My Attendance</a>
+        <a href="{% dashboard_url 'department_dashboard' dept_id=meeting.department.id %}" class="btn btn-secondary">Dashboard</a>
       </div>
     </div>
   </div>

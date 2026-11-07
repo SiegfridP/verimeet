@@ -1,3 +1,4 @@
+{% load dashboard_navigation %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -219,9 +220,9 @@
           </p>
         </div>
         <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
-          {% if meeting.status != 'Archived' %}<form method="post" action="{% url 'generate_attendance_qr' meeting.id %}" style="display:inline">{% csrf_token %}<button type="submit" class="button">Project Attendance QR</button></form>{% endif %}
-          <a href="{% url 'review_meeting' meeting.id %}" class="button btn-secondary">Review Document</a>
-          <a href="{% url 'department_dashboard' dept_id=department.id %}" class="button btn-secondary">Dashboard</a>
+          {% if meeting.status != 'Archived' %}<form method="post" action="{% dashboard_url 'generate_attendance_qr' meeting.id %}" style="display:inline">{% csrf_token %}{% dashboard_field %}<button type="submit" class="button">Project Attendance QR</button></form>{% endif %}
+          <a href="{% dashboard_url 'review_meeting' meeting.id %}" class="button btn-secondary">Review Document</a>
+          <a href="{% dashboard_url 'department_dashboard' dept_id=department.id %}" class="button btn-secondary">Dashboard</a>
         </div>
       </div>
     </div>
@@ -277,8 +278,8 @@
                   {% endif %}
                 </td>
                 <td>
-                  {% if meeting.status != 'Archived' %}<form method="post" action="{% url 'update_attendance_status' meeting.id att.id %}" class="update-form">
-                    {% csrf_token %}
+                  {% if meeting.status != 'Archived' %}<form method="post" action="{% dashboard_url 'update_attendance_status' meeting.id att.id %}" class="update-form">
+                    {% csrf_token %}{% dashboard_field %}
                     <select name="status" aria-label="Attendance status for {{ att.user.username }}">
                       {% for val, label in status_choices %}
                         <option value="{{ val }}" {% if att.status == val %}selected{% endif %}>{{ label }}</option>

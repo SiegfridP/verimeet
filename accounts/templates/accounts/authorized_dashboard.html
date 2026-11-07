@@ -1,3 +1,4 @@
+{% load dashboard_navigation %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -21,8 +22,8 @@
 </head>
 <body><main>
 {% include 'accounts/messages.html' %}
-{% if global_admin %}<h1>Global Admin — Department Dashboard</h1><a href="{% url 'admin_dashboard' %}">Global Admin Dashboard</a>{% else %}<h1>Authorized Personnel Dashboard</h1>{% endif %}
+{% if global_admin %}<h1>Global Admin — Department Dashboard</h1><a href="{% overview_url %}">Global Admin Dashboard</a>{% else %}<h1>Authorized Personnel Dashboard</h1>{% endif %}
 <h2>Department: {{ department.name }}</h2><p>Your role: {% if global_admin %}Global Admin{% else %}Authorized Personnel{% endif %}</p>
-{% if switch_departments %}<nav aria-label="Switch department">Switch department: {% for dept in switch_departments %}<a href="{% url 'department_dashboard' dept.pk %}?{{ filter_query }}" {% if department.pk == dept.pk %}aria-current="page"{% endif %}>{{ dept.name }}</a>{% endfor %}</nav>{% endif %}
-<nav><a id="btn-create-meeting" href="{% url 'create_meeting_dept' department.pk %}">Create Meeting</a><a href="{% url 'invite_member' department.pk %}">Invite an Officer</a><a href="{% url 'request_authorized_personnel' department.pk %}">Request Authorized Personnel</a></nav>
+{% if switch_departments %}<nav aria-label="Switch department">Switch department: {% for dept in switch_departments %}<a href="{% dashboard_entry_url dept.pk %}" {% if department.pk == dept.pk %}aria-current="page"{% endif %}>{{ dept.name }}</a>{% endfor %}</nav>{% endif %}
+<nav><a id="btn-create-meeting" href="{% dashboard_url 'create_meeting_dept' department.pk %}">Create Meeting</a><a href="{% dashboard_url 'invite_member' department.pk %}">Invite an Officer</a><a href="{% dashboard_url 'request_authorized_personnel' department.pk %}">Request Authorized Personnel</a></nav>
 {% include 'accounts/meeting_list.html' %}</main></body></html>

@@ -1,3 +1,4 @@
+{% load dashboard_navigation %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -175,12 +176,12 @@
           <p style="margin: 0 0 0.75rem 0; font-size: 0.85rem; color: #c4c4f0;">
             You have signed this document. You can generate or view your personal signature verification QR code.
           </p>
-          <a href="{% url 'my_signature_verification_qr' meeting.id %}" class="button" style="background: #9f7aea; color: #ffffff;">View My Signature Verification QR</a>
+          <a href="{% dashboard_url 'my_signature_verification_qr' meeting.id %}" class="button" style="background: #9f7aea; color: #ffffff;">View My Signature Verification QR</a>
         </div>
       {% endif %}
 
       <div style="margin-top: 1.5rem;">
-        <a href="{% url 'department_dashboard' dept_id=department.id %}" class="button">Back to Dashboard</a>
+        <a href="{% dashboard_url 'department_dashboard' dept_id=department.id %}" class="button">Back to Dashboard</a>
       </div>
     </div>
   </main>

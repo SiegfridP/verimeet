@@ -9,17 +9,16 @@ from .audit import record, grant_ap
 from django.contrib import messages
 from django.core.paginator import Paginator
 from django.db.models import Count, Exists, OuterRef, Prefetch
+from .dashboard_context import FILTER_CHOICES, department_allowed, workflow_redirect, overview_department
 
 
 def meeting_list_context(request, queryset, officer=False):
     """Filter an already authorized meeting scope; personal data is always user-bound."""
     from meetings.models import Attendance
     filters = {'q': request.GET.get('q', '').strip()[:200]}
-    choices = {'status': ('Draft', 'Finished', 'Archived')}
+    choices = {'status': FILTER_CHOICES['status']}
     if officer:
-        choices.update(assignment=('assigned', 'unassigned'),
-                       attendance=('Attended', 'Late', 'Absent'),
-                       signing=('signed', 'eligible', 'awaiting', 'unavailable'))
+        choices.update({key: value for key, value in FILTER_CHOICES.items() if key != 'status'})
     for key, allowed in choices.items():
         value = request.GET.get(key, '')
         filters[key] = value if value in allowed else ''
@@ -116,14 +115,14 @@ def admin_dashboard(request):
         req.reviewer = request.user
         req.save()
         messages.success(request, 'Role-elevation request processed.')
-        return redirect('admin_dashboard')
+        return workflow_redirect(request, 'admin_dashboard')
 
     departments = Department.objects.filter(is_active=True).order_by('name', 'pk')
     pending_requests = RoleElevationRequest.objects.filter(status='P').select_related('target_user', 'department')
     from meetings.models import Meeting
     queryset = Meeting.objects.all()
-    department_filter = request.GET.get('department', '')
-    if department_filter.isascii() and department_filter.isdecimal() and len(department_filter) < 10:
+    department_filter = overview_department(request.GET.get('department', ''))
+    if department_filter:
         queryset = queryset.filter(department_id=int(department_filter))
     return render(request, 'accounts/admin_dashboard.html', {
         **meeting_list_context(request, queryset),
@@ -149,8 +148,7 @@ def department_dashboard(request, dept_id=None):
     membership = Membership.objects.filter(user=request.user, department=department).first()
     global_admin = is_global_admin(request.user)
     if not global_admin and not membership:
-        if (request.user.department_id != department.id
-                or Membership.objects.filter(user=request.user).exists()):
+        if not department_allowed(request.user, department):
             return HttpResponseForbidden('No membership in this department')
     can_manage = global_admin or (membership and membership.role == 'AP')
     departments = Department.objects.filter(is_active=True).order_by('name', 'pk')
@@ -210,7 +208,7 @@ def invite_member(request, dept_id):
                 form.add_error(None, 'Invitation could not be sent. Please retry. Any previous invitation remains valid.')
             else:
                 messages.success(request, 'Invitation submitted to the configured email backend. Console delivery is development output only.')
-                return redirect('department_dashboard', dept_id=department.id)
+                return workflow_redirect(request, 'department_dashboard', dept_id=department.id)
     else:
         form = InvitationForm()
     return render(request, 'accounts/invite.html', {'form': form, 'department': department})
@@ -289,7 +287,7 @@ def request_authorized_personnel(request, dept_id):
                 messages.success(request, 'Role-elevation request submitted.')
             else:
                 messages.info(request, 'A role-elevation request already exists for this user and department.')
-            return redirect('department_dashboard', dept_id=department.id)
+            return workflow_redirect(request, 'department_dashboard', dept_id=department.id)
     else:
         form = ElevationRequestForm()
     return render(request, 'accounts/elevation_request.html', {'form': form, 'department': department})
@@ -318,7 +316,7 @@ def review_elevation_requests(request):
         req.reviewer = request.user
         req.save()
         messages.success(request, 'Role-elevation request processed.')
-        return redirect('review_elevation_requests')
+        return workflow_redirect(request, 'review_elevation_requests')
     pending = RoleElevationRequest.objects.filter(status='P')
     return render(request, 'accounts/review_elevation_requests.html', {'pending_requests': pending})
 

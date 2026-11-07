@@ -1,3 +1,4 @@
+{% load dashboard_navigation %}
 <!DOCTYPE html>
 <html lang="en">
 
@@ -290,17 +291,17 @@
 
       <div class="actions-bar">
         {% if qr_session.is_active %}
-        <form method="post" action="{% url 'revoke_qr_session' meeting.id qr_session.id %}" style="display:inline;">
-          {% csrf_token %}
+        <form method="post" action="{% dashboard_url 'revoke_qr_session' meeting.id qr_session.id %}" style="display:inline;">
+          {% csrf_token %}{% dashboard_field %}
           <button type="submit" class="button button-danger"
             onclick="return confirm('Revoke this QR code immediately? No further officers will be able to scan it.');">
             Revoke QR Code
           </button>
         </form>
         {% endif %}
-        <a href="{% url 'review_meeting' meeting.id %}" class="button button-secondary">Meeting Overview</a>
-        <a href="{% url 'meeting_attendance' meeting.id %}" class="button button-secondary">Attendance Roster</a>
-        <a href="{% url 'department_dashboard' meeting.department.id %}" class="button button-secondary">Dashboard</a>
+        <a href="{% dashboard_url 'review_meeting' meeting.id %}" class="button button-secondary">Meeting Overview</a>
+        <a href="{% dashboard_url 'meeting_attendance' meeting.id %}" class="button button-secondary">Attendance Roster</a>
+        <a href="{% dashboard_url 'department_dashboard' meeting.department.id %}" class="button button-secondary">Dashboard</a>
       </div>
     </div>
   </main>
