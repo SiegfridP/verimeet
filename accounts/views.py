@@ -216,14 +216,23 @@ def invite_member(request, dept_id):
     return render(request, 'accounts/invite.html', {'form': form, 'department': department})
 
 def accept_invitation(request, token):
+    from .invitations import pending_invitation_url, clear_pending_invitation
     from allauth.account.utils import has_verified_email
     from django.http import HttpResponseNotAllowed
     from django.urls import reverse
     if request.method not in ('GET', 'POST'):
         return HttpResponseNotAllowed(['GET', 'POST'])
+    pending_invitation_url(request)  # Remove unusable older context even on invalid links.
     invitation = get_object_or_404(Invitation.objects.select_related('department'), token=token)
     if not invitation.is_valid() or not invitation.department.is_active:
+        if request.session.get('pending_invite_token') == token:
+            clear_pending_invitation(request)
         return HttpResponseBadRequest('Invitation is unavailable or expired.')
+    # Viewing a page is not verification intent; retain only this flow's marker.
+    if (request.session.get('pending_invite_token') != token
+            or not request.user.is_authenticated
+            or request.session.get('invite_verification_intent') != [token, request.user.pk]):
+        request.session.pop('invite_verification_intent', None)
     request.session['pending_invite_token'] = token
     eligible = request.user.is_authenticated and has_verified_email(request.user, invitation.email)
     if request.method == 'POST':
@@ -247,7 +256,7 @@ def accept_invitation(request, token):
                 record(request.user, 'membership.added', membership, invitation.department,
                        {'user_id': request.user.pk, 'new_role': 'O'})
             record(request.user, 'invitation.accepted', invitation, invitation.department)
-        request.session.pop('pending_invite_token', None)
+        clear_pending_invitation(request)
         messages.success(request, 'Invitation accepted. Your department membership is available.')
         return redirect('department_dashboard', dept_id=invitation.department_id)
     return render(request, 'accounts/accept_invitation.html', {'invitation': invitation,
