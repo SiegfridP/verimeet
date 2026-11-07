@@ -183,10 +183,6 @@ def invite_member(request, dept_id):
             email = form.cleaned_data['email']
             # Invitations strictly grant canonical Officer role
             role = 'O'
-            from django.core.mail import send_mail
-            from django.template.loader import render_to_string
-            from django.urls import reverse
-            from django.conf import settings
             try:
                 with transaction.atomic():
                     # Serialize replacements per department, including on SQLite.
@@ -195,23 +191,21 @@ def invite_member(request, dept_id):
                         return HttpResponseForbidden('Department is inactive.')
                     pending = list(Invitation.objects.filter(email=email, department=department, accepted=False))
                     invitation = Invitation.objects.create(email=email, department=department, inviter=request.user, role=role)
-                    acceptance_url = request.build_absolute_uri(reverse('accept_invitation', args=[invitation.token]))
-                    body = render_to_string('accounts/invitation_email.txt', {
-                        'department': department, 'invitation': invitation, 'acceptance_url': acceptance_url})
+                    from .models import InvitationDelivery
+                    InvitationDelivery.objects.create(invitation=invitation)
                     record(request.user, 'invitation.created', invitation, department)
                     for old in pending:
                         record(request.user, 'invitation.revoked', old, department)
                         old.delete()
-                    if send_mail('VeriMeet Officer invitation', body, settings.DEFAULT_FROM_EMAIL, [email], fail_silently=False) != 1:
-                        raise RuntimeError('Mail not accepted')
             except Exception:
-                form.add_error(None, 'Invitation could not be sent. Please retry. Any previous invitation remains valid.')
+                form.add_error(None, 'Invitation could not be queued. Please retry. Any previous invitation remains valid.')
             else:
-                messages.success(request, 'Invitation submitted to the configured email backend. Console delivery is development output only.')
+                messages.success(request, 'Invitation queued for email processing. Backend submission does not confirm inbox delivery.')
                 return workflow_redirect(request, 'department_dashboard', dept_id=department.id)
     else:
         form = InvitationForm()
-    return render(request, 'accounts/invite.html', {'form': form, 'department': department})
+    return render(request, 'accounts/invite.html', {'form': form, 'department': department,
+        'pending_invitations': department.invitations.filter(accepted=False, expires_at__gt=timezone.now()).select_related('delivery').order_by('-pk')[:20]})
 
 def accept_invitation(request, token):
     from .invitations import pending_invitation_url, clear_pending_invitation
@@ -342,3 +336,29 @@ def waiting_room(request):
     if is_global_admin(request.user) or active_department_for_user(request.user):
         return redirect('routing_view')
     return render(request, 'accounts/waiting_room.html')
+
+
+@login_required
+@transaction.atomic
+def retry_invitation_delivery(request, invitation_id):
+    from django.http import HttpResponseNotAllowed
+    from django.db.models import F
+    from .models import InvitationDelivery
+    if request.method != 'POST':
+        return HttpResponseNotAllowed(['POST'])
+    invitation = get_object_or_404(Invitation, pk=invitation_id)
+    if not is_global_admin(request.user) and not has_membership(request.user, invitation.department, role='AP'):
+        return HttpResponseForbidden('Authorized Personnel access required.')
+    if not Department.objects.filter(pk=invitation.department_id, is_active=True).update(name=F('name')):
+        return HttpResponseBadRequest('Invitation is unavailable.')
+    invitation = get_object_or_404(Invitation.objects.select_for_update(), pk=invitation_id)
+    if not invitation.is_valid():
+        return HttpResponseBadRequest('Invitation is unavailable.')
+    delivery, created = InvitationDelivery.objects.get_or_create(invitation=invitation)
+    if not created:
+        changed = InvitationDelivery.objects.filter(pk=delivery.pk, status='failed').update(
+            status='pending', attempts=0, next_attempt_at=timezone.now(), last_error='')
+        if not changed:
+            return HttpResponseBadRequest('Delivery is not eligible for manual retry.')
+    messages.success(request, 'Invitation email queued using the existing invitation and expiry.')
+    return workflow_redirect(request, 'invite_member', dept_id=invitation.department_id)

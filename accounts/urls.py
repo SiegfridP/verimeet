@@ -9,6 +9,7 @@ urlpatterns = [
     # RBAC dashboards
     path('admin/', views.admin_dashboard, name='admin_dashboard'),
     path('department/<int:dept_id>/', views.department_dashboard, name='department_dashboard'),
+    path('invitation/<int:invitation_id>/retry/', views.retry_invitation_delivery, name='retry_invitation_delivery'),
     # Invitations
     path('department/<int:dept_id>/invite/', views.invite_member, name='invite_member'),
     path('invitation/accept/<str:token>/', views.accept_invitation, name='accept_invitation'),

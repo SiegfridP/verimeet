@@ -5,7 +5,7 @@ from django.urls import reverse
 from django.utils import timezone
 from django.core import mail
 from allauth.account.models import EmailAddress
-from .models import User, Department, Membership, Invitation
+from .models import User, Department, Membership, Invitation, InvitationDelivery
 from meetings.models import AuditLog
 
 
@@ -27,17 +27,15 @@ class Batch12Tests(TestCase):
         self.assertEqual(self.client.post(reverse('invite_member', args=[self.department.pk]),
             {'email': self.invite.email, 'role': 'O'}).status_code, 302)
         new = Invitation.objects.get(accepted=False)
-        self.assertEqual(len(mail.outbox), 1)
-        self.assertIn('http://testserver' + reverse('accept_invitation', args=[new.token]), mail.outbox[0].body)
-        self.assertIn(self.department.name, mail.outbox[0].body)
-        self.assertIn('seven days', mail.outbox[0].body)
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertEqual(InvitationDelivery.objects.get(invitation=new).status, 'pending')
         self.assertFalse(Invitation.objects.filter(pk=self.invite.pk).exists())
 
-    def test_failed_replacement_preserves_old(self):
+    def test_failed_queue_replacement_preserves_old(self):
         self.client.force_login(self.ap)
-        with patch('django.core.mail.send_mail', side_effect=RuntimeError('PRIVATE PASSWORD')):
+        with patch('accounts.models.InvitationDelivery.objects.create', side_effect=RuntimeError('PRIVATE PASSWORD')):
             response = self.client.post(reverse('invite_member', args=[self.department.pk]), {'email': self.invite.email, 'role': 'O'})
-        self.assertContains(response, 'could not be sent')
+        self.assertContains(response, 'could not be queued')
         self.assertNotContains(response, 'PRIVATE PASSWORD')
         self.assertEqual(Invitation.objects.count(), 1)
         self.assertFalse(AuditLog.objects.exists())
@@ -250,12 +248,14 @@ class Batch12Tests(TestCase):
             self.assertEqual(InvitationAccountAdapter(request).get_email_verification_redirect_url(EmailAddress(user=self.user, email=self.invite.email)), '/normal/')
 
     def test_google_state_roundtrip(self):
+        from django.contrib.sessions.backends.db import SessionStore
         from .adapter import InvitationAccountAdapter
         from allauth.socialaccount.providers.google.provider import GoogleProvider
         from allauth.socialaccount.models import SocialLogin, SocialApp
         from allauth.core.context import request_context
         request = RequestFactory().get('/')
-        request.session = {'pending_invite_token': self.invite.token}
+        request.session = SessionStore()
+        request.session['pending_invite_token'] = self.invite.token
         provider = GoogleProvider(request=request, app=SocialApp(provider='google', client_id='test'))
         for destination in (self.url, '/accounts/waiting-room/', None):
             state_id = provider.stash_redirect_state(request, process='login', next_url=destination)

@@ -23,8 +23,15 @@
     <section class="card">
       <form method="post">{% csrf_token %}{% dashboard_field %}
         {{ form.as_p }}
-        <button type="submit">Send Invitation</button>
+        <button type="submit">Queue Invitation</button>
       </form>
+      <h2>Pending invitations</h2>
+      {% for invitation in pending_invitations %}
+      <p>{{ invitation.email }} - {% if invitation.delivery %}{{ invitation.delivery.get_status_display }}{% else %}Not queued (existing invitation){% endif %}</p>
+      {% if not invitation.delivery or invitation.delivery.status == 'failed' %}
+      <form method="post" action="{% dashboard_url 'retry_invitation_delivery' invitation.pk %}">{% csrf_token %}{% dashboard_field %}<button>Queue existing invitation email</button></form>
+      {% endif %}
+      {% empty %}<p>No pending invitations.</p>{% endfor %}
       <p><a href="{% dashboard_url 'department_dashboard' dept_id=department.id %}">← Back to Dashboard</a></p>
     </section>
   </main>

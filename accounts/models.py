@@ -130,3 +130,27 @@ class RoleElevationRequest(models.Model):
 
     def __str__(self):
         return f"Elevation request for {self.target_user.email} in {self.department.name} – {self.get_status_display()}"
+
+
+class InvitationDelivery(models.Model):
+    STATUS_CHOICES = [(value, value.title()) for value in
+                      ('pending', 'processing', 'submitted', 'failed', 'cancelled', 'expired')]
+    invitation = models.OneToOneField(Invitation, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name='delivery')
+    status = models.CharField(max_length=12, choices=STATUS_CHOICES, default='pending')
+    attempts = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_attempt_at = models.DateTimeField(null=True, blank=True)
+    next_attempt_at = models.DateTimeField(default=timezone.now)
+    submitted_at = models.DateTimeField(null=True, blank=True)
+    claim_id = models.UUIDField(null=True, blank=True, unique=True)
+    lease_expires_at = models.DateTimeField(null=True, blank=True)
+    last_error = models.CharField(max_length=100, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=['status', 'next_attempt_at'], name='invite_delivery_due'),
+                   models.Index(fields=['status', 'lease_expires_at'], name='invite_delivery_lease')]
+        constraints = [models.CheckConstraint(condition=(
+            models.Q(status='processing', claim_id__isnull=False, lease_expires_at__isnull=False)
+            | (~models.Q(status='processing') & models.Q(claim_id__isnull=True, lease_expires_at__isnull=True))
+        ), name='invite_delivery_claim_state')]
