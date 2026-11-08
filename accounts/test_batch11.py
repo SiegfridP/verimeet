@@ -1,10 +1,25 @@
-from django.test import TestCase
+from tempfile import TemporaryDirectory
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from accounts.models import User, Department, Membership
 from meetings.models import Meeting, Attendance
+from .test_onboarding import png
 
 
 class Batch11DashboardTests(TestCase):
+    def setUp(self):
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        storage = override_settings(PRIVATE_SIGNATURE_ROOT=directory.name)
+        storage.enable()
+        self.addCleanup(storage.disable)
+        for user in (self.ap, self.officer):
+            self.complete_onboarding(user)
+
+    def complete_onboarding(self, user):
+        user.signature_image.save('signature.png', SimpleUploadedFile('signature.png', png()))
+
     @classmethod
     def setUpTestData(cls):
         cls.dept = Department.objects.create(name='Engineering')
@@ -135,6 +150,7 @@ class Batch11DashboardTests(TestCase):
         # First-created membership is inactive; active selection uses department PK.
         inactive = Department.objects.create(name='Inactive', is_active=False)
         user = User.objects.create_user(username='multi-routing', department=inactive)
+        self.complete_onboarding(user)
         Membership.objects.create(user=user, department=self.other, role='O')
         Membership.objects.create(user=user, department=self.dept, role='AP')
         self.client.force_login(user)
@@ -147,6 +163,7 @@ class Batch11DashboardTests(TestCase):
     def test_inactive_only_memberships_and_legacy_stay_in_waiting_room(self):
         Department.objects.filter(pk=self.dept.pk).update(is_active=False)
         legacy = User.objects.create_user(username='inactive-legacy', department=self.dept)
+        self.complete_onboarding(legacy)
         Membership.objects.filter(user=legacy).delete()
         for user in (self.officer, legacy):
             self.client.force_login(user)
@@ -157,6 +174,7 @@ class Batch11DashboardTests(TestCase):
 
     def test_active_legacy_fallback_remains_officer_without_membership_creation(self):
         user = User.objects.create_user(username='active-legacy', department=self.dept)
+        self.complete_onboarding(user)
         self.client.force_login(user)
         Membership.objects.filter(user=user).delete()
         self.assertRedirects(self.client.get(reverse('routing_view')),
@@ -185,6 +203,7 @@ class Batch11DashboardTests(TestCase):
         Department.objects.filter(pk=self.dept.pk).update(is_active=False)
         superuser = User.objects.create_user(username='super-routing', is_superuser=True)
         staff = User.objects.create_user(username='staff-routing', is_staff=True)
+        self.complete_onboarding(staff)
         Membership.objects.create(user=staff, department=self.dept, role='AP')
         for user in (self.admin, superuser):
             self.client.force_login(user)
@@ -199,6 +218,7 @@ class Batch11DashboardTests(TestCase):
 
     def test_legacy_dashboard_does_not_create_membership(self):
         legacy = User.objects.create_user(username='legacy', department=self.dept)
+        self.complete_onboarding(legacy)
         self.client.force_login(legacy)
         Membership.objects.filter(user=legacy).delete()
         self.assertEqual(self.client.get(reverse('department_dashboard', args=[self.dept.pk])).status_code, 200)

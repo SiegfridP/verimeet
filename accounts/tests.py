@@ -6,6 +6,15 @@ from accounts.models import Department, User, Membership, Invitation, RoleElevat
 
 class RoutingAndAuthTests(TestCase):
     def setUp(self):
+        from tempfile import TemporaryDirectory
+        from django.test import override_settings
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from .test_onboarding import png
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        storage = override_settings(PRIVATE_SIGNATURE_ROOT=directory.name)
+        storage.enable()
+        self.addCleanup(storage.disable)
         self.client = Client()
         self.dept = Department.objects.create(name='Computer Science', contact_email='cs@example.com')
         self.user_no_dept = User.objects.create_user(username='nodept', password='password123')
@@ -21,6 +30,8 @@ class RoutingAndAuthTests(TestCase):
             department=self.dept,
             is_admin=False
         )
+        for user in (self.user_no_dept, self.officer_user):
+            user.signature_image.save('signature.png', SimpleUploadedFile('signature.png', png()))
 
     def test_login_url_resolution(self):
         """LOGIN_URL setting should resolve to the allauth login URL."""
