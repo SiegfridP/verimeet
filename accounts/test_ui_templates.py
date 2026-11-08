@@ -128,3 +128,41 @@ class ApplicationPresentationTests(TestCase):
                          'id="char-counter"', 'id="btn-sign-submit"', 'oninput=',
                          'csrfmiddlewaretoken', 'method="post"'):
             self.assertIn(fragment, html)
+
+    def test_dashboard_polish_preserves_native_preview_and_department_destination(self):
+        from types import SimpleNamespace
+        from django.test import RequestFactory
+        request = RequestFactory().get('/')
+        request.user = SimpleNamespace(is_authenticated=True, signature_validated=True)
+        request.session = {}
+        name = 'A long department name ' * 8 + '<Research & Development>'
+        department = SimpleNamespace(pk=123, name=name)
+        html = get_template('accounts/central_dashboard.html').render({
+            'department_entries': [SimpleNamespace(department=department, role='Officer')],
+        }, request)
+        self.assertIn('<details class="vm-signature-preview">', html)
+        self.assertIn('<summary>', html)
+        self.assertIn('Your signature preview', html)
+        self.assertIn('src="' + reverse('signature_preview') + '"', html)
+        self.assertIn('alt="Your saved signature"', html)
+        self.assertIn('class="vm-department-entry" href="' + reverse('department_dashboard', args=[123]) + '"', html)
+        self.assertIn('class="vm-department-role"', html)
+        self.assertIn('&lt;Research &amp; Development&gt;', html)
+        self.assertIn('class="vm-info-note"', html)
+        self.assertIn("To accept an invitation, open the link provided by your department's Authorized Personnel.", html)
+        self.assertIn('data-invitation-fragment', html)
+        self.assertIn('id="invitation-region"', html)
+        self.assertIn('id="invitation-status"', html)
+        self.assertNotIn('<details class="vm-signature-preview" open', html)
+
+    def test_return_links_remain_anchors_with_original_account_destinations(self):
+        from types import SimpleNamespace
+        from django.test import RequestFactory
+        from django.contrib.auth.models import AnonymousUser
+        request = RequestFactory().get('/')
+        request.user = AnonymousUser()
+        request.session = {}
+        html = get_template('accounts/account_settings.html').render({}, request)
+        self.assertIn('href="' + reverse('central_dashboard') + '" class="vm-return"', html)
+        self.assertIn('<span>Back to My Dashboard</span>', html)
+        self.assertIn('href="' + reverse('account_email') + '">Manage email addresses and verification</a>', html)

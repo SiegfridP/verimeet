@@ -49,7 +49,7 @@
 
         <div class="actions-row">
           <button type="submit" class="button" id="submit-assign-participants">Save Assignments</button>
-          <a href="{% dashboard_url 'department_dashboard' dept_id=department.id %}" class="button btn-secondary">Back to Dashboard</a>
+          <a href="{% dashboard_url 'department_dashboard' dept_id=department.id %}" class="button btn-secondary vm-return">{% include 'accounts/ui_icon.html' with icon='arrow-left' %}<span>Back to Dashboard</span></a>
         </div>
       </form>
     </div>

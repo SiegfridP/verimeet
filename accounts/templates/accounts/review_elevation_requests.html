@@ -28,6 +28,6 @@
     {% else %}
       <p>No pending requests.</p>
     {% endif %}
-    <p><a href="{% overview_url %}">← Back to Admin Dashboard</a></p>
+    <p><a href="{% overview_url %}" class="vm-return">{% include 'accounts/ui_icon.html' with icon='arrow-left' %}<span>Back to Admin Dashboard</span></a></p>
   </div>
 {% endblock %}

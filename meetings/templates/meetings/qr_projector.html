@@ -30,7 +30,7 @@
   {% endif %}
 
   <div class="nav-links">
-    <a href="{% dashboard_url 'review_meeting' meeting.id %}">&larr; Return to Meeting Review</a>
+    <a href="{% dashboard_url 'review_meeting' meeting.id %}" class="vm-return">{% include 'accounts/ui_icon.html' with icon='arrow-left' %}<span>Return to Meeting Review</span></a>
     <a href="{% dashboard_url 'meeting_attendance' meeting.id %}">Manage Attendance</a>
     <a href="{% dashboard_url 'department_dashboard' meeting.department.id %}">Dashboard</a>
   </div>

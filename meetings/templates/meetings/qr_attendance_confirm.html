@@ -14,5 +14,5 @@
   {% endif %}
   <button type="submit">Confirm attendance</button>
 </form>
-<a href="{% dashboard_url 'department_dashboard' meeting.department_id %}">Return to Dashboard</a>
+<a href="{% dashboard_url 'department_dashboard' meeting.department_id %}" class="vm-return">{% include 'accounts/ui_icon.html' with icon='arrow-left' %}<span>Return to Dashboard</span></a>
 {% endblock %}

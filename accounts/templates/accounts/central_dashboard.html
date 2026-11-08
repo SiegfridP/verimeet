@@ -5,15 +5,15 @@
 <div>
 
 <header class="vm-page-header"><div><p class="vm-eyebrow">Your workspace</p><h1>My Dashboard</h1></div></header>
-{% if user.signature_validated %}<details><summary>Your signature preview</summary><img src="{% url 'signature_preview' %}" alt="Your saved signature"></details>{% endif %}
+{% if user.signature_validated %}<details class="vm-signature-preview"><summary>{% include 'accounts/ui_icon.html' with icon='signature' %}<span>Your signature preview</span><span class="vm-disclosure-chevron">{% include 'accounts/ui_icon.html' with icon='chevron' %}</span></summary><img src="{% url 'signature_preview' %}" alt="Your saved signature"></details>{% endif %}
 
 <p>Select a department to view its dashboard.</p>
 <a class="button" href="{% url 'create_department' %}">Create Department</a>
 <section class="vm-department-grid" aria-labelledby="departments-heading">
 <h2 id="departments-heading">My departments</h2>
 {% for entry in department_entries %}
-<article class="vm-department-card"><h3>{{ entry.department.name }}</h3><p>Your role: {{ entry.role }}</p>
-<a href="{% url 'department_dashboard' entry.department.pk %}">Enter {{ entry.department.name }}</a></article>
+<article class="vm-department-card"><h3>{{ entry.department.name }}</h3><p class="vm-department-role">Your role: {{ entry.role }}</p>
+<a class="vm-department-entry" href="{% url 'department_dashboard' entry.department.pk %}"><span>Enter {{ entry.department.name }}</span>{% include 'accounts/ui_icon.html' with icon='arrow-right' %}</a></article>
 {% empty %}
 <p>You have no active departments. Create a department or join through an invitation from Authorized Personnel.</p>
 {% endfor %}

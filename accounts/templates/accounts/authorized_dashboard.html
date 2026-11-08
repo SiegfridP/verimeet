@@ -2,7 +2,7 @@
 {% load dashboard_navigation %}
 {% block head_title %}VeriMeet – Authorized Dashboard{% endblock %}
 {% block content %}
-<div class="vm-dashboard">{% if not global_admin %}<a href="{% url 'central_dashboard' %}">Back to My Dashboard</a>{% endif %}
+<div class="vm-dashboard">{% if not global_admin %}<a href="{% url 'central_dashboard' %}" class="vm-return">{% include 'accounts/ui_icon.html' with icon='arrow-left' %}<span>Back to My Dashboard</span></a>{% endif %}
 
 
 {% if global_admin %}<h1>Global Admin — Department Dashboard</h1><a href="{% overview_url %}">Global Admin Dashboard</a>{% else %}<h1>Authorized Personnel Dashboard</h1>{% endif %}

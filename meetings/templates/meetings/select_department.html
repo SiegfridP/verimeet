@@ -11,13 +11,13 @@
       <ul class="dept-list">
         {% for dept in departments %}
           <li>
-            <a class="dept-link" href="{% dashboard_url 'create_meeting_dept' dept_id=dept.id %}">
-              {{ dept.name }}
+            <a class="dept-link vm-department-entry" href="{% dashboard_url 'create_meeting_dept' dept_id=dept.id %}">
+              <span>{{ dept.name }}</span>{% include 'accounts/ui_icon.html' with icon='arrow-right' %}
             </a>
           </li>
         {% endfor %}
       </ul>
-      <p><a href="{% dashboard_url 'routing_view' %}">← Return to Main</a></p>
+      <p><a href="{% dashboard_url 'routing_view' %}" class="vm-return">{% include 'accounts/ui_icon.html' with icon='arrow-left' %}<span>Return to Main</span></a></p>
     </div>
   </div>
 {% endblock %}

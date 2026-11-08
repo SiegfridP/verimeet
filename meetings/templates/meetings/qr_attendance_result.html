@@ -39,6 +39,6 @@
     </div>
 
     <a href="{% dashboard_url 'my_attendance' meeting.id %}" class="button">View My Attendance Details</a>
-    <a href="{% dashboard_url 'department_dashboard' meeting.department_id %}" class="secondary-link">Return to Dashboard</a>
+    <a href="{% dashboard_url 'department_dashboard' meeting.department_id %}" class="secondary-link vm-return">{% include 'accounts/ui_icon.html' with icon='arrow-left' %}<span>Return to Dashboard</span></a>
   </div>
 {% endblock %}

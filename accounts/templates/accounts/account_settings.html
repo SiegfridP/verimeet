@@ -19,6 +19,6 @@
 {% if replacement_form %}<p>Replacing this visual PNG does not invalidate cryptographic signatures. Previous PNG versions are retained for historical protection.</p>
 <form method="post" enctype="multipart/form-data" action="{% url 'replace_account_signature' %}">{% csrf_token %}{{ replacement_form.as_p }}<button type="submit">Replace signature</button></form>{% endif %}
 {% if signature_ready %}<img src="{% url 'signature_preview' %}" alt="Your saved signature">{% else %}<p>No valid signature is registered.</p>{% endif %}
-{% if global_admin %}<a href="{% url 'admin_dashboard' %}">Back to Global Admin Dashboard</a>{% else %}<a href="{% url 'central_dashboard' %}">Back to My Dashboard</a>{% endif %}
+{% if global_admin %}<a href="{% url 'admin_dashboard' %}" class="vm-return">{% include 'accounts/ui_icon.html' with icon='arrow-left' %}<span>Back to Global Admin Dashboard</span></a>{% else %}<a href="{% url 'central_dashboard' %}" class="vm-return">{% include 'accounts/ui_icon.html' with icon='arrow-left' %}<span>Back to My Dashboard</span></a>{% endif %}
 </div>
 {% endblock %}

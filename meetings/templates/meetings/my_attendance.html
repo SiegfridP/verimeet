@@ -76,7 +76,7 @@
       {% endif %}
 
       <div>
-        <a href="{% dashboard_url 'department_dashboard' dept_id=department.id %}" class="button">Back to Dashboard</a>
+        <a href="{% dashboard_url 'department_dashboard' dept_id=department.id %}" class="button vm-return">{% include 'accounts/ui_icon.html' with icon='arrow-left' %}<span>Back to Dashboard</span></a>
       </div>
     </div>
   </div>

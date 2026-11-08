@@ -544,3 +544,49 @@
 @media (prefers-reduced-motion: reduce) {
   .vm-app * { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
+
+/* Focused navigation and dashboard polish. */
+@media (min-width: 901px) {
+  .vm-workspace .vm-topbar > .vm-brand { display: none; }
+  .vm-workspace .vm-topbar { min-height: 44px; padding-block: .25rem; }
+}
+.vm-content a.vm-return,
+.vm-content a.vm-department-entry {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: .5rem;
+  min-height: 44px;
+  max-width: 100%;
+  padding: .5rem .8rem;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  font-size: .875rem;
+  font-weight: 550;
+  line-height: 1.4;
+  text-decoration: none;
+  box-shadow: none;
+  transition: background-color .15s, border-color .15s;
+}
+.vm-content a.vm-return { color: #475569; background: #fff; }
+.vm-content a.vm-return:hover { background: var(--surface); color: var(--text); border-color: #cbd5e1; }
+.vm-content a.vm-department-entry { color: #115e59; background: #f0fdfa; border-color: #99d5cd; }
+.vm-content a.vm-department-entry:hover { color: #134e4a; background: #ccfbf1; border-color: var(--primary); }
+.vm-return > span, .vm-department-entry > span { min-width: 0; overflow-wrap: anywhere; }
+.vm-content .vm-department-card { display: flex; flex-direction: column; align-items: flex-start; gap: .85rem; padding: 1.35rem; }
+.vm-content .vm-department-card h3 { margin: 0; line-height: 1.45; font-size: 1.1rem; overflow-wrap: anywhere; }
+.vm-content .vm-department-role { margin: 0 0 .25rem; font-size: .875rem; color: #475569; }
+.vm-department-card > .vm-department-entry { margin-top: auto; }
+.vm-content .vm-signature-preview { max-width: 480px; margin: 1rem 0; background: white; border: 1px solid var(--border); border-radius: 8px; }
+.vm-signature-preview > summary { display: flex; align-items: center; gap: .65rem; padding: .75rem 1rem; min-height: 44px; list-style: none; font-weight: 550; color: #475569; border-radius: 8px; }
+.vm-signature-preview > summary::-webkit-details-marker { display: none; }
+.vm-signature-preview > summary:hover { background: var(--surface); }
+.vm-disclosure-chevron { margin-left: auto; display: inline-flex; transition: transform .15s; }
+.vm-signature-preview[open] > summary { background: #f0fdfa; color: #115e59; border-bottom: 1px solid var(--border); border-radius: 8px 8px 0 0; }
+.vm-signature-preview[open] .vm-disclosure-chevron { transform: rotate(180deg); }
+.vm-content .vm-signature-preview img { display: block; margin: 1rem; max-width: calc(100% - 2rem); }
+.vm-content .vm-info-note { display: flex; align-items: flex-start; gap: .65rem; padding: .85rem 1rem; margin: 1.5rem 0 0; border: 1px solid var(--border); border-left: 3px solid #8bbdb7; border-radius: 7px; background: #f0fdfa; color: #475569; font-size: .875rem; }
+.vm-info-note > .vm-icon { margin-top: .15rem; }
+@media (prefers-reduced-motion: reduce) {
+  .vm-disclosure-chevron, .vm-content a.vm-return, .vm-content a.vm-department-entry { transition: none; }
+}
