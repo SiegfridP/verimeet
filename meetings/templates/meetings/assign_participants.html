@@ -175,9 +175,10 @@
         {% csrf_token %}{% dashboard_field %}
 
         <div class="form-group">
-          <label>Eligible Department Members</label>
+          <label>Department Members and Existing Assignments</label>
           <div class="help-text">
             Check all members who should participate in this meeting. Assigned members will be authorized to digitally sign after the meeting is locked for signing.
+            Existing assignments remain selected, including inactive accounts. Inactive accounts cannot be newly assigned. Deselect an existing participant only when you intend to remove that assignment. Signed attendance is protected.
           </div>
 
           {% if form.participants.field.queryset.exists %}

@@ -833,6 +833,8 @@ def assign_participants(request, meeting_id):
     """
     meeting = get_object_or_404(Meeting.objects.select_for_update(), id=meeting_id)
     department = meeting.department
+    if not department.is_active:
+        return HttpResponseForbidden('An active department is required.')
 
     # Server-side authorization check
     if not is_global_admin(request.user) and not has_membership(request.user, department, role='AP'):

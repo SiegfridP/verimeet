@@ -6,7 +6,46 @@ from accounts.models import Membership, Department
 
 User = get_user_model()
 
-class MeetingForm(forms.ModelForm):
+
+def participant_choices(department, meeting=None):
+    """New assignments follow membership precedence; existing records may be retained."""
+    if not department or not Department.objects.filter(pk=department.pk, is_active=True).exists():
+        return User.objects.none()
+    memberships = Membership.objects.filter(user_id=models.OuterRef('pk'))
+    users = User.objects.alias(
+        has_memberships=models.Exists(memberships),
+        joined=models.Exists(memberships.filter(department_id=department.pk)))
+    if meeting and meeting.pk and meeting.department_id == department.pk:
+        users = users.annotate(existing_assignment=models.Exists(
+            Attendance.objects.filter(meeting_id=meeting.pk, user_id=models.OuterRef('pk'))))
+    else:
+        users = users.annotate(existing_assignment=models.Value(False, output_field=models.BooleanField()))
+    eligible = models.Q(joined=True) | models.Q(has_memberships=False, department_id=department.pk)
+    return users.filter((models.Q(is_active=True) & eligible) |
+                        models.Q(existing_assignment=True)).order_by('username')
+
+
+def participant_label(user):
+    label = f"{user.username} ({user.email})" if user.email else user.username
+    if not user.is_active:
+        return label + ' - Inactive, already assigned; deselect to remove'
+    return label + (' - Already assigned' if user.existing_assignment else '')
+
+
+class ParticipantSelectionMixin:
+    def clean_participants(self):
+        participants = self.cleaned_data.get('participants')
+        if not self.department or not Department.objects.filter(pk=self.department.pk, is_active=True).exists():
+            raise forms.ValidationError('An active department is required.')
+        selected = {user.pk for user in participants} if participants is not None else set()
+        current = set(participant_choices(self.department, getattr(self, 'meeting', None))
+                      .filter(pk__in=selected).values_list('pk', flat=True))
+        if selected != current:
+            raise forms.ValidationError('Participant eligibility changed. Refresh before trying again.')
+        return participants
+
+
+class MeetingForm(ParticipantSelectionMixin, forms.ModelForm):
     participants = forms.ModelMultipleChoiceField(
         queryset=User.objects.none(),
         widget=forms.CheckboxSelectMultiple,
@@ -43,13 +82,8 @@ class MeetingForm(forms.ModelForm):
         super().__init__(*args, **kwargs)
         self.department = department
         if department:
-            self.fields['participants'].queryset = User.objects.filter(
-                models.Q(memberships__department=department) | models.Q(department=department),
-                is_active=True
-            ).distinct().order_by('username')
-            self.fields['participants'].label_from_instance = (
-                lambda user: f"{user.username} ({user.email})" if user.email else user.username
-            )
+            self.fields['participants'].queryset = participant_choices(department)
+            self.fields['participants'].label_from_instance = participant_label
 
     def clean_title(self):
         title = self.cleaned_data.get('title', '').strip()
@@ -57,24 +91,7 @@ class MeetingForm(forms.ModelForm):
             raise forms.ValidationError("Meeting title is required.")
         return title
 
-    def clean_participants(self):
-        participants = self.cleaned_data.get('participants')
-        if not self.department:
-            raise forms.ValidationError("Department context is required.")
-        if participants:
-            for user in participants:
-                is_member = (
-                    user.is_active and (
-                        Membership.objects.filter(user=user, department=self.department).exists() or
-                        user.department_id == self.department.id
-                    )
-                )
-                if not is_member:
-                    raise forms.ValidationError(f"User {user} is not an eligible member of {self.department.name}.")
-        return participants
-
-
-class AssignParticipantsForm(forms.Form):
+class AssignParticipantsForm(ParticipantSelectionMixin, forms.Form):
     participants = forms.ModelMultipleChoiceField(
         queryset=User.objects.none(),
         widget=forms.CheckboxSelectMultiple,
@@ -88,29 +105,8 @@ class AssignParticipantsForm(forms.Form):
         self.department = department
         self.meeting = meeting
         if department:
-            self.fields['participants'].queryset = User.objects.filter(
-                models.Q(memberships__department=department) | models.Q(department=department),
-                is_active=True
-            ).distinct().order_by('username')
-            self.fields['participants'].label_from_instance = (
-                lambda user: f"{user.username} ({user.email})" if user.email else user.username
-            )
-
-    def clean_participants(self):
-        participants = self.cleaned_data.get('participants')
-        if not self.department:
-            raise forms.ValidationError("Department context is required.")
-        if participants:
-            for user in participants:
-                is_member = (
-                    user.is_active and (
-                        Membership.objects.filter(user=user, department=self.department).exists() or
-                        user.department_id == self.department.id
-                    )
-                )
-                if not is_member:
-                    raise forms.ValidationError(f"User {user} is not an eligible member of {self.department.name}.")
-        return participants
+            self.fields['participants'].queryset = participant_choices(department, meeting)
+            self.fields['participants'].label_from_instance = participant_label
 
 
 class MeetingEditForm(forms.ModelForm):
