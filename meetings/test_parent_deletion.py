@@ -1,6 +1,8 @@
+from accounts.test_fixtures import set_meeting_fixture_state
 from django.test import TestCase, RequestFactory
 from django.contrib.admin.sites import AdminSite
 from django.core.exceptions import PermissionDenied
+from django.db.models.deletion import ProtectedError
 from django.urls import reverse
 from django.db import transaction
 from django.utils import timezone
@@ -16,9 +18,11 @@ class ParentDeletionTests(TestCase):
         self.department = Department.objects.create(name='Protected')
         self.user = User.objects.create_user(username='signer')
         Membership.objects.create(user=self.user, department=self.department, role='O')
-        self.meeting = Meeting.objects.create(department=self.department, title='Evidence', status='Finished')
+        self.meeting = Meeting.objects.create(department=self.department, title='Evidence', status='Draft')
         self.att = Attendance.objects.create(meeting=self.meeting, user=self.user,
             has_signed=True, cryptographic_signature='historical', signed_at=timezone.now(), annotation='Evidence')
+        self.meeting.status='Finished'
+        self.meeting.save()
         self.qr = VerificationQR.objects.create(attendance=self.att, token_hash='hash', encrypted_token='encrypted')
         self.request = RequestFactory().post('/')
         self.request.user = self.admin
@@ -33,20 +37,20 @@ class ParentDeletionTests(TestCase):
     def test_signed_orm_instance_and_queryset_deletions(self):
         for obj in (self.att, self.meeting, self.user, self.department):
             with self.subTest(model=type(obj).__name__, path='instance'):
-                with self.assertRaises(PermissionDenied), transaction.atomic():
+                with self.assertRaises((PermissionDenied, ProtectedError)), transaction.atomic():
                     obj.delete()
                 self.assert_evidence()
             with self.subTest(model=type(obj).__name__, path='queryset'):
-                with self.assertRaises(PermissionDenied), transaction.atomic():
+                with self.assertRaises((PermissionDenied, ProtectedError)), transaction.atomic():
                     type(obj).objects.filter(pk=obj.pk).delete()
                 self.assert_evidence()
 
     def test_archived_unsigned_parent_deletions(self):
         Attendance.objects.filter(pk=self.att.pk).update(has_signed=False, cryptographic_signature='', signed_at=None)
-        Meeting.objects.filter(pk=self.meeting.pk).update(status='Archived')
+        set_meeting_fixture_state(Meeting.objects.filter(pk=self.meeting.pk), status='Archived')
         for obj in (self.att, self.meeting, self.user, self.department):
             with self.subTest(model=type(obj).__name__):
-                with self.assertRaises(PermissionDenied), transaction.atomic():
+                with self.assertRaises((PermissionDenied, ProtectedError)), transaction.atomic():
                     type(obj).objects.filter(pk=obj.pk).delete()
                 self.assertTrue(type(obj).objects.filter(pk=obj.pk).exists())
                 self.assertTrue(VerificationQR.objects.filter(pk=self.qr.pk).exists())
@@ -64,11 +68,11 @@ class ParentDeletionTests(TestCase):
             else:
                 safe = Department.objects.create(name='Safe')
             with self.subTest(model=model.__name__, path='individual'):
-                with self.assertRaises(PermissionDenied), transaction.atomic():
+                with self.assertRaises((PermissionDenied, ProtectedError)), transaction.atomic():
                     admin.delete_model(self.request, protected)
                 self.assert_evidence()
             with self.subTest(model=model.__name__, path='bulk'):
-                with self.assertRaises(PermissionDenied), transaction.atomic():
+                with self.assertRaises((PermissionDenied, ProtectedError)), transaction.atomic():
                     admin.delete_queryset(self.request, model.objects.filter(pk__in=[safe.pk, protected.pk]))
                 self.assertTrue(model.objects.filter(pk=safe.pk).exists())
                 self.assert_evidence()
@@ -79,13 +83,13 @@ class ParentDeletionTests(TestCase):
                                ('accounts', 'user', self.user), ('accounts', 'department', self.department)):
             response = self.client.post(reverse(f'admin:{app}_{model}_delete', args=[obj.pk]), {'post': 'yes'})
             self.assertIn(response.status_code, (200, 403))
-            self.assertContains(response, 'Cannot delete' if response.status_code == 200 else '403 Forbidden',
+            self.assertContains(response, 'Cannot delete' if response.status_code == 200 else 'Access unavailable',
                                 status_code=response.status_code)
             self.assert_evidence()
             response = self.client.post(reverse(f'admin:{app}_{model}_changelist'),
                 {'action': 'delete_selected', '_selected_action': [obj.pk], 'post': 'yes'})
             self.assertIn(response.status_code, (200, 403))
-            self.assertContains(response, 'Cannot delete' if response.status_code == 200 else '403 Forbidden',
+            self.assertContains(response, 'Cannot delete' if response.status_code == 200 else 'Access unavailable',
                                 status_code=response.status_code)
             self.assert_evidence()
 
@@ -94,8 +98,8 @@ class ParentDeletionTests(TestCase):
         for parent in ('attendance', 'meeting', 'user', 'department'):
             dept = Department.objects.create(name=f'Safe {parent}')
             user = User.objects.create_user(username=f'safe_{parent}')
-            # Department deletion now protects Finished meetings even unsigned.
-            meeting = Meeting.objects.create(department=dept, title='Safe', status='Draft' if parent == 'department' else 'Finished')
+            # Only unsigned Draft assignments retain ordinary deletion behavior.
+            meeting = Meeting.objects.create(department=dept, title='Safe', status='Draft')
             attendance = Attendance.objects.create(meeting=meeting, user=user)
             target = {'attendance': attendance, 'meeting': meeting, 'user': user, 'department': dept}[parent]
             target.delete()
@@ -103,7 +107,7 @@ class ParentDeletionTests(TestCase):
 
     def test_signature_alone_is_protected(self):
         Attendance.objects.filter(pk=self.att.pk).update(has_signed=False, signed_at=None)
-        with self.assertRaises(PermissionDenied), transaction.atomic():
+        with self.assertRaises((PermissionDenied, ProtectedError)), transaction.atomic():
             self.meeting.delete()
         self.assert_evidence()
 
@@ -125,7 +129,7 @@ class ParentDeletionTests(TestCase):
         # Invoke the actual receiver and execute real queries. SQLite cannot prove
         # PostgreSQL contention safety; this checks the receiver's lock ordering.
         with patch.object(QuerySet, 'select_for_update', lock), connection.execute_wrapper(execute):
-            with self.assertRaises(PermissionDenied), transaction.atomic():
+            with self.assertRaises((PermissionDenied, ProtectedError)), transaction.atomic():
                 protect_attendance_evidence(Attendance, self.att, connection.alias)
         self.assertEqual(events, ['meeting_write', 'attendance_lock'])
         self.assert_evidence()
@@ -133,7 +137,7 @@ class ParentDeletionTests(TestCase):
     def test_stale_collector_instance_uses_persisted_meeting(self):
         safe = Meeting.objects.create(department=self.department, title='Stale collector')
         self.att.meeting = safe
-        with self.assertRaises(PermissionDenied), transaction.atomic():
+        with self.assertRaises((PermissionDenied, ProtectedError)), transaction.atomic():
             self.att.delete()
         self.assert_evidence()
 
@@ -141,6 +145,8 @@ class ParentDeletionTests(TestCase):
         from django.db import connection
         from django.db.models.query import QuerySet
         from unittest.mock import patch
+        self.meeting = Meeting.objects.create(department=self.department, title='Mutable lock-order fixture')
+        self.att = Attendance.objects.create(meeting=self.meeting, user=self.user)
         admin = AttendanceAdmin(Attendance, AdminSite())
         other = Meeting.objects.create(department=self.department, title='Other')
         for operation in ('save', 'delete', 'bulk'):
@@ -167,7 +173,7 @@ class ParentDeletionTests(TestCase):
                         elif operation == 'delete':
                             admin.delete_model(self.request, self.att)
                         else:
-                            admin.delete_queryset(self.request, Attendance.objects.order_by('-meeting_id'))
+                            admin.delete_queryset(self.request, Attendance.objects.filter(meeting_id__in=[self.meeting.pk, other.pk]).order_by('-meeting_id'))
                     first_attendance = next(i for i, event in enumerate(events) if event[0] == 'attendance')
                     meetings = [event[1] for event in events[:first_attendance]]
                     self.assertEqual(meetings, sorted([self.meeting.pk, other.pk]) if operation == 'bulk' else [self.meeting.pk])
@@ -181,11 +187,11 @@ class ParentDeletionTests(TestCase):
             with self.subTest(archived=archived), transaction.atomic():
                 if archived:
                     Attendance.objects.filter(pk=self.att.pk).update(has_signed=False, cryptographic_signature='', signed_at=None)
-                    Meeting.objects.filter(pk=self.meeting.pk).update(status='Archived')
+                    set_meeting_fixture_state(Meeting.objects.filter(pk=self.meeting.pk), status='Archived')
                 safe_meeting = Meeting.objects.create(department=self.department, title='Unprotected')
                 safe = Attendance.objects.create(meeting=safe_meeting, user=self.user)
                 for bulk in (False, True):
-                    with self.assertRaises(PermissionDenied), transaction.atomic():
+                    with self.assertRaises((PermissionDenied, ProtectedError)), transaction.atomic():
                         if bulk:
                             admin.delete_queryset(self.request, Attendance.objects.all())
                         else:
@@ -197,13 +203,15 @@ class ParentDeletionTests(TestCase):
                 transaction.set_rollback(True)
 
     def test_admin_reassignment_race_fails_closed(self):
+        from django.db.models.query import QuerySet
         from unittest.mock import patch
         from .attendance_integrity import lock_mutable_meetings
         admin = AttendanceAdmin(Attendance, AdminSite())
         destination = Meeting.objects.create(department=self.department, title='Changed association')
         def reassign_after_meeting_lock(ids):
             lock_mutable_meetings(ids)
-            Attendance.objects.filter(pk=self.att.pk).update(meeting=destination)
+            # Simulate an out-of-band write; ordinary structural updates must reject it.
+            QuerySet.update(Attendance.objects.filter(pk=self.att.pk), meeting=destination)
         for operation in ('save', 'delete', 'bulk'):
             self.att.refresh_from_db()
             with self.subTest(operation=operation):

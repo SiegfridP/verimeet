@@ -16,6 +16,8 @@ def record(actor, event_type, target, department=None, metadata=None, *, using=N
 
 
 def grant_ap(actor, user, department):
+    from meetings.roster import lock_user_scope
+    lock_user_scope([user.pk], extra_departments=[department.pk])
     if not Department.objects.filter(pk=department.pk, is_active=True).update(name=F('name')):
         raise ValidationError('Active department membership required.')
     membership = Membership.objects.select_for_update().filter(user=user, department=department).first()

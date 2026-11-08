@@ -1,3 +1,5 @@
+from django.db import transaction
+from accounts.test_fixtures import set_meeting_fixture_state
 import json
 from html import unescape
 import re
@@ -50,9 +52,9 @@ class DashboardContextTests(TestCase):
                             (self.officer, ('my_attendance',))):
             self.client.force_login(user)
             for name in names:
-                with self.subTest(user=user.username, name=name):
+                with self.subTest(user=user.username, name=name), transaction.atomic():
                     if name == 'projector_qr_view':
-                        Meeting.objects.filter(pk=self.meeting.pk).update(status='Finished')
+                        set_meeting_fixture_state(Meeting.objects.filter(pk=self.meeting.pk), status='Finished')
                     response = self.client.get(reverse(name, args=[self.meeting.pk]), {'dashboard_context': json.dumps(self.data())})
                     self.assertEqual(response.status_code, 200)
                     self.assertContains(response, reverse('department_dashboard', args=[self.dept.pk]) + '?q=Context&amp;status=Draft&amp;page=2')
@@ -75,11 +77,11 @@ class DashboardContextTests(TestCase):
             for name, fields in (('edit_meeting', {'title': 'Changed context', 'minutes_content': ''}),
                                  ('assign_participants', {'participants': [self.officer.pk]}),
                                  ('finalize_meeting', {})):
-                Meeting.objects.filter(pk=self.meeting.pk).update(status='Draft')
-                with self.subTest(user=user.username, name=name):
+                with self.subTest(user=user.username, name=name), transaction.atomic():
                     response = self.client.post(reverse(name, args=[self.meeting.pk]), {**fields, 'dashboard_context': json.dumps(self.data(kind))})
                     self.assertEqual(response.status_code, 302)
                     self.assertEqual(response.url, destination(context(self.request(self.data(kind), user)), reset=True))
+                    transaction.set_rollback(True)
 
     def test_validation_and_sensitive_keys(self):
         invalid = [{'kind': 'external'}, {'kind': 'overview'}, {'kind': 'department', 'dept': 'bad'}, {'kind': 'department', 'dept': self.other.pk}]
@@ -144,7 +146,7 @@ class DashboardContextTests(TestCase):
     def test_officer_signing_success_resets_page(self):
         import time
         from meetings.crypto import generate_hmac_qr_token
-        Meeting.objects.filter(pk=self.meeting.pk).update(status='Finished', minutes_content='Final notes')
+        set_meeting_fixture_state(Meeting.objects.filter(pk=self.meeting.pk), status='Finished', minutes_content='Final notes')
         Attendance.objects.filter(meeting=self.meeting, user=self.officer).update(status='Late')
         self.client.force_login(self.officer)
         timestamp = str(int(time.time()))
@@ -294,7 +296,9 @@ class DashboardContextTests(TestCase):
     def test_pdf_export_link_carries_context_without_changing_export(self):
         from unittest.mock import patch
         self.client.force_login(self.admin)
-        Meeting.objects.filter(pk=self.meeting.pk).update(status='Finished', minutes_content='Final')
+        self.meeting.status='Finished'
+        self.meeting.minutes_content='Final'
+        self.meeting.save()
         overview = self.client.get(reverse('admin_dashboard'), {'q': 'Context', 'status': 'Finished'})
         entry = next(link for link in self.links(overview) if urlsplit(link).path == reverse('department_dashboard', args=[self.dept.pk]))
         department = self.client.get(entry)
@@ -308,7 +312,9 @@ class DashboardContextTests(TestCase):
         self.assertEqual(response.content, b'%PDF-test')
         self.assertEqual(response['Content-Type'], 'application/pdf')
         self.client.force_login(self.officer)
-        self.assertEqual(self.client.get(export).status_code, 403)
+        with patch('meetings.pdf.generate_meeting_pdf', return_value=b'%PDF-test') as renderer:
+            self.assertEqual(self.client.get(export).status_code, 200)
+        self.assertTrue(renderer.call_args.args[0]['officer_read_only'])
 
     def test_overview_pagination_without_ordinary_filters_preserves_return(self):
         Meeting.objects.bulk_create([Meeting(department=self.dept, title='Context page') for _ in range(22)])

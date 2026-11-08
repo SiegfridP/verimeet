@@ -1,3 +1,4 @@
+from accounts.test_fixtures import set_meeting_fixture_state
 from tempfile import TemporaryDirectory
 from django.test import TestCase, override_settings
 from django.urls import reverse
@@ -91,10 +92,11 @@ class ParticipantIntegrityTests(TestCase):
     def test_inactive_department_and_locked_lifecycle(self):
         for status in ('Finished', 'Archived'):
             # Fixture-only lifecycle transition; no signed records are changed.
-            Meeting.objects.filter(pk=self.meeting.pk).update(status=status)
+            set_meeting_fixture_state(Meeting.objects.filter(pk=self.meeting.pk), status=status)
             self.assertEqual(self.client.post(self.url, {'participants': []}).status_code, 403)
             self.assertTrue(Attendance.objects.filter(pk=self.attendance.pk).exists())
-        Meeting.objects.filter(pk=self.meeting.pk).update(status='Draft')
+        self.meeting = Meeting.objects.create(department=self.dept, title='Inactive draft')
+        self.url = reverse('assign_participants', args=[self.meeting.pk])
         Department.objects.filter(pk=self.dept.pk).update(is_active=False)
         self.assertEqual(self.client.get(self.url).status_code, 403)
         self.assertEqual(self.client.post(self.url, {'participants': []}).status_code, 403)

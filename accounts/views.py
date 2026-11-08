@@ -475,6 +475,8 @@ def accept_invitation(request, token):
         with transaction.atomic():
             from django.db.models import F
             # Shared lock order with replacement; no timestamp or lifecycle mutation.
+            from meetings.roster import lock_user_scope
+            lock_user_scope([request.user.pk], extra_departments=[invitation.department_id])
             if not Department.objects.filter(pk=invitation.department_id, is_active=True).update(name=F('name')):
                 return HttpResponseBadRequest('Invitation is unavailable.')
             invitation = get_object_or_404(Invitation.objects.select_for_update(), token=token)

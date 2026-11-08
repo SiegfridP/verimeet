@@ -1,6 +1,8 @@
+from accounts.test_fixtures import set_meeting_fixture_state
 from datetime import timedelta
 from unittest.mock import patch
 from django.test import TestCase, RequestFactory
+from django.db import transaction
 from django.contrib.admin.sites import AdminSite
 from django.core.exceptions import PermissionDenied
 from django.urls import reverse
@@ -19,9 +21,11 @@ class AttendanceIntegrityTests(TestCase):
         self.officer = User.objects.create_user(username='officer')
         complete_onboarding(self.officer)
         Membership.objects.create(user=self.officer, department=self.dept, role='O')
-        self.meeting = Meeting.objects.create(department=self.dept, title='Record', status='Finished')
+        self.meeting = Meeting.objects.create(department=self.dept, title='Record', status='Draft')
         self.archived = Meeting.objects.create(department=self.dept, title='Archive', status='Archived')
         self.att = Attendance.objects.create(meeting=self.meeting, user=self.officer)
+        self.meeting.status='Finished'
+        self.meeting.save()
         self.model_admin = AttendanceAdmin(Attendance, AdminSite())
         self.request = RequestFactory().post('/')
         self.request.user = self.admin
@@ -29,45 +33,48 @@ class AttendanceIntegrityTests(TestCase):
     def test_manual_finished_and_archived(self):
         self.client.force_login(self.admin)
         for name in ('meeting_attendance', 'update_attendance_status'):
-            args = [self.meeting.pk] + ([self.att.pk] if name == 'update_attendance_status' else [])
-            url = reverse(name, args=args)
-            self.assertEqual(self.client.post(url, {'attendance_id': self.att.pk, 'status': 'Late'}).status_code, 302)
-            Meeting.objects.filter(pk=self.meeting.pk).update(status='Archived')
-            before = AuditLog.objects.count()
-            self.assertEqual(self.client.post(url, {'attendance_id': self.att.pk, 'status': 'Absent'}).status_code, 403)
-            self.att.refresh_from_db()
-            self.assertEqual(self.att.status, 'Late')
-            self.assertEqual(AuditLog.objects.count(), before)
-            Meeting.objects.filter(pk=self.meeting.pk).update(status='Finished')
+            with transaction.atomic():
+                args = [self.meeting.pk] + ([self.att.pk] if name == 'update_attendance_status' else [])
+                url = reverse(name, args=args)
+                self.assertEqual(self.client.post(url, {'attendance_id': self.att.pk, 'status': 'Late'}).status_code, 302)
+                set_meeting_fixture_state(Meeting.objects.filter(pk=self.meeting.pk), status='Archived')
+                before = AuditLog.objects.count()
+                self.assertEqual(self.client.post(url, {'attendance_id': self.att.pk, 'status': 'Absent'}).status_code, 403)
+                self.att.refresh_from_db()
+                self.assertEqual(self.att.status, 'Late')
+                self.assertEqual(AuditLog.objects.count(), before)
+                transaction.set_rollback(True)
 
     def test_qr_archive_and_finished(self):
         session = QRSession.objects.create(meeting=self.meeting, purpose='attendance', token='test',
             created_by=self.admin, expires_at=timezone.now() + timedelta(hours=1))
         self.client.force_login(self.officer)
         url = reverse('scan_attendance_qr', args=[self.meeting.pk])
-        Meeting.objects.filter(pk=self.meeting.pk).update(status='Archived')
-        self.assertEqual(self.client.post(url, {'token': session.token}).status_code, 403)
-        self.assertFalse(QRUsage.objects.exists())
-        self.assertFalse(AuditLog.objects.exists())
-        Meeting.objects.filter(pk=self.meeting.pk).update(status='Finished')
+        with transaction.atomic():
+            set_meeting_fixture_state(Meeting.objects.filter(pk=self.meeting.pk), status='Archived')
+            self.assertEqual(self.client.post(url, {'token': session.token}).status_code, 403)
+            self.assertFalse(QRUsage.objects.exists())
+            self.assertFalse(AuditLog.objects.exists())
+            transaction.set_rollback(True)
         self.assertEqual(self.client.post(url, {'token': session.token}).status_code, 200)
 
     def test_admin_archive_create_edit_reassign_delete(self):
+        from accounts.test_fixtures import finalize_meeting_fixture
         for destination in (self.meeting, self.archived):
             obj = Attendance(meeting=destination, user=self.admin)
-            if destination == self.archived:
-                with self.assertRaises(PermissionDenied):
-                    self.model_admin.save_model(self.request, obj, None, False)
+            with self.assertRaises(PermissionDenied), transaction.atomic():
+                self.model_admin.save_model(self.request, obj, None, False)
         self.att.meeting = self.archived
-        with self.assertRaises(PermissionDenied):
+        with self.assertRaises(PermissionDenied), transaction.atomic():
             self.model_admin.save_model(self.request, self.att, None, True)
-        Attendance.objects.filter(pk=self.att.pk).update(meeting=self.archived)
-        self.att.refresh_from_db()
-        with self.assertRaises(PermissionDenied):
-            self.model_admin.delete_model(self.request, self.att)
-        self.att.meeting = self.meeting
-        with self.assertRaises(PermissionDenied):
-            self.model_admin.save_model(self.request, self.att, None, True)
+        draft = Meeting.objects.create(department=self.dept, title='Archived assignment fixture')
+        archived_att = Attendance.objects.create(meeting=draft, user=self.admin)
+        finalize_meeting_fixture(draft, 'Archived')
+        with self.assertRaises(PermissionDenied), transaction.atomic():
+            self.model_admin.delete_model(self.request, archived_att)
+        archived_att.meeting = self.meeting
+        with self.assertRaises(PermissionDenied), transaction.atomic():
+            self.model_admin.save_model(self.request, archived_att, None, True)
         self.assertFalse(AuditLog.objects.exists())
 
     def test_signed_fields_and_bulk_delete(self):
@@ -80,7 +87,8 @@ class AttendanceIntegrityTests(TestCase):
             setattr(self.att, field, value)
             with self.assertRaises(PermissionDenied):
                 self.model_admin.save_model(self.request, self.att, None, True)
-        unsigned = Attendance.objects.create(meeting=self.meeting, user=self.admin)
+        draft = Meeting.objects.create(department=self.dept, title='Unsigned draft')
+        unsigned = Attendance.objects.create(meeting=draft, user=self.admin)
         with self.assertRaises(PermissionDenied):
             self.model_admin.delete_queryset(self.request, Attendance.objects.all())
         self.assertEqual(Attendance.objects.count(), 2)
@@ -113,7 +121,10 @@ class AttendanceIntegrityTests(TestCase):
         self.assertFalse(AuditLog.objects.exists())
 
     def test_archived_bulk_rolls_back_all(self):
-        Attendance.objects.create(meeting=self.archived, user=self.admin)
+        draft = Meeting.objects.create(department=self.dept, title='Archive fixture')
+        Attendance.objects.create(meeting=draft, user=self.admin)
+        from accounts.test_fixtures import finalize_meeting_fixture
+        finalize_meeting_fixture(draft, 'Archived')
         with self.assertRaises(PermissionDenied):
             self.model_admin.delete_queryset(self.request, Attendance.objects.all())
         self.assertEqual(Attendance.objects.count(), 2)

@@ -7,7 +7,7 @@ from django.urls import reverse
 from django.db import transaction
 from django.core.exceptions import PermissionDenied
 from accounts.models import User, Department, Membership
-from accounts.test_fixtures import signature_storage, complete_onboarding
+from accounts.test_fixtures import signature_storage, complete_onboarding, finalize_meeting_fixture
 from accounts.test_onboarding import png
 from accounts.signature_replacement import replace_signature, version
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -24,9 +24,12 @@ class VisualEvidenceTests(TestCase):
         complete_onboarding(self.user)
         self.dept = Department.objects.create(name='Evidence')
         Membership.objects.create(user=self.user, department=self.dept)
-        self.meeting = Meeting.objects.create(department=self.dept, title='Final', status='Finished')
+        self.meeting = Meeting.objects.create(department=self.dept, title='Final', status='Draft')
         self.att = Attendance.objects.create(meeting=self.meeting, user=self.user, status='Attended')
         self.client.force_login(self.user)
+        from accounts.test_fixtures import finalize_meeting_fixture
+        finalize_meeting_fixture(self.meeting, 'Finished')
+
 
     def sign(self, meeting=None):
         meeting = meeting or self.meeting
@@ -55,8 +58,9 @@ class VisualEvidenceTests(TestCase):
         self.user.refresh_from_db()
         replace_signature(self.user, SimpleUploadedFile('b.png', png(color=(255, 0, 0, 255))), version(self.user))
         User.objects.filter(pk=self.user.pk).update(first_name='New')
-        second = Meeting.objects.create(department=self.dept, title='Second', status='Finished')
+        second = Meeting.objects.create(department=self.dept, title='Second')
         Attendance.objects.create(meeting=second, user=self.user, status='Late')
+        finalize_meeting_fixture(second)
         self.assertEqual(self.sign(second).status_code, 302)
         self.meeting.status = 'Archived'; self.meeting.save()
         first_document = capture_document(self.meeting.pk)
@@ -153,13 +157,16 @@ class VisualConcurrencyTests(TransactionTestCase):
 
     def test_legacy_never_uses_profile(self):
         Attendance.objects.filter(pk=self.att.pk).update(has_signed=True, cryptographic_signature='historical')
+        User.objects.filter(pk=self.user.pk).update(first_name='Later')
         attendee = capture_document(self.meeting.pk)['attendees'][0]
-        self.assertEqual(attendee['name'], 'Name unavailable')
+        self.assertEqual(attendee['name'], 'Original Signer')
         self.assertIsNone(attendee['image_url'])
 
     def test_admin_without_png_cannot_sign(self):
         admin = User.objects.create_user(username='admin', is_admin=True)
+        self.meeting = Meeting.objects.create(department=self.dept, title='Admin signature')
         Attendance.objects.create(meeting=self.meeting, user=admin, status='Attended')
+        finalize_meeting_fixture(self.meeting)
         self.client.force_login(admin)
         self.assertEqual(self.sign().status_code, 400)
         self.assertFalse(SigningVisualSnapshot.objects.exists())
@@ -210,9 +217,13 @@ class VisualConcurrencyTests(TransactionTestCase):
 
     def test_empty_name_is_neutral_and_frozen(self):
         User.objects.filter(pk=self.user.pk).update(first_name='', last_name='')
+        self.meeting = Meeting.objects.create(department=self.dept, title='Empty name')
+        self.att = Attendance.objects.create(meeting=self.meeting, user=self.user, status='Attended')
+        finalize_meeting_fixture(self.meeting)
         self.sign()
         User.objects.filter(pk=self.user.pk).update(first_name='Later')
-        self.assertEqual(capture_document(self.meeting.pk)['attendees'][0]['name'], 'Name unavailable')
+        self.assertEqual(SigningVisualSnapshot.objects.get(attendance=self.att).signer_name, 'Name unavailable')
+        self.assertEqual(capture_document(self.meeting.pk)['attendees'][0]['name'], 'Name not provided')
 
     def test_real_renderer_uses_only_export_bytes(self):
         self.sign()
@@ -245,18 +256,22 @@ class VisualConcurrencyTests(TransactionTestCase):
 
     def test_multiple_officers_and_status_cycles_preserve_images(self):
         from accounts.account_status import change_account_status
-        self.sign()
         other = User.objects.create_user(username='second', first_name='Second')
         complete_onboarding(other)
         Membership.objects.create(user=other, department=self.dept)
+        self.meeting = Meeting.objects.create(department=self.dept, title='Multiple signers')
+        self.att = Attendance.objects.create(meeting=self.meeting, user=self.user, status='Attended')
         Attendance.objects.create(meeting=self.meeting, user=other, status='Late')
+        finalize_meeting_fixture(self.meeting)
+        self.assertEqual(self.sign().status_code, 302)
         self.client.force_login(other)
         self.assertEqual(self.sign().status_code, 302)
         admin = User.objects.create_user(username='controller', is_admin=True)
         change_account_status(admin, self.user.pk, False)
         change_account_status(admin, self.user.pk, True)
         document = capture_document(self.meeting.pk)
-        self.assertEqual([a['name'] for a in document['attendees']], ['Original Signer', 'Second'])
+        self.assertEqual([a['name'] for a in document['attendees']], ['Original Signer', 'Name not provided'])
+        self.assertEqual(SigningVisualSnapshot.objects.get(attendance__user=other).signer_name, 'Second')
         self.assertEqual(len(document['resources']), 2)
 
     def test_revocation_after_meeting_lock_prevents_capture(self):

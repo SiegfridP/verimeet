@@ -4,10 +4,10 @@
 {% block content %}
 <header class="vm-page-header">
     <h1>Review Meeting Minutes</h1>
-    {% if meeting.status == 'Finished' or meeting.status == 'Archived' %}
+    {% if can_export_meeting_pdf %}
     <a href="{% dashboard_url 'export_meeting_pdf' meeting.id %}">Export PDF</a>
     {% endif %}
-    <a href="{% dashboard_url 'document_history' meeting.id %}">Document History</a>
+    {% if can_manage_meeting %}<a href="{% dashboard_url 'document_history' meeting.id %}">Document History</a>{% endif %}
     <div class="header-badges">
       <span class="dept-badge">{{ department.name }}</span>
       {% if meeting.status == 'Draft' %}
@@ -62,13 +62,14 @@
     </div>
 
     <div class="card vm-document-panel">
-      <h2 class="section-title">Assigned Participants & Intended Signers ({{ attendees|length }})</h2>
-      {% if attendees %}
+      <h2 class="section-title">{% if officer_read_only %}Participants{% else %}Assigned Participants & Intended Signers{% endif %} ({{ attendees|length }})</h2>
+      {% if officer_read_only %}<ul>{% for attendee in attendees %}<li>{{ attendee.name }} - {{ attendee.status }} - {{ attendee.signing }}</li>{% empty %}<li>No participants assigned.</li>{% endfor %}</ul>
+      {% else %}{% if attendees %}
         <ul class="participant-list">
           {% for att in attendees %}
             <li class="participant-item">
               <div>
-                <span class="participant-name">{{ att.user.username }}</span>
+                <span class="participant-name">{% if historical_roster_available %}{{ att.historical_name }}{% else %}{{ att.user.username }}{% endif %}</span>
                 {% if att.user.email %}
                   <span class="participant-email">({{ att.user.email }})</span>
                 {% endif %}
@@ -97,12 +98,13 @@
       {% else %}
         <p>No participants currently assigned to this meeting.</p>
       {% endif %}
+      {% endif %}
     </div>
 
     <div class="card vm-document-panel">
       <h2 class="section-title" id="qr-workflows">Actions</h2>
       <div class="actions-row">
-        {% if meeting.status == 'Draft' %}
+        {% if can_manage_meeting %}{% if meeting.status == 'Draft' %}
           <a href="{% dashboard_url 'edit_meeting' meeting.id %}" class="button" id="btn-edit-from-review">Edit Minutes</a>
           <a href="{% dashboard_url 'assign_participants' meeting.id %}" class="button btn-secondary" id="btn-assign-from-review">Manage Participants</a>
           <a href="{% dashboard_url 'meeting_attendance' meeting.id %}" class="button btn-secondary" id="btn-attendance-from-review">Manage Attendance</a>
@@ -117,8 +119,10 @@
           <form method="post" action="{% dashboard_url 'generate_signing_qr' meeting.id %}">{% csrf_token %}{% dashboard_field %}<button type="submit" class="button btn-secondary">Signing QR</button></form>
           <a href="{% dashboard_url 'projector_qr_view' meeting.id %}" class="button" id="btn-qr-from-review">Display Projector QR</a>
         {% endif %}
+        {% endif %}
         <a href="{% dashboard_url 'department_dashboard' dept_id=department.id %}" class="button btn-secondary vm-return">{% include 'accounts/ui_icon.html' with icon='arrow-left' %}<span>Back to Dashboard</span></a>
       </div>
     </div>
   </div>
+{% if historical_roster_available %}<section class="card"><h2>Absent</h2><p class="note">Department members not assigned when this meeting was finalized; this is not the recorded Absent attendance status.</p><ul>{% for person in absent %}<li>{{ person.name }}</li>{% empty %}<li>No unassigned department members.</li>{% endfor %}</ul></section>{% elif meeting.status != 'Draft' %}<p>Historical department roster unavailable for this legacy meeting.</p>{% endif %}
 {% endblock %}

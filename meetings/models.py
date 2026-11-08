@@ -2,7 +2,23 @@ from django.db import models, router, transaction
 from django.core.exceptions import ValidationError
 from accounts.models import Department, User
 
+class MeetingQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        from django.db.models import F
+        value = kwargs.get('status')
+        if 'status' in kwargs and not (isinstance(value, F) and value.name == 'status') and (not isinstance(value, str) or self.exclude(status=value).exists()):
+            raise ValidationError('Finalize through Meeting.save(), not queryset update.')
+        return super().update(**kwargs)
+
+    def bulk_create(self, objs, **kwargs):
+        objs = list(objs)
+        if any(obj.status != 'Draft' for obj in objs):
+            raise ValidationError('Bulk creation supports Draft meetings only.')
+        return super().bulk_create(objs, **kwargs)
+
+
 class Meeting(models.Model):
+    objects = MeetingQuerySet.as_manager()
     STATUS_CHOICES = [
         ('Draft', 'Draft (Editable)'),
         ('Finished', 'Finished (Locked for Signing)'),
@@ -55,15 +71,25 @@ class Meeting(models.Model):
     def save(self, *args, **kwargs):
         using = kwargs.get('using') or router.db_for_write(type(self), instance=self)
         with transaction.atomic(using=using):
+            from .roster import lock_departments, capture_roster
+            initial = type(self).objects.using(using).filter(pk=self.pk).values('status', 'department_id').first() if self.pk else None
+            finalizing = self.status in ('Finished', 'Archived') and (initial is None or initial['status'] == 'Draft')
+            guarded_departments = {self.department_id} | ({initial['department_id']} if initial else set())
+            if finalizing:
+                lock_departments(guarded_departments, using)
             previous = None
             if self.pk:
                 previous = type(self).objects.using(using).select_for_update().filter(
                     pk=self.pk
-                ).values('status').first()
+                ).values('status', 'department_id').first()
+                if finalizing and previous and previous['department_id'] not in guarded_departments:
+                    raise ValidationError('Meeting department changed. Retry finalization.')
                 self.full_clean()
             super().save(*args, **kwargs)
             update_fields = kwargs.get('update_fields')
             writes_status = update_fields is None or 'status' in update_fields
+            if writes_status and self.status in ('Finished', 'Archived') and (previous is None or previous['status'] == 'Draft'):
+                capture_roster(self, using)
             if (previous and previous['status'] == 'Finished'
                     and self.status == 'Archived' and writes_status):
                 AuditLog.objects.using(using).create(
@@ -80,7 +106,18 @@ class Meeting(models.Model):
                     },
                 )
 
+class AttendanceQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        if {'meeting','meeting_id','user','user_id'} & kwargs.keys():
+            raise ValidationError('Structural assignment updates require Attendance.save().')
+        return super().update(**kwargs)
+
+    def bulk_create(self, objs, **kwargs):
+        raise ValidationError('Use Attendance.save() for assignment creation.')
+
+
 class Attendance(models.Model):
+    objects = AttendanceQuerySet.as_manager()
     ATTENDANCE_STATUS_CHOICES = [
         ('Attended', 'Attended'),
         ('Late', 'Late'),
@@ -102,6 +139,13 @@ class Attendance(models.Model):
 
     class Meta:
         unique_together = ('meeting', 'user')
+
+    def save(self, *args, **kwargs):
+        using = kwargs.get('using') or self._state.db or 'default'
+        with transaction.atomic(using=using):
+            from .roster import guard_assignment
+            guard_assignment(self, using)
+            return super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.user.username} - {self.meeting.title} ({self.status})"
@@ -285,3 +329,25 @@ class VerificationQR(models.Model):
     @property
     def signer(self):
         return self.attendance.user
+
+
+class HistoricalRoster(models.Model):
+    meeting = models.OneToOneField(Meeting, on_delete=models.PROTECT, related_name='historical_roster')
+    captured_at = models.DateTimeField(auto_now_add=True)
+    version = models.PositiveSmallIntegerField(default=1, editable=False)
+    entries = models.JSONField(default=list, editable=False)
+    objects = ImmutableSnapshotQuerySet.as_manager()
+
+    def clean(self):
+        from .roster import validate_entries
+        validate_entries(self.entries)
+        if self.version != 1:
+            raise ValidationError('Unsupported roster version.')
+
+    def save(self, *args, **kwargs):
+        from django.core.exceptions import PermissionDenied
+        if not self._state.adding or not getattr(self, '_capture_authorized', False):
+            raise PermissionDenied('Historical rosters are immutable; use finalization.')
+        self.full_clean()
+        kwargs['force_insert'] = True
+        return super().save(*args, **kwargs)

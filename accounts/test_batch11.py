@@ -31,13 +31,17 @@ class Batch11DashboardTests(TestCase):
         Membership.objects.create(user=cls.admin, department=cls.dept, role='O')
         Membership.objects.create(user=cls.ap, department=cls.dept, role='AP')
         Membership.objects.create(user=cls.officer, department=cls.dept, role='O')
-        cls.finished = Meeting.objects.create(department=cls.dept, title='Finished record', status='Finished')
+        cls.finished = Meeting.objects.create(department=cls.dept, title='Finished record', status='Draft')
         cls.unassigned = Meeting.objects.create(department=cls.dept, title='Unassigned record')
-        cls.archived = Meeting.objects.create(department=cls.dept, title='Archived record', status='Archived')
+        cls.archived = Meeting.objects.create(department=cls.dept, title='Archived record', status='Draft')
         cls.secret = Meeting.objects.create(department=cls.other, title='OTHER SECRET')
         Attendance.objects.create(meeting=cls.finished, user=cls.officer, status='Late')
         Attendance.objects.create(meeting=cls.finished, user=cls.peer, has_signed=True,
                                   annotation='PRIVATE PEER ANNOTATION', cryptographic_signature='PRIVATE SIGNATURE')
+        from accounts.test_fixtures import finalize_meeting_fixture
+        finalize_meeting_fixture(cls.finished, 'Finished')
+        finalize_meeting_fixture(cls.archived, 'Archived')
+
 
     def dashboard(self, user, params=None, dept=None):
         self.client.force_login(user)
@@ -100,7 +104,9 @@ class Batch11DashboardTests(TestCase):
 
     def test_officer_management_denials(self):
         self.dashboard(self.officer)
-        for name in ('review_meeting', 'document_history', 'export_meeting_pdf', 'meeting_attendance', 'assign_participants'):
+        for name in ('review_meeting', 'export_meeting_pdf'):
+            self.assertEqual(self.client.get(reverse(name, args=[self.finished.pk])).status_code, 200)
+        for name in ('document_history', 'meeting_attendance', 'assign_participants'):
             self.assertEqual(self.client.get(reverse(name, args=[self.finished.pk])).status_code, 403)
 
     def test_noop_feedback(self):

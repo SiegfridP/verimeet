@@ -11,6 +11,9 @@ from meetings.models import Meeting, Attendance, VerificationQR
 
 @receiver(pre_delete, sender=Department, dispatch_uid='protect_department_evidence')
 def protect_department_evidence(sender, instance, using, **kwargs):
+    from meetings.roster import lock_user_scope
+    users = list(Membership.objects.using(using).filter(department_id=instance.pk).values_list('user_id', flat=True))
+    lock_user_scope(users, using, [instance.pk])
     Department.objects.using(using).filter(pk=instance.pk).update(name=F('name'))
     meetings = Meeting.objects.using(using).filter(department_id=instance.pk)
     ids = list(meetings.order_by('pk').values_list('pk', flat=True))
@@ -31,10 +34,15 @@ def delete_with_audit(actor, department, *, using=None):
         raise PermissionDenied('Global Admin access required')
     using = using or department._state.db or router.db_for_write(Department, instance=department)
     with transaction.atomic(using=using):
+        from meetings.roster import lock_user_scope
+        users = list(Membership.objects.using(using).filter(department_id=department.pk).values_list('user_id', flat=True))
+        lock_user_scope(users, using, [department.pk])
         # Lock the parent before the Collector can invoke Attendance receivers.
         # No-op UPDATE also obtains a write lock on SQLite.
         if not Department.objects.using(using).filter(pk=department.pk).update(name=F('name')):
             return
+        # Check retained evidence before Collector can raise an uncaught ProtectedError.
+        protect_department_evidence(Department, department, using)
         for membership in Membership.objects.using(using).filter(department_id=department.pk).order_by('pk'):
             record(actor, 'membership.removed', membership, department,
                    {'user_id': membership.user_id, 'previous_role': membership.role}, using=using)

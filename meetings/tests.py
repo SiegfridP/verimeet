@@ -1,5 +1,8 @@
+from accounts.test_fixtures import set_meeting_fixture_state
 import time
 from django.test import TestCase, Client
+from django.db import transaction
+from django.core.exceptions import PermissionDenied
 from django.urls import reverse
 from accounts.models import Department, User, Membership
 from meetings.models import Meeting, Attendance, AuditLog, QRSession, QRUsage
@@ -58,7 +61,7 @@ class MeetingRoutingAndSecurityTests(TestCase):
             department=self.dept,
             title='Finished Meeting',
             minutes_content='Final notes',
-            status='Finished'
+            status='Draft'
         )
 
         # Pre-assign self.officer_user as eligible signer for finished_meeting
@@ -68,6 +71,9 @@ class MeetingRoutingAndSecurityTests(TestCase):
             has_signed=False,
             status='Attended',
         )
+        from accounts.test_fixtures import finalize_meeting_fixture
+        finalize_meeting_fixture(self.finished_meeting, 'Finished')
+
 
     def test_admin_dashboard_restrictions(self):
         """Global Admin dashboard permits Global Admins; denies AP and Officers."""
@@ -496,7 +502,7 @@ class MeetingCreationAndAssignmentTests(TestCase):
 
                     def change_lifecycle_then_guard(meeting_ids):
                         # Deterministic interleaving at the write boundary, not a row-lock test.
-                        Meeting.objects.filter(pk=meeting.pk).update(status=status)
+                        set_meeting_fixture_state(Meeting.objects.filter(pk=meeting.pk), status=status)
                         lock_mutable_meetings(meeting_ids)
 
                     with patch('meetings.views.lock_mutable_meetings', side_effect=change_lifecycle_then_guard) as guard:
@@ -536,8 +542,9 @@ class MeetingCreationAndAssignmentTests(TestCase):
 
     def test_assign_participants_blocked_on_locked_or_finished_meeting(self):
         """Participant modifications on Finished meetings are rejected."""
-        finished_meeting = Meeting.objects.create(department=self.dept, title='Locked Meeting', status='Finished')
+        finished_meeting = Meeting.objects.create(department=self.dept, title='Locked Meeting')
         Attendance.objects.create(meeting=finished_meeting, user=self.officer1)
+        set_meeting_fixture_state(Meeting.objects.filter(pk=finished_meeting.pk), status='Finished')
 
         self.client.force_login(self.ap_user)
         url = reverse('assign_participants', args=[finished_meeting.id])
@@ -834,6 +841,11 @@ class Batch04DraftEditingReviewFinalizationTests(TestCase):
         """Model-level validation prevents altering document content of Finished meetings."""
         from django.core.exceptions import ValidationError
 
+        self.finished_meeting = Meeting.objects.create(department=self.dept, title='Finalized Meeting Title')
+        att = Attendance.objects.create(meeting=self.finished_meeting, user=self.officer)
+        self.finished_meeting.status = 'Finished'
+        self.finished_meeting.save()
+
         self.finished_meeting.title = 'Altered In Code'
         with self.assertRaises(ValidationError):
             self.finished_meeting.save()
@@ -841,10 +853,9 @@ class Batch04DraftEditingReviewFinalizationTests(TestCase):
         self.finished_meeting.refresh_from_db()
         self.assertEqual(self.finished_meeting.title, 'Finalized Meeting Title')
 
-        # Allowed post-finalization operations:
-        # 1. Adding attendance
-        att = Attendance.objects.create(meeting=self.finished_meeting, user=self.officer)
-        self.assertIsNotNone(att.id)
+        # Assignment creation is frozen; existing attendance can still be signed.
+        with self.assertRaises(PermissionDenied):
+            Attendance.objects.create(meeting=self.finished_meeting, user=self.ap_user)
 
         # 2. Updating attendance signature / annotation
         att.annotation = 'Approved with notes.'
@@ -897,11 +908,15 @@ class Batch04DraftEditingReviewFinalizationTests(TestCase):
         r = self.client.get(reverse('department_dashboard', args=[self.dept.id]))
         self.assertEqual(r.status_code, 200)
 
-        # Confirm CSS classes are declared in <style>
-        self.assertContains(r, '.status-badge')
-        self.assertContains(r, '.status-draft')
-        self.assertContains(r, '.status-finished')
-        self.assertContains(r, '.status-other')
+        # Shared stylesheet supplies these classes; status elements remain in HTML.
+        from django.contrib.staticfiles import finders
+        from pathlib import Path
+        css = Path(finders.find('css/verimeet.css')).read_text(encoding='utf-8')
+        self.assertContains(r, 'css/verimeet.css')
+        self.assertIn('.status-badge', css)
+        self.assertIn('.status-draft', css)
+        self.assertIn('.status-finished', css)
+        self.assertContains(r, 'status-other')
 
         # Confirm meeting badge elements and display values
         self.assertContains(r, '<span class="status-badge status-draft">')
@@ -1261,11 +1276,14 @@ class Batch05DocumentIntegrityTests(TestCase):
             department=self.dept,
             title='Integrity Meeting',
             minutes_content='These are the finalized minutes.',
-            status='Finished',
+            status='Draft',
         )
         self.attendance = Attendance.objects.create(
             meeting=self.meeting, user=self.officer, has_signed=False
         )
+        from accounts.test_fixtures import finalize_meeting_fixture
+        finalize_meeting_fixture(self.meeting, 'Finished')
+
 
     def _sign_attendance(self, annotation=''):
         """Helper: sign the attendance record programmatically using canonical payload."""
@@ -1498,7 +1516,7 @@ class Batch05SigningWorkflowTests(TestCase):
             department=self.dept,
             title='Workflow Meeting',
             minutes_content='Final minutes here.',
-            status='Finished',
+            status='Draft',
         )
         self.draft_meeting = Meeting.objects.create(
             department=self.dept,
@@ -1510,6 +1528,9 @@ class Batch05SigningWorkflowTests(TestCase):
         self.attendance = Attendance.objects.create(
             meeting=self.finished_meeting, user=self.officer, has_signed=False, status='Attended'
         )
+        from accounts.test_fixtures import finalize_meeting_fixture
+        finalize_meeting_fixture(self.finished_meeting, 'Finished')
+
 
     def _valid_url(self, meeting_id):
         ts = str(int(time.time()))
@@ -1759,7 +1780,7 @@ class Batch05VerifySignatureViewTests(TestCase):
             department=self.dept,
             title='Verify Meeting',
             minutes_content='Minutes to verify.',
-            status='Finished',
+            status='Draft',
         )
 
         # 1. Canonical meeting-bound signature
@@ -1795,6 +1816,9 @@ class Batch05VerifySignatureViewTests(TestCase):
             has_signed=True,
             cryptographic_signature=legacy_sig,
         )
+        from accounts.test_fixtures import finalize_meeting_fixture
+        finalize_meeting_fixture(self.meeting, 'Finished')
+
 
     def _url(self, att_id=None):
         target_id = att_id if att_id is not None else self.attendance.id
@@ -1878,9 +1902,12 @@ class Batch05VerifySignatureViewTests(TestCase):
     def test_unsigned_attendance_returns_false(self):
         """An attendance record that has not been signed returns valid=false."""
         import json
+        self.meeting = Meeting.objects.create(department=self.dept, title='Unsigned verification')
         unsigned = Attendance.objects.create(
             meeting=self.meeting, user=self.ap, has_signed=False
         )
+        self.meeting.status = 'Finished'
+        self.meeting.save()
         url = reverse('verify_signature', args=[self.meeting.id, unsigned.id])
         self.client.force_login(self.ap)
         r = self.client.get(url)
@@ -1942,7 +1969,7 @@ class Batch06AttendanceAndAnnotationTests(TestCase):
             department=self.dept,
             title='Executive Assembly 06',
             minutes_content='Important minutes content for assembly 06.',
-            status='Finished',
+            status='Draft',
         )
 
         # Assigned Attendance records
@@ -1956,6 +1983,9 @@ class Batch06AttendanceAndAnnotationTests(TestCase):
             user=self.officer2,
             status='Absent',
         )
+        from accounts.test_fixtures import finalize_meeting_fixture
+        finalize_meeting_fixture(self.meeting, 'Finished')
+
 
     # 1. AP Attendance View
     def test_ap_can_view_department_meeting_attendance(self):
@@ -2093,8 +2123,10 @@ class Batch06AttendanceAndAnnotationTests(TestCase):
     def test_duplicate_attendance_record_prevented(self):
         """Database enforces unique_together on (meeting, user), preventing duplicate attendances."""
         from django.db import IntegrityError
+        meeting = Meeting.objects.create(department=self.dept, title='Duplicate assignment')
+        Attendance.objects.create(meeting=meeting, user=self.officer1)
         with self.assertRaises(IntegrityError):
-            Attendance.objects.create(meeting=self.meeting, user=self.officer1)
+            Attendance.objects.create(meeting=meeting, user=self.officer1)
 
     # 5. Annotations and Signing Workflow
     def test_officer_signs_with_valid_annotation(self):
@@ -2470,7 +2502,7 @@ class Batch07QRAttendanceAndSigningTests(TestCase):
             department=self.dept,
             title='Executive Council Meeting 07',
             minutes_content='Finalized minutes content for meeting 07.',
-            status='Finished',
+            status='Draft',
         )
 
         # Draft Meeting in Dept 07
@@ -2499,6 +2531,9 @@ class Batch07QRAttendanceAndSigningTests(TestCase):
             user=self.officer1,
             status='Absent',
         )
+        from accounts.test_fixtures import finalize_meeting_fixture
+        finalize_meeting_fixture(self.meeting, 'Finished')
+
 
     def _assert_stale_qr_authorization_rejected(self, purpose, change):
         from datetime import timedelta
@@ -3663,7 +3698,7 @@ class Batch08VerificationQRTests(TestCase):
             minutes_content='Finalized minutes: Approved new AI curriculum syllabus.',
             status='Draft'
         )
-        self.finished_meeting.status = 'Finished'
+        self.finished_meeting.status = 'Draft'
         self.finished_meeting.save()
 
         # Archived Meeting (transitions Draft -> Finished -> Archived)
@@ -3673,9 +3708,9 @@ class Batch08VerificationQRTests(TestCase):
             minutes_content='Annual report archived content.',
             status='Draft'
         )
-        self.archived_meeting.status = 'Finished'
+        self.archived_meeting.status = 'Draft'
         self.archived_meeting.save()
-        self.archived_meeting.status = 'Archived'
+        self.archived_meeting.status = 'Draft'
         self.archived_meeting.save()
 
         # Draft Meeting
@@ -3765,6 +3800,10 @@ class Batch08VerificationQRTests(TestCase):
             annotation='',
             signed_at=time_now
         )
+        from accounts.test_fixtures import finalize_meeting_fixture
+        finalize_meeting_fixture(self.finished_meeting, 'Finished')
+        finalize_meeting_fixture(self.archived_meeting, 'Archived')
+
 
     def _privacy_verification_url(self, attendance):
         from meetings.models import VerificationQR
@@ -4051,8 +4090,9 @@ class Batch08VerificationQRTests(TestCase):
         qr = VerificationQR.objects.get(attendance=self.att1)
         raw_token = decrypt_verification_token(qr.encrypted_token)
 
-        # Simulate meeting transition to unsupported status
-        Meeting.objects.filter(pk=self.finished_meeting.pk).update(status='Draft')
+        # Simulate out-of-band corruption; supported lifecycle writes reject reversal.
+        from django.db.models.query import QuerySet
+        QuerySet.update(Meeting.objects.filter(pk=self.finished_meeting.pk), status='Draft')
 
         anon = Client()
         resp = anon.get(f"{reverse('verify_individual_signature')}?token={raw_token}")
@@ -4334,7 +4374,10 @@ class Batch09StructuredAuditTests(TestCase):
         self.assertEqual(AuditLog.objects.filter(event_type='meeting.finalized').count(), 1)
 
     def test_attendance_transitions_and_noop(self):
+        self.finished_meeting = self.draft_meeting
         attendance = Attendance.objects.create(meeting=self.finished_meeting, user=self.officer)
+        self.finished_meeting.status = 'Finished'
+        self.finished_meeting.save()
         self.client.force_login(self.ap_user)
         url = reverse('update_attendance_status', args=[self.finished_meeting.pk, attendance.pk])
         previous = 'Absent'
@@ -4350,7 +4393,10 @@ class Batch09StructuredAuditTests(TestCase):
 
     def test_audit_failure_rolls_back_manual_attendance_and_qr_generation(self):
         from unittest.mock import patch
+        self.finished_meeting = self.draft_meeting
         attendance = Attendance.objects.create(meeting=self.finished_meeting, user=self.officer)
+        self.finished_meeting.status = 'Finished'
+        self.finished_meeting.save()
         self.client.force_login(self.ap_user)
         with patch('meetings.views.AuditLog.objects.create', side_effect=RuntimeError('failed audit')):
             with self.assertRaises(RuntimeError):
@@ -4494,14 +4540,14 @@ class QRRequestMethodTests(TestCase):
         url = reverse('scan_attendance_qr', args=[self.meeting.pk])
         before = list(Attendance.objects.values())
         for state in ('invalid', 'expired', 'revoked', 'purpose', 'unassigned', 'department', 'archived', 'signed'):
-            with self.subTest(state=state):
+            with self.subTest(state=state), transaction.atomic():
                 session = QRSession.objects.create(meeting=self.meeting, purpose='signing' if state == 'purpose' else 'attendance',
                     token=state, created_by=self.ap, is_revoked=state == 'revoked',
                     expires_at=timezone.now() + timedelta(hours=-1 if state == 'expired' else 1))
                 user = self.unassigned_officer if state == 'unassigned' else self.other_officer if state == 'department' else self.officer1
                 self.client.force_login(user)
                 if state == 'archived':
-                    Meeting.objects.filter(pk=self.meeting.pk).update(status='Archived')
+                    set_meeting_fixture_state(Meeting.objects.filter(pk=self.meeting.pk), status='Archived')
                 if state == 'signed':
                     Attendance.objects.filter(pk=self.att1.pk).update(has_signed=True)
                 snapshot = list(Attendance.objects.values())
@@ -4509,8 +4555,7 @@ class QRRequestMethodTests(TestCase):
                 self.assertEqual(list(Attendance.objects.values()), snapshot)
                 self.assertFalse(QRUsage.objects.exists())
                 self.assertFalse(AuditLog.objects.exists())
-                Meeting.objects.filter(pk=self.meeting.pk).update(status='Finished')
-                Attendance.objects.filter(pk=self.att1.pk).update(has_signed=False)
+                transaction.set_rollback(True)
         self.assertEqual(list(Attendance.objects.values()), before)
 
     def test_generation_get_is_read_only_and_projector_post_reuses(self):
@@ -4611,11 +4656,16 @@ class QRGenerationLifecycleTests(TestCase):
             # Draft also exercises the fresh Finished check after a successful guard.
             statuses = ('Archived',) if route == 'generate_attendance_qr' else ('Archived', 'Draft')
             for status in statuses:
-                with self.subTest(route=route, status=status):
-                    Meeting.objects.filter(pk=self.meeting.pk).update(status='Finished')
+                with self.subTest(route=route, status=status), transaction.atomic():
+                    set_meeting_fixture_state(Meeting.objects.filter(pk=self.meeting.pk), status='Finished')
 
                     def change_then_guard(meeting_ids):
-                        Meeting.objects.filter(pk=self.meeting.pk).update(status=status)
+                        if status == 'Draft':
+                            # Out-of-band corruption tests the fresh authorization check.
+                            from django.db.models.query import QuerySet
+                            QuerySet.update(Meeting.objects.filter(pk=self.meeting.pk), status=status)
+                        else:
+                            set_meeting_fixture_state(Meeting.objects.filter(pk=self.meeting.pk), status=status)
                         lock_mutable_meetings(meeting_ids)
 
                     with patch('meetings.views.lock_mutable_meetings', side_effect=change_then_guard) as guard:
@@ -4624,6 +4674,7 @@ class QRGenerationLifecycleTests(TestCase):
                     self.assertEqual(response.status_code, 403)
                     self.assertFalse(QRSession.objects.exists())
                     self.assertFalse(AuditLog.objects.filter(event_type='qr.generated').exists())
+                    transaction.set_rollback(True)
 
     def test_projector_reuse_revalidates_lifecycle_before_lookup(self):
         from unittest.mock import patch
@@ -4635,11 +4686,16 @@ class QRGenerationLifecycleTests(TestCase):
         sessions = list(QRSession.objects.values())
         audits = list(AuditLog.objects.values())
         for status in ('Archived', 'Draft'):
-            with self.subTest(status=status):
-                Meeting.objects.filter(pk=self.meeting.pk).update(status='Finished')
+            with self.subTest(status=status), transaction.atomic():
+                set_meeting_fixture_state(Meeting.objects.filter(pk=self.meeting.pk), status='Finished')
 
                 def change_then_guard(meeting_ids):
-                    Meeting.objects.filter(pk=self.meeting.pk).update(status=status)
+                    if status == 'Draft':
+                        # Out-of-band corruption tests the fresh authorization check.
+                        from django.db.models.query import QuerySet
+                        QuerySet.update(Meeting.objects.filter(pk=self.meeting.pk), status=status)
+                    else:
+                        set_meeting_fixture_state(Meeting.objects.filter(pk=self.meeting.pk), status=status)
                     lock_mutable_meetings(meeting_ids)
 
                 with patch('meetings.views.lock_mutable_meetings', side_effect=change_then_guard), patch(
@@ -4648,13 +4704,14 @@ class QRGenerationLifecycleTests(TestCase):
                     self.assertEqual(self.client.post(url).status_code, 403)
                 self.assertEqual(list(QRSession.objects.values()), sessions)
                 self.assertEqual(list(AuditLog.objects.values()), audits)
+                transaction.set_rollback(True)
 
     def test_archived_rejected_including_existing_projector_session(self):
         self.client.force_login(self.ap)
         self.client.post(reverse('projector_qr_view', args=[self.meeting.pk]))
         sessions = list(QRSession.objects.values())
         audits = list(AuditLog.objects.values())
-        Meeting.objects.filter(pk=self.meeting.pk).update(status='Archived')
+        set_meeting_fixture_state(Meeting.objects.filter(pk=self.meeting.pk), status='Archived')
         for route in self.routes:
             with self.subTest(route=route):
                 self.assertEqual(self.client.post(reverse(route, args=[self.meeting.pk])).status_code, 403)
@@ -4935,8 +4992,10 @@ class Batch10PDFTests(TestCase):
         Membership.objects.create(user=self.other_ap, department=self.other_dept, role='AP')
         Membership.objects.create(user=self.officer, department=self.dept, role='O')
         self.meeting = Meeting.objects.create(department=self.dept, title='Minutes / unsafe title',
-            minutes_content='First line\nSecond line \u2014 Caf\u00e9 <img src="https://invalid.test/secret">', status='Finished')
+            minutes_content='First line\nSecond line \u2014 Caf\u00e9 <img src="https://invalid.test/secret">', status='Draft')
         self.att = Attendance.objects.create(meeting=self.meeting, user=self.officer, status='Attended')
+        self.meeting.status='Finished'
+        self.meeting.save()
         self.url = reverse('export_meeting_pdf', args=[self.meeting.pk])
 
     def test_permissions_and_methods(self):
@@ -4945,7 +5004,7 @@ class Batch10PDFTests(TestCase):
         complete_onboarding(self.officer)
         self.assertEqual(self.client.get(self.url).status_code, 302)
         with patch('meetings.pdf.generate_meeting_pdf', return_value=b'%PDF-test'):
-            for user, expected in ((self.admin, 200), (self.ap, 200), (self.other_ap, 403), (self.officer, 403)):
+            for user, expected in ((self.admin, 200), (self.ap, 200), (self.other_ap, 403), (self.officer, 200)):
                 self.client.force_login(user)
                 self.assertEqual(self.client.get(self.url).status_code, expected)
             self.assertEqual(AuditLog.objects.filter(event_type='document.exported').count(), 2)
@@ -5005,14 +5064,14 @@ class Batch10PDFTests(TestCase):
             signature = sign_document_data(self.officer.private_key, payload) if kind != 'invalid' else 'INVALID_SIGNATURE_BYTES'
             Attendance.objects.filter(pk=self.att.pk).update(has_signed=kind != 'unsigned',
                 annotation=annotation, cryptographic_signature=signature, signed_at=timezone.now())
-            with self.assertNumQueries(1):
+            with self.assertNumQueries(2):
                 document = capture_document(self.meeting.pk)
             expected = {'canonical': 'Valid canonical ECDSA signature', 'legacy': 'Valid legacy ECDSA signature',
                         'invalid': 'Invalid signature', 'unsigned': 'Unsigned'}[kind]
             self.assertEqual(document['attendees'][0]['verification'], expected)
             html = render_to_string('pdf/final_minutes.html', {'document': document})
             self.assertIn(expected, html)
-            self.assertIn('Jos\u00e9 Tan' if kind == 'unsigned' else 'Name unavailable', html)
+            self.assertIn('Jos\u00e9 Tan', html)
             if kind != 'unsigned':
                 self.assertIn('Visual signature unavailable', html)
             self.assertIn(annotation, html)

@@ -106,8 +106,13 @@ def _finalize_meeting_internal(request, meeting_id):
         return HttpResponseNotAllowed(['POST'], "Finalization requires a POST request.")
 
     with transaction.atomic():
+        from .roster import lock_departments
+        department_id = get_object_or_404(Meeting, pk=meeting_id).department_id
+        lock_departments([department_id])
         # Lock the row to prevent concurrent finalization of the same meeting.
         meeting = get_object_or_404(Meeting.objects.select_for_update(), id=meeting_id)
+        if meeting.department_id != department_id:
+            return HttpResponseBadRequest('Meeting department changed. Retry finalization.')
         department = meeting.department
 
         # Server-side authorization check: Global Admin or AP of the department.
@@ -974,17 +979,43 @@ def review_meeting(request, meeting_id):
     meeting = get_object_or_404(Meeting, id=meeting_id)
     department = meeting.department
 
-    # Server-side authorization check: Global Admin or AP of the department
-    if not is_global_admin(request.user) and not has_membership(request.user, department, role='AP'):
-        return HttpResponseForbidden("You are not authorized to review meetings for this department.")
-
-    attendees = meeting.attendees.select_related('user').all()
-
-    return render(request, 'meetings/review_meeting.html', {
-        'meeting': meeting,
-        'department': department,
-        'attendees': attendees,
-    })
+    can_manage = is_global_admin(request.user) or has_membership(request.user, department, role='AP')
+    if can_manage:
+        context = {'meeting': meeting, 'department': department,
+                   'attendees': meeting.attendees.select_related('user').all()}
+    else:
+        if request.method not in ('GET', 'HEAD'):
+            return HttpResponseNotAllowed(['GET', 'HEAD'])
+        from .reading import officer_can_read, capture_read_document
+        if not officer_can_read(request.user, meeting):
+            return HttpResponseForbidden('Not authorized to read this meeting.')
+        try:
+            document = capture_read_document(meeting.pk)
+        except (Meeting.DoesNotExist, ValueError):
+            return HttpResponseForbidden('Meeting content is unavailable.')
+        current = get_object_or_404(Meeting.objects.select_related('department'), pk=meeting.pk)
+        if current.department_id != document['department_id'] or not officer_can_read(request.user, current):
+            return HttpResponseForbidden('Not authorized to read this meeting.')
+        context = {'meeting': document, 'department': {'id': document['department_id'],
+                   'pk': document['department_id'], 'name': document['department_name']},
+                   'attendees': document['attendees']}
+    from .roster import roster_groups
+    groups = roster_groups(meeting.pk, meeting.status)
+    context.update(absent=groups[1] if groups else [], historical_roster_available=groups is not None)
+    if can_manage and groups:
+        names = {entry['user_id']: entry['name'] for entry in meeting.historical_roster.entries if entry['assigned']}
+        context['attendees'] = list(context['attendees'])
+        for attendee in context['attendees']:
+            attendee.historical_name = names.get(attendee.user_id, 'Name not provided')
+        from types import SimpleNamespace
+        existing = {attendee.user_id for attendee in context['attendees']}
+        for user_id, name in names.items():
+            if user_id not in existing:
+                context['attendees'].append(SimpleNamespace(user_id=user_id, historical_name=name, user=None, status='Record unavailable', has_signed=False))
+        context['attendees'].sort(key=lambda attendee: attendee.user_id)
+    context.update(can_manage_meeting=can_manage, officer_read_only=not can_manage,
+                   can_export_meeting_pdf=context['meeting'].status in ('Finished', 'Archived') if can_manage else True)
+    return render(request, 'meetings/review_meeting.html', context)
 
 
 @login_required
@@ -1497,30 +1528,42 @@ def export_meeting_pdf(request, meeting_id):
     from django.utils.http import content_disposition_header
 
     meeting = get_object_or_404(Meeting, pk=meeting_id)
-    if not is_global_admin(request.user) and not has_membership(request.user, meeting.department, role='AP'):
+    from .reading import officer_can_read
+    can_manage = is_global_admin(request.user) or has_membership(request.user, meeting.department, role='AP')
+    if not can_manage and not officer_can_read(request.user, meeting):
         return HttpResponseForbidden('Not authorized to export this document.')
     if meeting.status not in ('Finished', 'Archived'):
         return HttpResponseForbidden('Only finalized documents can be exported.')
     try:
-        document = capture_document(meeting.pk)
+        document = capture_document(meeting.pk) if can_manage else capture_document(meeting.pk, officer_read_only=True)
     except Meeting.DoesNotExist:
         return HttpResponse('Document no longer exists.', status=404)
-    if not is_global_admin(request.user) and not has_membership(request.user, Department(pk=document['department_id']), role='AP'):
-        return HttpResponseForbidden('Not authorized to export this document.')
+    except ValueError:
+        if can_manage:
+            raise
+        return HttpResponseForbidden('Only finalized documents can be exported.')
+    if can_manage:
+        if not is_global_admin(request.user) and not has_membership(request.user, Department(pk=document['department_id']), role='AP'):
+            return HttpResponseForbidden('Not authorized to export this document.')
+    else:
+        current = get_object_or_404(Meeting.objects.select_related('department'), pk=meeting.pk)
+        if current.department_id != document['department_id'] or not officer_can_read(request.user, current):
+            return HttpResponseForbidden('Not authorized to export this document.')
     try:
         pdf_bytes = generate_meeting_pdf(document)
     except Exception:
         return HttpResponse('PDF generation is unavailable.', status=503)
-    # Required audit must succeed before any PDF bytes are returned.
-    with transaction.atomic():
-        AuditLog.objects.create(
-            user=request.user, meeting=meeting, department_id=document['department_id'],
-            action='Exported document as PDF', event_type='document.exported',
-            target_type='meeting', target_id=str(meeting.pk),
-            metadata={'format': 'PDF', 'export_scope': 'full_document',
-                      'template_version': TEMPLATE_VERSION, 'lifecycle_status': document['status'],
-                      'attendee_count': len(document['attendees'])},
-        )
+    if can_manage:
+        # Required audit must succeed before any PDF bytes are returned.
+        with transaction.atomic():
+            AuditLog.objects.create(
+                user=request.user, meeting=meeting, department_id=document['department_id'],
+                action='Exported document as PDF', event_type='document.exported',
+                target_type='meeting', target_id=str(meeting.pk),
+                metadata={'format': 'PDF', 'export_scope': 'full_document',
+                          'template_version': TEMPLATE_VERSION, 'lifecycle_status': document['status'],
+                          'attendee_count': len(document['attendees'])},
+            )
     filename = f"{slugify(document['title'])[:80] or 'meeting'}-{meeting.pk}.pdf"
     response = HttpResponse(pdf_bytes, content_type='application/pdf')
     response['Content-Disposition'] = content_disposition_header(True, filename)

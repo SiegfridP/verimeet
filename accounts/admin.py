@@ -121,6 +121,12 @@ class CustomUserAdmin(UserAdmin):
         with transaction.atomic():
             from .account_status import lock_accounts, change_account_status
             from django.core.exceptions import PermissionDenied
+            if change and {'first_name', 'last_name', 'department'}.intersection(form.changed_data):
+                from meetings.roster import lock_profile_names
+                lock_profile_names(User.objects.filter(pk=obj.pk), extra_departments=[obj.department_id])
+            if change and 'is_active' in form.changed_data:
+                from meetings.roster import lock_user_scope
+                lock_user_scope([request.user.pk, obj.pk])
             lock_accounts([request.user.pk] + ([obj.pk] if change else []))
             previous = User.objects.select_for_update().filter(pk=obj.pk).first() if change else None
             previous_memberships = set(Membership.objects.filter(user_id=obj.pk).values_list('pk', flat=True)) if change else set()

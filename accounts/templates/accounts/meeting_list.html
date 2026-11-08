@@ -14,7 +14,7 @@
 {% for meeting in meetings %}<tr>
 <td><strong>{{ meeting.title }}</strong></td><td>{{ meeting.department.name }}</td><td><span class="status-badge {% if meeting.status == 'Draft' %}status-draft{% elif meeting.status == 'Finished' %}status-finished{% else %}status-other{% endif %}">{{ meeting.status }}</span></td><td>{{ meeting.created_at|date:'M d, Y H:i' }}</td>
 {% if officer_list %}<td>{% if meeting.user_attendance %}Assigned Â· {{ meeting.user_attendance.status }} Â· {{ meeting.signing_label }}{% if meeting.user_attendance.has_signed %} {{ meeting.user_attendance.signed_at|date:'M d, Y H:i' }}{% endif %}{% else %}Not Assigned{% endif %}</td>
-<td>{% if meeting.user_attendance %}<a href="{% dashboard_url 'my_attendance' meeting.pk %}">My attendance details</a>
+<td>{% if meeting.status == 'Finished' or meeting.status == 'Archived' %}<a class="button btn-secondary" href="{% dashboard_url 'review_meeting' meeting.pk %}">Read Minutes</a>{% endif %}{% if meeting.user_attendance %}<a href="{% dashboard_url 'my_attendance' meeting.pk %}">My attendance details</a>
 {% if meeting.user_attendance.has_signed and meeting.user_attendance.cryptographic_signature and meeting.status != 'Draft' %}<a href="{% dashboard_url 'my_signature_verification_qr' meeting.pk %}">My Signature QR</a>{% endif %}
 {% if meeting.signing_label == 'Eligible to sign' %}<p>Scan the signing QR provided by Authorized Personnel to sign.</p>{% elif meeting.signing_label == 'Awaiting attendance' %}<p>Attendance must be recorded as Attended or Late before signing.</p>{% endif %}{% else %}Informational meeting listing{% endif %}</td>
 {% else %}<td>{{ meeting.assigned_count }} assigned</td><td>

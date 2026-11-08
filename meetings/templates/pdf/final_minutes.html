@@ -28,7 +28,8 @@ Export generated: {{ document.generated_at|date:"c" }}</p></div>
 <p class="note">No separate meeting date is recorded. Creation and update timestamps are not a finalization date.</p>
 <h2>Finalized minutes</h2>
 <div class="text">{{ document.minutes_content }}</div>
-<h2>Attendance and signatures</h2>
+{% if document.officer_read_only %}<h2>Assigned Participants / Signers</h2><ul>{% for attendee in document.attendees %}<li>{{ attendee.name }} - {{ attendee.status }} - {{ attendee.signing }}</li>{% empty %}<li>No participants assigned.</li>{% endfor %}</ul>
+{% else %}<h2>Attendance and signatures</h2>
 <table><thead><tr><th style="width:25%">Participant / attendance</th><th style="width:30%">Verification / signing time</th><th>Annotation</th></tr></thead><tbody>
 {% for attendee in document.attendees %}
 <tr><td>{{ attendee.name }}<br>{{ attendee.status }}</td>
@@ -38,4 +39,6 @@ Export generated: {{ document.generated_at|date:"c" }}</p></div>
 {% empty %}<tr><td colspan="3">No assigned attendees.</td></tr>{% endfor %}
 </tbody></table>
 <p class="note">Verification applies to stored document data, not these PDF bytes. This PDF is not cryptographically signed. Legacy signatures do not bind the meeting identifier, department identifier or title. Attendance status, display names, timestamps and visual images are contextual evidence, not signed payload fields. Images are captured at signing; current profile images are never substituted.</p>
+{% endif %}
+{% if document.historical_roster_available %}<h2>Absent</h2><p class="note">Department members not assigned when this meeting was finalized; this is not the recorded Absent attendance status.</p><ul>{% for person in document.absent %}<li>{{ person.name }}</li>{% empty %}<li>No unassigned department members.</li>{% endfor %}</ul>{% else %}<p>Historical department roster unavailable for this legacy meeting.</p>{% endif %}
 </body></html>

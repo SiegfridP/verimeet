@@ -22,6 +22,8 @@ def change_account_status(actor, target_id, active, expected_active=None, expect
             or type(active) is not bool):
         raise PermissionDenied('Account management is unavailable.')
     with transaction.atomic():
+        from meetings.roster import lock_user_scope
+        lock_user_scope([actor.pk, target_id])
         lock_accounts([actor.pk, target_id])
         current_actor = User.objects.select_for_update().filter(pk=actor.pk).first()
         target = User.objects.select_for_update().filter(pk=target_id).first()

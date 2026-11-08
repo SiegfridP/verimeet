@@ -1,3 +1,4 @@
+from django.db.models.deletion import ProtectedError
 from unittest.mock import patch
 from django.test import TestCase, TransactionTestCase, Client
 from django.urls import reverse
@@ -120,14 +121,19 @@ class Batch14Tests(TestCase):
         cases = [('status', 'Finished'), ('status', 'Archived'), ('has_signed', True),
                  ('cryptographic_signature', 'signature'), ('signed_at', timezone.now())]
         for field, value in cases:
-            model = Meeting if field == 'status' else Attendance
-            pk = meeting.pk if field == 'status' else attendance.pk
-            model.objects.filter(pk=pk).update(**{field: value})
-            for operation in (lambda: Department.objects.filter(pk=self.dept.pk).delete(),
-                              lambda: admin.site._registry[Department].delete_model(request, self.dept)):
-                with self.assertRaises(PermissionDenied), transaction.atomic(): operation()
-            self.assertEqual(self.client.post(reverse('delete_department', args=[self.dept.pk])).status_code, 400)
-            model.objects.filter(pk=pk).update(**{field: 'Draft' if field == 'status' else False if field == 'has_signed' else None})
+            with transaction.atomic():
+                model = Meeting if field == 'status' else Attendance
+                pk = meeting.pk if field == 'status' else attendance.pk
+                if field == 'status':
+                    from accounts.test_fixtures import set_meeting_fixture_state
+                    set_meeting_fixture_state(model.objects.filter(pk=pk), **{field: value})
+                else:
+                    model.objects.filter(pk=pk).update(**{field: value})
+                for operation in (lambda: Department.objects.filter(pk=self.dept.pk).delete(),
+                                  lambda: admin.site._registry[Department].delete_model(request, self.dept)):
+                    with self.assertRaises((PermissionDenied, ProtectedError)), transaction.atomic(): operation()
+                self.assertEqual(self.client.post(reverse('delete_department', args=[self.dept.pk])).status_code, 400)
+                transaction.set_rollback(True)
         VerificationQR.objects.create(attendance=attendance, token_hash='hash', encrypted_token='encrypted')
         with self.assertRaises(PermissionDenied), transaction.atomic(): self.dept.delete()
         self.assertFalse(AuditLog.objects.filter(event_type='department.deleted').exists())

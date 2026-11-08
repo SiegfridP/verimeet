@@ -12,7 +12,12 @@ def metadata_text(value):
     return ''.join(c for c in value if c.isprintable())[:200]
 
 
-def capture_document(meeting_id):
+def capture_document(meeting_id, *, officer_read_only=False):
+    if officer_read_only:
+        from .reading import capture_read_document
+        document = capture_read_document(meeting_id)
+        document.update(metadata_title=metadata_text(document['title']), generated_at=timezone.now(), resources={})
+        return document
     # One joined SELECT: avoid separate lazy queries mixing document/signature states.
     rows = list(Meeting.objects.filter(pk=meeting_id).values(
         'id', 'title', 'department_id', 'department__name', 'status',
@@ -76,6 +81,21 @@ def capture_document(meeting_id):
             'signed_at': row['attendees__signed_at'],
             'annotation': row['attendees__annotation'] or '',
         })
+    from .roster import roster_groups
+    from .models import HistoricalRoster
+    snapshot = HistoricalRoster.objects.filter(meeting_id=meeting_id).first()
+    document['historical_roster_available'] = snapshot is not None
+    document['absent'] = []
+    if snapshot:
+        current = {row['attendees__user_id']: attendee for row, attendee in zip(
+            [row for row in rows if row['attendees__id'] is not None], document['attendees'])}
+        document['attendees'] = []
+        for entry in snapshot.entries:
+            if entry['assigned']:
+                attendee = current.get(entry['user_id'], dict(status='Record unavailable', verification='Unavailable', signed=False, signed_at=None, annotation='', image_url=None))
+                document['attendees'].append(dict(attendee, name=entry['name']))
+            elif entry['member']:
+                document['absent'].append({'name': entry['name']})
     return document
 
 

@@ -31,9 +31,23 @@ def protect_attendance_evidence(sender, instance, using, **kwargs):
         raise PermissionDenied('Attendance changed during deletion. Nothing was deleted; please retry.')
     meeting_status = Meeting.objects.using(using).values_list('status', flat=True).get(pk=meeting_id)
     if (persisted.has_signed or persisted.cryptographic_signature or persisted.signed_at
-            or meeting_status == 'Archived'
+            or meeting_status in ('Finished', 'Archived')
             or SigningVisualSnapshot.objects.using(using).filter(attendance_id=persisted.pk).exists()):
         raise PermissionDenied(
-            'Deletion rejected: signed or Archived attendance and its verification history must be retained. '
+            'Deletion rejected: signed or finalized attendance and its verification history must be retained. '
             'The parent record cannot be deleted.'
         )
+
+
+from .models import HistoricalRoster
+
+@receiver(pre_delete, sender=HistoricalRoster)
+def protect_historical_roster(sender, instance, **kwargs):
+    raise PermissionDenied('Historical rosters must be retained.')
+
+
+from accounts.models import Membership
+@receiver(pre_delete, sender=Membership)
+def serialize_membership_removal(sender, instance, using, **kwargs):
+    from .roster import lock_user_scope
+    lock_user_scope([instance.user_id], using, [instance.department_id])

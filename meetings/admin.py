@@ -65,10 +65,13 @@ class AttendanceAdmin(admin.ModelAdmin):
         if self._protected(obj):
             return [field.name for field in Attendance._meta.fields]
         # Signing material is produced only by the signing workflow.
-        return ['has_signed', 'cryptographic_signature', 'signed_at', 'annotation']
+        fields = ['has_signed', 'cryptographic_signature', 'signed_at', 'annotation']
+        if obj and obj.meeting.status == 'Finished':
+            fields += ['meeting', 'user']
+        return fields
 
     def has_delete_permission(self, request, obj=None):
-        return not self._protected(obj) and super().has_delete_permission(request, obj)
+        return not self._protected(obj) and not (obj and obj.meeting.status == 'Finished') and super().has_delete_permission(request, obj)
 
     def _record(self, request, obj, previous, event_type, action):
         AuditLog.objects.create(
@@ -99,6 +102,8 @@ class AttendanceAdmin(admin.ModelAdmin):
             previous = Attendance.objects.select_for_update().filter(pk=obj.pk).first() if change else None
             if change and (previous is None or previous.meeting_id != original_meeting_id):
                 raise PermissionDenied('Attendance changed during this operation. Nothing was saved; please retry.')
+            if previous is None and obj.meeting.status != 'Draft':
+                raise PermissionDenied('Assignments require a Draft meeting.')
             if self._protected(previous):
                 raise PermissionDenied('Signed attendance is read-only in Admin.')
             if any(getattr(obj, field) != (getattr(previous, field) if previous else default)

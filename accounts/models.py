@@ -57,6 +57,33 @@ class User(AbstractUser):
         return super()._do_update(base_qs, using, pk_val, values, update_fields, forced_update, *args, **kwargs)
 
     def save(self, *args, **kwargs):
+        from django.db import transaction
+        from meetings.roster import lock_profile_names
+        fields = kwargs.get('update_fields')
+        using = kwargs.get('using') or self._state.db or 'default'
+        if self._state.adding:
+            # A supplied primary key does not make this an existing instance.
+            # Never let insert fallback overwrite an existing account.
+            kwargs['force_insert'] = True
+            if self.department_id:
+                from meetings.roster import lock_departments
+                with transaction.atomic(using=using):
+                    lock_departments([self.department_id], using)
+                    return self._save_with_signature_guard(*args, **kwargs)
+            return self._save_with_signature_guard(*args, **kwargs)
+        names = {'first_name', 'last_name', 'department', 'department_id'}
+        if self.pk and (fields is None or names.intersection(fields)):
+            users = type(self).objects.using(using).filter(pk=self.pk)
+            with transaction.atomic(using=using):
+                frozen = lock_profile_names(users, using, [self.department_id])
+                if not self._state.adding and not frozen.exists():
+                    from django.core.exceptions import PermissionDenied
+                    raise PermissionDenied('Profile no longer exists.')
+                # A full stale instance still writes names: always serialize it.
+                return self._save_with_signature_guard(*args, **kwargs)
+        return self._save_with_signature_guard(*args, **kwargs)
+
+    def _save_with_signature_guard(self, *args, **kwargs):
         from django.core.exceptions import PermissionDenied
         from django.db import transaction
         from django.db.models import F
@@ -125,6 +152,25 @@ class Membership(models.Model):
     department = models.ForeignKey(Department, on_delete=models.CASCADE, related_name='memberships')
     role = models.CharField(max_length=2, choices=ROLE_CHOICES, default='O')
     created_at = models.DateTimeField(auto_now_add=True)
+
+    def save(self, *args, **kwargs):
+        from django.db import transaction
+        from meetings.roster import lock_departments
+        using = kwargs.get('using') or self._state.db or 'default'
+        with transaction.atomic(using=using):
+            from meetings.roster import lock_user_scope
+            user_ids = [self.user_id]
+            old = type(self).objects.using(using).filter(pk=self.pk).values('user_id','department_id','role').first() if self.pk else None
+            departments = [self.department_id]
+            if old:
+                user_ids.append(old['user_id'])
+                departments.append(old['department_id'])
+            lock_user_scope(user_ids, using, departments)
+            current = type(self).objects.using(using).filter(pk=self.pk).values('user_id','department_id','role').first() if self.pk else None
+            if current != old:
+                from django.core.exceptions import PermissionDenied
+                raise PermissionDenied('Membership changed. Retry the entire operation.')
+            return super().save(*args, **kwargs)
 
     class Meta:
         unique_together = ('user', 'department')
