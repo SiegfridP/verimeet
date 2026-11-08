@@ -25,7 +25,8 @@ load_dotenv(BASE_DIR / ".env")
 
 # SECURITY WARNING: keep the secret key used in production secret!
 # Fail loudly if DJANGO_SECRET_KEY is not set
-SECRET_KEY = os.environ["DJANGO_SECRET_KEY"]
+SECRET_KEY = (os.getenv('DJANGO_SECRET_KEY', '') if os.getenv('DJANGO_ENV') == 'production'
+              else os.environ['DJANGO_SECRET_KEY'])
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv("DJANGO_DEBUG", "False").lower() in ("true", "1", "t", "yes")
@@ -81,6 +82,7 @@ SIGNATURE_RETENTION_DAYS = 90
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -164,6 +166,61 @@ STATIC_URL = 'static/'
 
 from .email_config import email_settings
 globals().update(email_settings(os.environ))
+
+from django.core.exceptions import ImproperlyConfigured
+from urllib.parse import urlsplit
+import dj_database_url
+
+PRODUCTION = os.getenv('DJANGO_ENV', 'development') == 'production'
+database_url = os.getenv('DATABASE_URL', '')
+if database_url:
+    try:
+        parsed_db = urlsplit(database_url)
+        if parsed_db.scheme not in ('postgres', 'postgresql') or not parsed_db.hostname or not parsed_db.path.strip('/'):
+            raise ValueError
+        DATABASES = {'default': dj_database_url.parse(database_url, conn_max_age=60, conn_health_checks=True)}
+    except Exception:
+        raise ImproperlyConfigured('Invalid PostgreSQL DATABASE_URL.') from None
+elif PRODUCTION:
+    raise ImproperlyConfigured('Production requires DATABASE_URL.')
+
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+STORAGES = {
+    'default': {'BACKEND': 'django.core.files.storage.FileSystemStorage'},
+    'staticfiles': {'BACKEND': ('whitenoise.storage.CompressedManifestStaticFilesStorage'
+                              if PRODUCTION or os.getenv('COLLECT_STATIC') == '1'
+                              else 'django.contrib.staticfiles.storage.StaticFilesStorage')},
+}
+DURABLE_EVIDENCE = PRODUCTION
+EVIDENCE_ENDPOINT = os.getenv('EVIDENCE_ENDPOINT', '')
+EVIDENCE_BUCKET = os.getenv('EVIDENCE_BUCKET', '')
+EVIDENCE_ACCESS_KEY_ID = os.getenv('EVIDENCE_ACCESS_KEY_ID', '')
+EVIDENCE_SECRET_ACCESS_KEY = os.getenv('EVIDENCE_SECRET_ACCESS_KEY', '')
+CSRF_TRUSTED_ORIGINS = [APPLICATION_ORIGIN] if APPLICATION_ORIGIN else []
+if PRODUCTION:
+    from .email_config import validate_production_credential
+    validate_production_credential('DJANGO_SECRET_KEY', SECRET_KEY, django_secret=True)
+    if 'allauth.socialaccount.providers.google' in INSTALLED_APPS:
+        for credential in ('GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET'):
+            validate_production_credential(credential, os.getenv(credential, ''))
+    if DEBUG or not ALLOWED_HOSTS or '*' in ALLOWED_HOSTS:
+        raise ImproperlyConfigured('Production requires DEBUG false and explicit allowed hosts.')
+    if urlsplit(APPLICATION_ORIGIN).hostname not in ALLOWED_HOSTS:
+        raise ImproperlyConfigured('Canonical origin host must be allowed.')
+    if not all((EVIDENCE_BUCKET, EVIDENCE_ACCESS_KEY_ID, EVIDENCE_SECRET_ACCESS_KEY)) or not __import__('re').fullmatch(r'https://[a-f0-9]{32}\.r2\.cloudflarestorage\.com', EVIDENCE_ENDPOINT):
+        raise ImproperlyConfigured('Production requires private R2 evidence configuration.')
+    try:
+        from cryptography.fernet import Fernet
+        Fernet(os.environ['SIGNING_KEY_ENCRYPTION_KEY'].encode())
+    except Exception:
+        raise ImproperlyConfigured('Production requires a valid signing encryption key.') from None
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    SECURE_SSL_REDIRECT = True
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_HSTS_SECONDS = 3600
+SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_REFERRER_POLICY = 'same-origin'
 
 # Account templates own their single VeriMeet subject prefix.
 ACCOUNT_EMAIL_SUBJECT_PREFIX = ""

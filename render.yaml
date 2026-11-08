@@ -1,0 +1,40 @@
+# Provision free Postgres manually first; paste its internal URL as DATABASE_URL.
+services:
+  - type: web
+    name: verimeet
+    runtime: docker
+    plan: free
+    healthCheckPath: /healthz/
+    envVars:
+      - key: DJANGO_ENV
+        value: production
+      - key: DJANGO_DEBUG
+        value: "False"
+      - key: EMAIL_BACKEND
+        value: core.resend_backend.EmailBackend
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        sync: false
+      - key: DJANGO_ALLOWED_HOSTS
+        sync: false
+      - key: APPLICATION_ORIGIN
+        sync: false
+      - key: SIGNING_KEY_ENCRYPTION_KEY
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: EVIDENCE_ENDPOINT
+        sync: false
+      - key: EVIDENCE_BUCKET
+        sync: false
+      - key: EVIDENCE_ACCESS_KEY_ID
+        sync: false
+      - key: EVIDENCE_SECRET_ACCESS_KEY
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: DEFAULT_FROM_EMAIL
+        sync: false

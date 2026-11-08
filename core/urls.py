@@ -19,8 +19,10 @@ from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
 from accounts.views import routing_view
+from core.health import health
 
 urlpatterns = [
+    path('healthz/', health, name='health'),
     path('', routing_view, name='home'),
     path('admin/', admin.site.urls),
     

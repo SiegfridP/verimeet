@@ -2,11 +2,30 @@
 import ipaddress
 import math
 import re
+import unicodedata
 from email.utils import formataddr, parseaddr
 from urllib.parse import urlsplit
 
 from django.core.exceptions import ImproperlyConfigured, ValidationError
 from django.core.validators import validate_email
+
+
+def validate_production_credential(name, value, *, django_secret=False, resend=False):
+    """Reject malformed configuration without including supplied values in errors."""
+    folded = re.sub(r'[^a-z0-9]', '', value.lower()) if isinstance(value, str) else ''
+    invalid = (not isinstance(value, str) or not value.strip()
+               or any(c.isspace() or unicodedata.category(c).startswith('C') for c in value)
+               or any(marker in folded for marker in ('placeholder', 'changeme', 'replaceme', 'replacewith',
+                                                       'inserthere',
+                                                       'yoursecret', 'yourapikey', 'yourgoogle',
+                                                       'yourclient', 'examplekey'))
+               or folded in ('secret', 'password', 'test', 'example', 'todo', 'dummy'))
+    if django_secret:
+        invalid = invalid or len(value) < 50 or len(set(value)) < 5 or value.startswith('django-insecure-')
+    if resend:
+        invalid = invalid or re.fullmatch(r're_[A-Za-z0-9_-]{20,}', value) is None
+    if invalid:
+        raise ImproperlyConfigured('Invalid production credential: ' + name + '.') from None
 
 
 def origin(value, production=False):
@@ -72,7 +91,12 @@ def email_settings(env):
     if any(ord(c) < 32 or ord(c) == 127 for c in sender + display) or not display.strip():
         fail("sender identity")
     canonical = env.get("APPLICATION_ORIGIN", "")
-    if production:
+    https_backend = backend == 'core.resend_backend.EmailBackend'
+    if production and https_backend:
+        validate_production_credential('RESEND_API_KEY', env.get('RESEND_API_KEY', ''), resend=True)
+        if address.endswith(('.invalid', 'example.com')):
+            fail('HTTPS email requires API key and authorized sender')
+    if production and not https_backend:
         if backend != "django.core.mail.backends.smtp.EmailBackend":
             fail("production requires the SMTP backend")
         if not (tls or ssl):
@@ -90,7 +114,8 @@ def email_settings(env):
     if backend == "django.core.mail.backends.smtp.EmailBackend":
         mailer["OPTIONS"] = dict(host=host, port=port, username=username, password=password,
                                  use_tls=tls, use_ssl=ssl, timeout=timeout)
-    return {"EMAIL_PRODUCTION": production, "APPLICATION_ORIGIN": canonical,
+    return {"RESEND_API_KEY": env.get('RESEND_API_KEY', ''), "RESEND_TIMEOUT": timeout,
+            "EMAIL_PRODUCTION": production, "APPLICATION_ORIGIN": canonical,
             "DEFAULT_FROM_EMAIL": formataddr((display, address)), "MAILERS": {"default": mailer}}
 
 

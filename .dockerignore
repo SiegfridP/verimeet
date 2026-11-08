@@ -1,0 +1,15 @@
+.git
+.env
+.env.*
+!.env.example
+*env/
+media/
+private-signatures/
+staticfiles/
+**/__pycache__/
+*.sqlite3*
+*.pem
+*.key
+.aws
+.codex
+.agents

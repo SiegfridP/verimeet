@@ -8,9 +8,11 @@ from django.core.exceptions import PermissionDenied
 from django.core.files.base import ContentFile
 from django.core.files.storage import FileSystemStorage
 from accounts.signatures import LIMIT, decode_png, validated_signature_data
+from core.private_storage import DurablePrivateMixin
 
 
-class SnapshotStorage(FileSystemStorage):
+class SnapshotStorage(DurablePrivateMixin, FileSystemStorage):
+    evidence_prefix = 'snapshots'
     def save(self, name, content, max_length=None):
         if len(name) != 36 or not name.endswith('.png'):
             raise ValueError('Invalid evidence identifier')

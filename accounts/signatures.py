@@ -10,12 +10,13 @@ from django.core.exceptions import ValidationError
 from django.core.files.storage import FileSystemStorage
 from django.core.files.base import ContentFile, File
 from django.utils.deconstruct import deconstructible
+from core.private_storage import DurablePrivateMixin
 
 LIMIT = 2097152
 
 
 @deconstructible
-class SignatureStorage(FileSystemStorage):
+class SignatureStorage(DurablePrivateMixin, FileSystemStorage):
     def delete(self, name):
         from django.core.exceptions import PermissionDenied
         raise PermissionDenied('Physical signature deletion is disabled.')
@@ -40,6 +41,8 @@ class SignatureStorage(FileSystemStorage):
         raise NotImplementedError('Private signatures require an owner-authorized preview.')
 
     def path(self, name):
+        if getattr(settings, 'DURABLE_EVIDENCE', False):
+            raise NotImplementedError('Private objects have no filesystem path.')
         if name.startswith('signatures/'):
             return FileSystemStorage(location=settings.MEDIA_ROOT).path(name)
         return super().path(name)
