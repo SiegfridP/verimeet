@@ -1,5 +1,13 @@
 # Private signature deployment
 
+Workstream 4 adds separate lifetime-held SigningVisualSnapshot evidence. It copies
+the exact validated profile bytes at signing and freezes the display name. It
+does not infer history from this supersession ledger. PRIVATE_SNAPSHOT_ROOT may
+override the default PRIVATE_SIGNATURE_ROOT/signing-evidence directory; neither
+may be public. Profile replacement, deactivation and supersession eligibility
+must never remove snapshots. See meetings/PDF_DEPLOYMENT.md for migration,
+backup, reconciliation, missing-file and PDF resource-isolation requirements.
+
 ## Owner replacement and retention
 
 Completed non-admin accounts replace PNGs through Settings with explicit confirmation
@@ -35,8 +43,8 @@ safe ledger IDs, holds and age eligibility, never private paths. It does not
 inspect file existence and age eligibility does not authorize deletion.
 
 PNG replacement does not modify ECDSA payloads, attendance, annotations or PDFs.
-Workstream 4 may reference stable retained asset IDs from signing-time snapshots;
-it must not infer historical image associations from current profile PNGs. Future
+Workstream 4 uses independent signing-time copies rather than inferring historical
+image associations from current profile PNGs or this supersession ledger. Future
 cleanup must check active references, protected snapshot references and holds.
 
 New signature files live in `PRIVATE_SIGNATURE_ROOT`, outside `MEDIA_ROOT` by

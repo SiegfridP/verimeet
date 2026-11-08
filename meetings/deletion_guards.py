@@ -3,7 +3,12 @@ from django.core.exceptions import PermissionDenied
 from django.db.models import F
 from django.db.models.signals import pre_delete
 from django.dispatch import receiver
-from .models import Attendance, Meeting
+from .models import Attendance, Meeting, SigningVisualSnapshot
+
+
+@receiver(pre_delete, sender=SigningVisualSnapshot)
+def protect_snapshot(sender, instance, **kwargs):
+    raise PermissionDenied('Signing snapshots must be retained.')
 
 
 @receiver(pre_delete, sender=Attendance, dispatch_uid='protect_attendance_evidence')
@@ -26,7 +31,8 @@ def protect_attendance_evidence(sender, instance, using, **kwargs):
         raise PermissionDenied('Attendance changed during deletion. Nothing was deleted; please retry.')
     meeting_status = Meeting.objects.using(using).values_list('status', flat=True).get(pk=meeting_id)
     if (persisted.has_signed or persisted.cryptographic_signature or persisted.signed_at
-            or meeting_status == 'Archived'):
+            or meeting_status == 'Archived'
+            or SigningVisualSnapshot.objects.using(using).filter(attendance_id=persisted.pk).exists()):
         raise PermissionDenied(
             'Deletion rejected: signed or Archived attendance and its verification history must be retained. '
             'The parent record cannot be deleted.'

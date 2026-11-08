@@ -10,7 +10,7 @@ from .test_onboarding import png
 def signature_storage(test):
     directory = TemporaryDirectory()
     test.addCleanup(directory.cleanup)
-    settings = override_settings(PRIVATE_SIGNATURE_ROOT=directory.name)
+    settings = override_settings(PRIVATE_SIGNATURE_ROOT=directory.name, PRIVATE_SNAPSHOT_ROOT=None)
     settings.enable()
     test.addCleanup(settings.disable)
 

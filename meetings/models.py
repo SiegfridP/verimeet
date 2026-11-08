@@ -110,6 +110,41 @@ class Attendance(models.Model):
     def verification_qr(self):
         return self.verification_qrs.filter(is_revoked=False).first()
 
+class ImmutableSnapshotQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        from django.core.exceptions import PermissionDenied
+        raise PermissionDenied('Signing snapshots are immutable.')
+
+    def bulk_update(self, *args, **kwargs):
+        from django.core.exceptions import PermissionDenied
+        raise PermissionDenied('Signing snapshots are immutable.')
+
+    def bulk_create(self, *args, **kwargs):
+        from django.core.exceptions import PermissionDenied
+        raise PermissionDenied('Use the signing evidence service.')
+
+
+class SigningVisualSnapshot(models.Model):
+    attendance = models.OneToOneField(Attendance, on_delete=models.PROTECT, related_name='visual_snapshot')
+    storage_identifier = models.CharField(max_length=36, unique=True, editable=False)
+    content_sha256 = models.CharField(max_length=64, editable=False)
+    byte_length = models.PositiveIntegerField(editable=False)
+    width = models.PositiveIntegerField(editable=False)
+    height = models.PositiveIntegerField(editable=False)
+    captured_at = models.DateTimeField(auto_now_add=True)
+    signer_name = models.CharField(max_length=300, editable=False)
+    provenance = models.CharField(max_length=32, default='signing-current-png', editable=False)
+    objects = ImmutableSnapshotQuerySet.as_manager()
+
+    def save(self, *args, **kwargs):
+        from django.core.exceptions import PermissionDenied
+        if not self._state.adding or (self.pk and type(self).objects.filter(pk=self.pk).exists()):
+            raise PermissionDenied('Signing snapshots are immutable.')
+        # Never let Django's insert fallback update a concurrently inserted PK.
+        kwargs['force_insert'] = True
+        return super().save(*args, **kwargs)
+
+
 class AuditLog(models.Model):
     department = models.ForeignKey(Department, on_delete=models.SET_NULL, null=True, blank=True)
     meeting = models.ForeignKey(Meeting, on_delete=models.SET_NULL, null=True, blank=True)

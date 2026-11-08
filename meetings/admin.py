@@ -59,7 +59,7 @@ class AttendanceAdmin(admin.ModelAdmin):
 
     def _protected(self, obj):
         return obj and (obj.has_signed or obj.cryptographic_signature or obj.signed_at
-                        or obj.meeting.status == 'Archived')
+                        or obj.meeting.status == 'Archived' or hasattr(obj, 'visual_snapshot'))
 
     def get_readonly_fields(self, request, obj=None):
         if self._protected(obj):

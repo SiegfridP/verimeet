@@ -646,20 +646,16 @@ def sign_meeting(request, meeting_id):
         if not request.user.private_key:
             return HttpResponseBadRequest("Digital signature key is unavailable. Please contact your administrator.")
 
-        # Build canonical payload using the single source of truth function
-        payload_to_sign = _build_signing_payload(meeting, annotation)
-
-        # Sign with the user's encrypted private key.
-        # Any cryptographic failure must NOT leave a false has_signed=True record.
-        try:
-            digital_sig = sign_document_data(request.user.private_key, payload_to_sign)
-        except Exception:
-            return HttpResponseBadRequest("Cryptographic signing could not be completed. Please contact your administrator.")
-
         # Atomically persist the signature and audit record only if still unsigned and eligible.
         # This conditional update guarantees that concurrent requests or revoked attendance status cannot succeed.
         with transaction.atomic():
             lock_mutable_meetings([meeting.pk])
+            from django.db.models import F
+            User.objects.filter(pk=request.user.pk).update(username=F('username'))
+            signer = User.objects.select_for_update().get(pk=request.user.pk)
+            meeting.refresh_from_db()
+            if not signer.is_active or not user_in_department(signer, meeting) or meeting.status != 'Finished':
+                return HttpResponseForbidden('Signing is no longer available.')
             if qr_session:
                 # Acquire authorization after the Meeting guard and before Attendance.
                 qr_session = QRSession.objects.select_for_update().filter(
@@ -678,6 +674,15 @@ def sign_meeting(request, meeting_id):
                 token_age = int(time.time()) - ts
                 if token_age < 0 or token_age > 3600:
                     return HttpResponseForbidden("Invalid or expired QR code.")
+            attendance = Attendance.objects.select_for_update().filter(
+                pk=attendance.pk, meeting=meeting, user=signer).first()
+            if attendance is None or attendance.has_signed or attendance.status not in ('Attended', 'Late'):
+                return HttpResponseForbidden('Signing is no longer available.')
+            try:
+                digital_sig = sign_document_data(signer.private_key, _build_signing_payload(meeting, annotation))
+            except Exception:
+                transaction.set_rollback(True)
+                return HttpResponseBadRequest('Signing evidence could not be saved. Please retry.')
             updated = Attendance.objects.filter(
                 pk=attendance.pk,
                 has_signed=False,
@@ -695,6 +700,13 @@ def sign_meeting(request, meeting_id):
                 if current and current.has_signed:
                     return HttpResponseForbidden("You have already signed this document.")
                 return HttpResponseForbidden("Your attendance must be recorded as Attended or Late before you can sign.")
+
+            try:
+                from .visual_evidence import capture
+                capture(attendance, signer)
+            except Exception:
+                transaction.set_rollback(True)
+                return HttpResponseBadRequest('Signing evidence could not be saved. Please retry.')
 
             if qr_session:
                 QRUsage.objects.get_or_create(qr_session=qr_session, user=request.user)

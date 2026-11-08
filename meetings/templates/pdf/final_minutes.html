@@ -1,8 +1,13 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>Meeting minutes</title>
+<html lang="en"><head><meta charset="utf-8"><title>{{ document.metadata_title|default:"Meeting minutes" }}</title>
+<meta name="generator" content="VeriMeet">
+<meta name="description" content="Finalized meeting minutes">
+<meta name="dcterms.created" content="{{ document.generated_at|date:'c' }}">
 <style>
 @page { size: A4; margin: 20mm 17mm; @bottom-right { content: "Page " counter(page) " of " counter(pages); font-size: 9pt; color: #64748b; } }
 body { font: 10pt/1.5 sans-serif; color: #172338; }
+.signature { width: 48mm; height: 16mm; object-fit: contain; }
+.invalid { color: #a00000; font-weight: bold; }
 h1 { font-size: 23pt; line-height: 1.2; color: #153d57; overflow-wrap: anywhere; }
 h2 { font-size: 14pt; color: #153d57; break-after: avoid; margin-top: 22pt; }
 .meta { border-top: 3pt solid #287888; padding-top: 10pt; }
@@ -16,7 +21,7 @@ tr { break-inside: avoid; }
 </style></head><body>
 <h1>{{ document.title }}</h1>
 <div class="meta"><strong>{{ document.department_name }}</strong> · {{ document.status }}
-<p>Meeting #{{ document.id }}<br>
+<p>
 Record created: {{ document.created_at|date:"c" }}<br>
 Record last updated: {{ document.updated_at|date:"c" }}<br>
 Export generated: {{ document.generated_at|date:"c" }}</p></div>
@@ -27,9 +32,10 @@ Export generated: {{ document.generated_at|date:"c" }}</p></div>
 <table><thead><tr><th style="width:25%">Participant / attendance</th><th style="width:30%">Verification / signing time</th><th>Annotation</th></tr></thead><tbody>
 {% for attendee in document.attendees %}
 <tr><td>{{ attendee.name }}<br>{{ attendee.status }}</td>
-<td>{{ attendee.verification }}<br>{% if attendee.signed_at %}{{ attendee.signed_at|date:"c" }}{% else %}No signing timestamp{% endif %}</td>
+<td><span{% if attendee.verification == 'Invalid signature' %} class="invalid"{% endif %}>{{ attendee.verification }}</span><br>{% if attendee.signed_at %}{{ attendee.signed_at|date:"c" }}{% else %}No signing timestamp{% endif %}
+{% if attendee.signed %}<br>{% if attendee.image_url %}<img class="signature" src="{{ attendee.image_url }}" alt="Historical visual signature">{% else %}Visual signature unavailable{% endif %}{% endif %}</td>
 <td class="text">{{ attendee.annotation|default:"No annotation" }}</td></tr>
 {% empty %}<tr><td colspan="3">No assigned attendees.</td></tr>{% endfor %}
 </tbody></table>
-<p class="note">Verification applies to stored document data, not these PDF bytes. This PDF is not cryptographically signed. Legacy signatures do not bind the meeting identifier, department identifier or title. Attendance status, display names and timestamps are contextual information, not signed payload fields. Profile signature images are not included.</p>
+<p class="note">Verification applies to stored document data, not these PDF bytes. This PDF is not cryptographically signed. Legacy signatures do not bind the meeting identifier, department identifier or title. Attendance status, display names, timestamps and visual images are contextual evidence, not signed payload fields. Images are captured at signing; current profile images are never substituted.</p>
 </body></html>

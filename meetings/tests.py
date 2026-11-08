@@ -5012,7 +5012,9 @@ class Batch10PDFTests(TestCase):
             self.assertEqual(document['attendees'][0]['verification'], expected)
             html = render_to_string('pdf/final_minutes.html', {'document': document})
             self.assertIn(expected, html)
-            self.assertIn('Jos\u00e9 Tan', html)
+            self.assertIn('Jos\u00e9 Tan' if kind == 'unsigned' else 'Name unavailable', html)
+            if kind != 'unsigned':
+                self.assertIn('Visual signature unavailable', html)
             self.assertIn(annotation, html)
             self.assertIn('Second line \u2014 Caf\u00e9 &lt;img', html)
             for secret in (signature, self.officer.private_key, self.officer.public_key, self.officer.username, self.officer.email):
@@ -5090,7 +5092,8 @@ class Batch10PDFTests(TestCase):
         from unittest.mock import patch
         from pathlib import Path
         from meetings.pdf import capture_document, generate_meeting_pdf, deny_resource
-        urls = ('https://example.invalid/private.png', Path(__file__).resolve().as_uri())
+        urls = ('https://example.invalid/private.png', Path(__file__).resolve().as_uri(),
+                'data:image/png;base64,AAAA', 'evidence:unknown')
         document = capture_document(self.meeting.pk)
         # Inject trusted test HTML to force real resource requests. Production content
         # remains escaped; no resource permissions are relaxed for this test.
@@ -5104,13 +5107,11 @@ class Batch10PDFTests(TestCase):
                 with patch('meetings.pdf.render_to_string', return_value=html):
                     with patch('meetings.pdf.deny_resource', new=recording_fetcher):
                         with patch('urllib.request.OpenerDirector.open', side_effect=AssertionError('Resource access attempted')) as opener:
-                            # WeasyPrint 70 consults this attribute after the callable
-                            # denies a URL. The current callable has no such attribute,
-                            # so attempted resources abort rendering (fail closed).
-                            with self.assertRaisesRegex(AttributeError, '_fail_on_errors') as error:
+                            from weasyprint.urls import FatalURLFetchingError
+                            with self.assertRaises(FatalURLFetchingError) as error:
                                 generate_meeting_pdf(document)
-                self.assertIsInstance(error.exception.__context__, ValueError)
-                self.assertEqual(str(error.exception.__context__), 'External PDF resources are disabled.')
+                self.assertIsInstance(error.exception.__cause__, ValueError)
+                self.assertEqual(str(error.exception.__cause__), 'External PDF resources are disabled.')
                 self.assertEqual(requested, [url])
                 opener.assert_not_called()
 
