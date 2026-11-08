@@ -339,9 +339,19 @@ class Batch09AdministrativeAuditTests(TestCase):
         self.assertEqual(AuditLog.objects.filter(event_type='invitation.created').count(), 2)
         self.assertEqual(AuditLog.objects.filter(event_type='invitation.revoked').count(), 1)
         invitation = Invitation.objects.get(accepted=False)
+        # Acceptance requires completed participant onboarding as well as email ownership.
+        from django.core.files.base import ContentFile
+        from tempfile import TemporaryDirectory
+        from django.test import override_settings
+        from .test_onboarding import png
+        directory = TemporaryDirectory(); self.addCleanup(directory.cleanup)
+        storage_setting = override_settings(PRIVATE_SIGNATURE_ROOT=directory.name)
+        storage_setting.enable(); self.addCleanup(storage_setting.disable)
+        self.target.signature_image.save('signature.png', ContentFile(png()))
         self.client.force_login(self.target)
         EmailAddress.objects.create(user=self.target, email=invitation.email, verified=True)
-        self.client.post(reverse('accept_invitation', args=[invitation.token]))
+        response = self.client.post(reverse('accept_invitation', args=[invitation.token]))
+        self.assertRedirects(response, reverse('department_dashboard', args=[self.department.pk]))
         event = AuditLog.objects.get(event_type='membership.added')
         self.assertEqual(event.user, self.target)
         self.assertEqual(event.metadata['user_id'], self.target.pk)
@@ -354,6 +364,24 @@ class Batch09AdministrativeAuditTests(TestCase):
         self.target.is_active = False
         self.target.is_admin = True
         self.target.department = self.department
+        from django.core.exceptions import PermissionDenied
+        from types import SimpleNamespace
+        self.form = SimpleNamespace(changed_data=['is_active', 'is_admin'],
+                                    cleaned_data={'confirm_account_status': True},
+                                    security_initial={'is_admin': False, 'is_superuser': False, 'is_staff': False,
+                                                      'is_active': True, 'session_version': 0})
+        with self.assertRaises(PermissionDenied):
+            model_admin.save_model(self.request, self.target, self.form, True)
+        self.target.refresh_from_db()
+        self.assertTrue(self.target.is_active)
+        self.assertFalse(self.target.is_admin)
+        self.target.is_active = False
+        self.form.changed_data = ['is_active']
+        model_admin.save_model(self.request, self.target, self.form, True)
+        self.target.is_admin = True
+        self.target.department = self.department
+        self.form.changed_data = ['is_admin', 'department']
+        self.form.security_initial.update(is_active=False, session_version=1)
         model_admin.save_model(self.request, self.target, self.form, True)
         self.assertEqual(AuditLog.objects.get(event_type='user.activation_changed').user, self.actor)
         self.assertEqual(AuditLog.objects.get(event_type='user.role_changed').metadata['new_role'], 'Global Admin')

@@ -17,6 +17,7 @@ class Department(models.Model):
         return self.name
 
 class User(AbstractUser):
+    session_version = models.PositiveBigIntegerField(default=0, editable=False)
     objects = SignatureUserManager()
     username_confirmation_required = models.BooleanField(default=False)
     signature_validation_hash = models.CharField(max_length=64, blank=True)
@@ -40,6 +41,20 @@ class User(AbstractUser):
 
     def __str__(self):
         return self.email or self.username
+
+    def _get_session_auth_hash(self, secret=None):
+        base = super()._get_session_auth_hash(secret=secret)
+        if self.session_version == 0:
+            return base  # Existing sessions remain compatible until revocation.
+        from django.utils.crypto import salted_hmac
+        return salted_hmac('accounts.session_version', f'{base}:{self.session_version}',
+                           secret=secret, algorithm='sha256').hexdigest()
+
+    def _do_update(self, base_qs, using, pk_val, values, update_fields, forced_update, *args, **kwargs):
+        # Only the status service's locked internal update writes existing
+        # activity/revocation state. Unrelated stale saves remain safe.
+        values = [entry for entry in values if entry[0].name not in {'is_active', 'session_version'}]
+        return super()._do_update(base_qs, using, pk_val, values, update_fields, forced_update, *args, **kwargs)
 
     def save(self, *args, **kwargs):
         from django.core.exceptions import PermissionDenied

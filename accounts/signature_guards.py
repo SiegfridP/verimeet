@@ -29,6 +29,8 @@ class SignatureField(models.ImageField):
 
 class UserQuerySet(models.QuerySet):
     def update(self, **kwargs):
+        if set(kwargs) & {'is_active', 'session_version'}:
+            raise PermissionDenied('Use the account status service for session revocation.')
         if 'signature_image' in kwargs:
             value = kwargs['signature_image']
             if not isinstance(value, str) or self.exclude(signature_image=value).exists():
@@ -39,14 +41,14 @@ class UserQuerySet(models.QuerySet):
         return super().update(**kwargs)
 
     def bulk_update(self, objs, fields, batch_size=None):
-        if 'signature_image' in fields:
-            raise PermissionDenied('Bulk signature updates are disabled.')
+        if set(fields) & {'signature_image', 'session_version', 'is_active'}:
+            raise PermissionDenied('Bulk updates to signature, account activity, or session-version fields are disabled.')
         return super().bulk_update(objs, fields, batch_size=batch_size)
 
     def bulk_create(self, objs, batch_size=None, ignore_conflicts=False, update_conflicts=False,
                     update_fields=None, unique_fields=None):
-        if 'signature_image' in (update_fields or []):
-            raise PermissionDenied('Conflicting bulk signature uploads are disabled.')
+        if set(update_fields or []) & {'signature_image', 'session_version', 'is_active'}:
+            raise PermissionDenied('Bulk conflict updates to signature, account activity, or session-version fields are disabled.')
         return super().bulk_create(objs, batch_size=batch_size, ignore_conflicts=ignore_conflicts,
             update_conflicts=update_conflicts, update_fields=update_fields, unique_fields=unique_fields)
 

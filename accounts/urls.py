@@ -1,8 +1,11 @@
 from django.urls import path
 from django.views.generic import RedirectView
 from . import views
+from . import account_control_views
 
 urlpatterns = [
+    path('manage-accounts/', account_control_views.account_directory, name='account_directory'),
+    path('manage-accounts/<int:user_id>/status/', account_control_views.account_status_confirmation, name='account_status_confirmation'),
     path('settings/signature/replace/', views.replace_account_signature, name='replace_account_signature'),
     path('settings/', views.account_settings, name='account_settings'),
     path('onboarding/', views.onboarding, name='onboarding'),
