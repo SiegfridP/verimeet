@@ -1,8 +1,11 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Account Settings - VeriMeet</title></head>
-<body><main>
-{% include 'accounts/account_navigation.html' %}
+{% extends "base_app.html" %}
+
+{% block head_title %}Account Settings - VeriMeet{% endblock %}
+{% block content %}
+<div>
+
 <h1>Account Settings</h1>
-{% include 'accounts/messages.html' %}
+
 <p>Current username: {{ user.username }}</p>
 <form method="post">{% csrf_token %}{{ form.as_p }}<button type="submit">Save username</button></form>
 <h2>Email addresses</h2>
@@ -15,6 +18,7 @@
 <h2>Registered signature</h2>
 {% if replacement_form %}<p>Replacing this visual PNG does not invalidate cryptographic signatures. Previous PNG versions are retained for historical protection.</p>
 <form method="post" enctype="multipart/form-data" action="{% url 'replace_account_signature' %}">{% csrf_token %}{{ replacement_form.as_p }}<button type="submit">Replace signature</button></form>{% endif %}
-{% if signature_ready %}<img src="{% url 'signature_preview' %}" alt="Your saved signature" style="max-width:100%;max-height:200px;width:auto;height:auto">{% else %}<p>No valid signature is registered.</p>{% endif %}
+{% if signature_ready %}<img src="{% url 'signature_preview' %}" alt="Your saved signature">{% else %}<p>No valid signature is registered.</p>{% endif %}
 {% if global_admin %}<a href="{% url 'admin_dashboard' %}">Back to Global Admin Dashboard</a>{% else %}<a href="{% url 'central_dashboard' %}">Back to My Dashboard</a>{% endif %}
-</main></body></html>
+</div>
+{% endblock %}

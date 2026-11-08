@@ -1,53 +1,13 @@
+{% extends "base_app.html" %}
 {% load dashboard_navigation %}
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>VeriMeet – Global Admin Dashboard</title>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet" />
-  <style>
-    body {
-      margin: 0;
-      font-family: 'Inter', sans-serif;
-      background: radial-gradient(circle at top left, #0d0d2b, #1a1a40);
-      color: #e0e0ff;
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-    }
-    header {
-      background: rgba(255,255,255,0.1);
-      padding: 1rem 2rem;
-      backdrop-filter: blur(5px);
-    }
-    h1 { font-size: 2rem; margin: 0; }
-    main { flex: 1; padding: 2rem; }
-    table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
-    th, td { padding: 0.75rem; text-align: left; }
-    th { background: rgba(255,255,255,0.15); }
-    tr:nth-child(even) { background: rgba(255,255,255,0.05); }
-    a { color: #4fd1c5; text-decoration: none; transition: color 0.2s; }
-    a:hover { color: #81e6d9; }
-    .button {
-      display: inline-block;
-      background: #4fd1c5;
-      color: #1a1a40;
-      padding: 0.5rem 1rem;
-      border-radius: 4px;
-      margin-top: 0.5rem;
-      transition: background 0.2s;
-    }
-    .button:hover { background: #81e6d9; }
-  </style>
-</head>
-<body>
+{% block head_title %}VeriMeet – Global Admin Dashboard{% endblock %}
+{% block content %}
 <a href="{% url 'account_directory' %}">Manage accounts</a>
-{% include 'accounts/account_navigation.html' %}
-  <header>
+
+  <header class="vm-page-header">
     <h1>Global Admin Dashboard</h1>
   </header>
-  <main><a href="{% url 'create_department' %}">Create Department</a>{% include 'accounts/messages.html' %}<nav><a href="{% dashboard_url 'review_elevation_requests' %}">Review role-elevation requests</a>{% if user.is_staff %}<a href="{% url 'admin:accounts_department_changelist' %}">Department management</a>{% endif %}</nav>
+  <div><a href="{% url 'create_department' %}">Create Department</a><nav><a href="{% dashboard_url 'review_elevation_requests' %}">Review role-elevation requests</a>{% if user.is_staff %}<a href="{% url 'admin:accounts_department_changelist' %}">Department management</a>{% endif %}</nav>
     <section>
       <h2>Departments</h2>
       <table>
@@ -94,6 +54,5 @@
         <p>No pending requests.</p>
       {% endif %}
     </section>
-{% include 'accounts/meeting_list.html' %}  </main>
-</body>
-</html>
+{% include 'accounts/meeting_list.html' %}  </div>
+{% endblock %}

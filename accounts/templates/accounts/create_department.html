@@ -1,4 +1,8 @@
-<!doctype html><html lang="en"><head><title>Create Department</title></head><body>
+{% extends "base_app.html" %}
+
+{% block head_title %}Create Department{% endblock %}
+{% block content %}
 <h1>Create Department</h1><p>Your department becomes active immediately. You will be its first Authorized Personnel.</p>
 <form method="post">{% csrf_token %}{{ form.as_p }}<button type="submit">Create Department</button></form>
-<a href="{% url 'routing_view' %}">Cancel</a></body></html>
+<a href="{% url 'routing_view' %}">Cancel</a>
+{% endblock %}

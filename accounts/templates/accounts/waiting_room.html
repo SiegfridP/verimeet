@@ -1,5 +1,8 @@
-<!doctype html><html lang="en"><head><title>Waiting Room - VeriMeet</title></head><body>
+{% extends "base_app.html" %}
+
+{% block head_title %}Waiting Room - VeriMeet{% endblock %}
+{% block content %}
 <h1>Waiting Room</h1><p>Create a department or join through an invitation from Authorized Personnel.</p>
 <a href="{% url 'create_department' %}">Create Department</a>
 <h2>Accept Invitation</h2>{% if pending_invitation_url %}<a href="{{ pending_invitation_url }}">Accept Invitation</a>{% else %}<p>Use the invitation link provided by your department's Authorized Personnel to accept an invitation.</p>{% endif %}
-</body></html>
+{% endblock %}

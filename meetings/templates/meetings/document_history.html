@@ -1,8 +1,7 @@
+{% extends "base_app.html" %}
 {% load dashboard_navigation %}
-<!doctype html>
-<html lang="en">
-<head><meta charset="utf-8"><title>Document History</title></head>
-<body>
+{% block head_title %}Document History{% endblock %}
+{% block content %}
 <h1>Document History</h1>
 <p>{{ meeting.title }} — {{ meeting.department.name }}</p><nav><a href="{% dashboard_url 'review_meeting' meeting.pk %}">Review meeting</a> <a href="{% dashboard_url 'department_dashboard' meeting.department_id %}">Department Dashboard</a></nav>
 <table>
@@ -20,4 +19,4 @@
 <span>Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span>
 {% if page_obj.has_next %}<a href="?page={{ page_obj.next_page_number }}&amp;{% dashboard_query %}">Next</a>{% endif %}
 </nav>
-</body></html>
+{% endblock %}

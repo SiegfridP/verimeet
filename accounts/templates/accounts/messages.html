@@ -1,4 +1,3 @@
 {% if messages %}<section aria-label="Notifications" role="status">
 {% for message in messages %}<p class="message {{ message.level_tag }}"><strong>{{ message.level_tag|title }}:</strong> {{ message }}</p>{% endfor %}
 </section>{% endif %}
-<style>.message{padding:1rem;border:1px solid;border-radius:6px}.success{color:#167344;background:#e4f6eb}.info{color:#155681;background:#e5f2fc}.warning{color:#795000;background:#fff3cc}.error{color:#a51c30;background:#ffe9ed}</style>

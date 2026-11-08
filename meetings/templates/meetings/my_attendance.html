@@ -1,121 +1,16 @@
+{% extends "base_app.html" %}
 {% load dashboard_navigation %}
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>My Attendance – {{ meeting.title }} – VeriMeet</title>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <style>
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      font-family: 'Inter', sans-serif;
-      background: linear-gradient(135deg, #0d0d2b, #1a1a40);
-      color: #e0e0ff;
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-    }
-    header {
-      background: rgba(255, 255, 255, 0.08);
-      padding: 1.25rem 2rem;
-      backdrop-filter: blur(10px);
-      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-    header h1 { font-size: 1.5rem; margin: 0; font-weight: 600; }
-    main {
-      flex: 1;
-      max-width: 800px;
-      width: 100%;
-      margin: 2rem auto;
-      padding: 0 1.5rem;
-    }
-    .card {
-      background: rgba(255, 255, 255, 0.05);
-      border: 1px solid rgba(255, 255, 255, 0.1);
-      border-radius: 12px;
-      padding: 1.75rem;
-      margin-bottom: 1.5rem;
-      backdrop-filter: blur(8px);
-    }
-    .meta-row {
-      display: flex;
-      justify-content: space-between;
-      padding: 0.85rem 0;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-    }
-    .meta-row:last-child {
-      border-bottom: none;
-    }
-    .meta-label {
-      color: #a0aec0;
-      font-size: 0.9rem;
-    }
-    .meta-val {
-      font-weight: 600;
-      color: #ffffff;
-    }
-    .badge-status {
-      display: inline-block;
-      padding: 0.3rem 0.65rem;
-      border-radius: 9999px;
-      font-size: 0.8rem;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.03em;
-    }
-    .status-attended {
-      background: rgba(79, 209, 197, 0.2);
-      border: 1px solid #4fd1c5;
-      color: #4fd1c5;
-    }
-    .status-late {
-      background: rgba(246, 173, 85, 0.2);
-      border: 1px solid #f6ad55;
-      color: #f6ad55;
-    }
-    .status-absent {
-      background: rgba(252, 129, 129, 0.2);
-      border: 1px solid #fc8181;
-      color: #fc8181;
-    }
-    a.button {
-      background: #4fd1c5;
-      color: #1a1a40;
-      padding: 0.5rem 1rem;
-      border-radius: 6px;
-      text-decoration: none;
-      font-weight: 600;
-      display: inline-block;
-    }
-    a.button:hover {
-      background: #81e6d9;
-    }
-    .note-box {
-      background: rgba(255, 255, 255, 0.03);
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      border-radius: 8px;
-      padding: 1rem;
-      font-size: 0.85rem;
-      color: #a0aec0;
-      margin-top: 1rem;
-    }
-  </style>
-</head>
-<body>
-  <header>
+{% block head_title %}My Attendance – {{ meeting.title }} – VeriMeet{% endblock %}
+{% block content %}
+<header class="vm-page-header">
     <h1>Personal Attendance Record</h1>
-    <span style="background: rgba(79, 209, 197, 0.2); color: #4fd1c5; padding: 0.35rem 0.75rem; border-radius: 9999px; font-size: 0.875rem;">
+    <span>
       {{ department.name }}
     </span>
   </header>
-  <main>
+  <div>
     <div class="card">
-      <h2 style="margin: 0 0 1.25rem 0; font-size: 1.35rem; color: #ffffff;">{{ meeting.title }}</h2>
+      <h2>{{ meeting.title }}</h2>
 
       <div class="meta-row">
         <span class="meta-label">Officer</span>
@@ -150,17 +45,17 @@
         <span class="meta-label">Digital Signature</span>
         <span class="meta-val">
           {% if attendance.has_signed %}
-            <span style="color: #68d391; font-weight: 600;">Signed at {{ attendance.signed_at|date:"M d, Y H:i" }}</span>
+            <span>Signed at {{ attendance.signed_at|date:"M d, Y H:i" }}</span>
           {% else %}
-            <span style="color: #a0aec0;">Not yet signed</span>
+            <span>Not yet signed</span>
           {% endif %}
         </span>
       </div>
 
       {% if attendance.annotation %}
-        <div class="meta-row" style="flex-direction: column; gap: 0.5rem;">
+        <div class="meta-row">
           <span class="meta-label">Submitted Annotation</span>
-          <div style="background: rgba(0, 0, 0, 0.3); border-left: 3px solid #4fd1c5; padding: 0.75rem 1rem; border-radius: 0 6px 6px 0; color: #e0e0ff; font-size: 0.9rem;">
+          <div>
             {{ attendance.annotation }}
           </div>
         </div>
@@ -171,19 +66,18 @@
       </div>
 
       {% if attendance.has_signed and meeting.status != 'Draft' %}
-        <div style="margin-top: 1.5rem; padding: 1rem; background: rgba(183, 148, 244, 0.1); border: 1px solid rgba(183, 148, 244, 0.3); border-radius: 8px;">
-          <h4 style="margin: 0 0 0.5rem 0; color: #d6bcfa;">Signature Verification</h4>
-          <p style="margin: 0 0 0.75rem 0; font-size: 0.85rem; color: #c4c4f0;">
+        <div>
+          <h4>Signature Verification</h4>
+          <p>
             You have signed this document. You can generate or view your personal signature verification QR code.
           </p>
-          <a href="{% dashboard_url 'my_signature_verification_qr' meeting.id %}" class="button" style="background: #9f7aea; color: #ffffff;">View My Signature Verification QR</a>
+          <a href="{% dashboard_url 'my_signature_verification_qr' meeting.id %}" class="button">View My Signature Verification QR</a>
         </div>
       {% endif %}
 
-      <div style="margin-top: 1.5rem;">
+      <div>
         <a href="{% dashboard_url 'department_dashboard' dept_id=department.id %}" class="button">Back to Dashboard</a>
       </div>
     </div>
-  </main>
-</body>
-</html>
+  </div>
+{% endblock %}

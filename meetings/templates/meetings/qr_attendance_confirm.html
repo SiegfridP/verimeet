@@ -1,7 +1,7 @@
+{% extends "base_app.html" %}
 {% load dashboard_navigation %}
-<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>Confirm attendance</title></head>
-<body>
+{% block head_title %}Confirm attendance{% endblock %}
+{% block content %}
 <h1>Confirm attendance</h1>
 <p>{{ meeting.title }} — {{ meeting.department.name }}</p>
 <p>Your current attendance: {{ attendance.status }}. Confirm to record your attendance.</p>
@@ -15,4 +15,4 @@
   <button type="submit">Confirm attendance</button>
 </form>
 <a href="{% dashboard_url 'department_dashboard' meeting.department_id %}">Return to Dashboard</a>
-</body></html>
+{% endblock %}

@@ -1,8 +1,13 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Manage accounts - VeriMeet</title></head><body><main>
-<h1>Manage accounts</h1>{% include 'accounts/messages.html' %}
+{% extends "base_app.html" %}
+
+{% block head_title %}Manage accounts - VeriMeet{% endblock %}
+{% block content %}
+<div>
+<h1>Manage accounts</h1>
 <a href="{% url 'admin_dashboard' %}">Global Admin Dashboard</a>
 <table><thead><tr><th>Username</th><th>Email</th><th>Status</th><th>Departments</th><th>Action</th></tr></thead><tbody>
 {% for account in page_obj %}<tr><td>{{ account.username }}</td><td>{{ account.email }}</td><td>{{ account.is_active|yesno:'Active,Inactive' }}</td><td>{% for membership in account.memberships.all %}{{ membership.department.name }} ({{ membership.get_role_display }}) {% endfor %}</td>
 <td>{% if account.is_admin or account.is_superuser %}Protected Global Admin{% else %}<a href="{% url 'account_status_confirmation' account.pk %}">{% if account.is_active %}Deactivate{% else %}Activate{% endif %}</a>{% endif %}</td></tr>{% endfor %}
 </tbody></table>{% if page_obj.has_previous %}<a href="?page={{ page_obj.previous_page_number }}">Previous</a>{% endif %} Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }} {% if page_obj.has_next %}<a href="?page={{ page_obj.next_page_number }}">Next</a>{% endif %}
-</main></body></html>
+</div>
+{% endblock %}

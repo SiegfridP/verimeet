@@ -1,5 +1,9 @@
-<!doctype html><html lang="en"><head><title>Delete department</title></head><body>
+{% extends "base_app.html" %}
+
+{% block head_title %}Delete department{% endblock %}
+{% block content %}
 <h1>Delete {{ department.name }}?</h1><p>This permanently removes eligible department records. Protected meeting and signature evidence prevents deletion.</p>
 {% if error %}<p role="alert">{{ error }}</p>{% endif %}
-<form method="post">{% csrf_token %}<button type="submit">Delete department</button></form>
-<a href="{% url 'admin_dashboard' %}">Cancel</a></body></html>
+<form method="post">{% csrf_token %}<button class="btn-danger" type="submit">Delete department</button></form>
+<a href="{% url 'admin_dashboard' %}">Cancel</a>
+{% endblock %}

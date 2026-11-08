@@ -1,4 +1,7 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><title>VeriMeet invitation</title></head><body>
+{% extends "base_app.html" %}
+
+{% block head_title %}VeriMeet invitation{% endblock %}
+{% block content %}
 <h1>Officer invitation</h1><p>Join {{ invitation.department.name }} as an Officer.</p>
 <p>Expires {{ invitation.expires_at|date:"c" }}. Authentication does not extend this deadline.</p>
 {% if eligible %}
@@ -18,4 +21,4 @@
 {% endif %}
 <p>You can reopen the original invitation link to resume. Nothing is accepted until you submit confirmation.</p>
 <p>Account onboarding and email verification are separate requirements. Completing your username and signature does not verify an email address.</p>
-</body></html>
+{% endblock %}

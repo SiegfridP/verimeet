@@ -1,3 +1,7 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Signature replacement</title></head><body>
+{% extends "base_app.html" %}
+
+{% block head_title %}Signature replacement{% endblock %}
+{% block content %}
 <h1>Signature was not replaced</h1>{{ form.errors }}
-<p><a href="{% url 'account_settings' %}">Refresh Account Settings before trying again</a></p></body></html>
+<p><a href="{% url 'account_settings' %}">Refresh Account Settings before trying again</a></p>
+{% endblock %}

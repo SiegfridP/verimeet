@@ -1,225 +1,18 @@
-<!DOCTYPE html>
-<html lang="en">
+{% extends "base_app.html" %}
 
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>VeriMeet — Individual Signature Verification</title>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <style>
-    * {
-      box-sizing: border-box;
-    }
-
-    body {
-      margin: 0;
-      font-family: 'Inter', sans-serif;
-      background: #0b0f19;
-      color: #e2e8f0;
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-    }
-
-    header {
-      background: #111827;
-      padding: 1.25rem 2rem;
-      border-bottom: 1px solid #1f2937;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 1rem;
-    }
-
-    .brand {
-      display: flex;
-      align-items: center;
-      gap: 0.6rem;
-      font-size: 1.25rem;
-      font-weight: 700;
-      color: #ffffff;
-      text-decoration: none;
-    }
-
-    .brand-tag {
-      background: rgba(99, 102, 241, 0.2);
-      color: #818cf8;
-      font-size: 0.75rem;
-      font-weight: 600;
-      padding: 0.2rem 0.5rem;
-      border-radius: 4px;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-    }
-
-    .container {
-      max-width: 680px;
-      margin: 2.5rem auto;
-      padding: 0 1.5rem;
-      width: 100%;
-      flex: 1;
-    }
-
-    .card {
-      background: #161e2e;
-      border: 1px solid #273549;
-      border-radius: 12px;
-      padding: 2rem;
-      margin-bottom: 1.5rem;
-      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
-    }
-
-    .badge {
-      display: inline-block;
-      padding: 0.35rem 0.75rem;
-      border-radius: 9999px;
-      font-size: 0.8rem;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.03em;
-    }
-
-    .badge-success {
-      background: rgba(16, 185, 129, 0.2);
-      color: #34d399;
-      border: 1px solid #10b981;
-    }
-
-    .badge-danger {
-      background: rgba(239, 68, 68, 0.2);
-      color: #f87171;
-      border: 1px solid #ef4444;
-    }
-
-    .badge-warning {
-      background: rgba(245, 158, 11, 0.2);
-      color: #fbbf24;
-      border: 1px solid #f59e0b;
-    }
-
-    .badge-neutral {
-      background: rgba(156, 163, 175, 0.2);
-      color: #9ca3af;
-      border: 1px solid #4b5563;
-    }
-
-    .status-banner {
-      padding: 1.25rem 1.5rem;
-      border-radius: 10px;
-      margin-bottom: 1.5rem;
-      display: flex;
-      align-items: center;
-      gap: 1rem;
-    }
-
-    .status-banner.valid {
-      background: rgba(16, 185, 129, 0.15);
-      border: 1px solid #10b981;
-      color: #34d399;
-    }
-
-    .status-banner.legacy {
-      background: rgba(245, 158, 11, 0.15);
-      border: 1px solid #f59e0b;
-      color: #fbbf24;
-    }
-
-    .status-banner.tampered,
-    .status-banner.invalid {
-      background: rgba(239, 68, 68, 0.15);
-      border: 1px solid #ef4444;
-      color: #f87171;
-    }
-
-    .status-banner.revoked {
-      background: rgba(239, 68, 68, 0.15);
-      border: 1px solid #ef4444;
-      color: #f87171;
-    }
-
-    .status-banner.partial,
-    .status-banner.unsupported {
-      background: rgba(245, 158, 11, 0.15);
-      border: 1px solid #f59e0b;
-      color: #fbbf24;
-    }
-
-    .banner-title {
-      font-weight: 700;
-      font-size: 1.05rem;
-      margin-bottom: 0.25rem;
-    }
-
-    .banner-desc {
-      font-size: 0.85rem;
-      opacity: 0.9;
-    }
-
-    .meta-list {
-      display: flex;
-      flex-direction: column;
-      gap: 0.85rem;
-      margin: 1.5rem 0;
-    }
-
-    .meta-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding-bottom: 0.85rem;
-      border-bottom: 1px solid #273549;
-    }
-
-    .meta-row:last-child {
-      border-bottom: none;
-      padding-bottom: 0;
-    }
-
-    .meta-label {
-      font-size: 0.85rem;
-      color: #94a3b8;
-    }
-
-    .meta-value {
-      font-size: 0.95rem;
-      color: #ffffff;
-      font-weight: 600;
-    }
-
-    .privacy-notice {
-      background: rgba(99, 102, 241, 0.08);
-      border: 1px solid rgba(99, 102, 241, 0.25);
-      border-radius: 8px;
-      padding: 1rem 1.25rem;
-      font-size: 0.82rem;
-      color: #c7d2fe;
-      line-height: 1.5;
-      margin-top: 1.5rem;
-    }
-
-    footer {
-      text-align: center;
-      padding: 2rem;
-      font-size: 0.8rem;
-      color: #64748b;
-      border-top: 1px solid #1f2937;
-      margin-top: auto;
-    }
-  </style>
-</head>
-
-<body>
-  <header>
+{% block head_title %}VeriMeet — Individual Signature Verification{% endblock %}
+{% block content %}
+<header class="vm-page-header">
     <div class="brand">
       <span>VeriMeet</span>
       <span class="brand-tag">Individual Signature Verification</span>
     </div>
-    <div style="font-size:0.85rem; color:#94a3b8;">
+    <div>
       Official Verification Portal
     </div>
   </header>
 
+  <h1>Individual signature verification</h1>
   <div class="container">
     {% if status == 'invalid' and not meeting %}
     <div class="card">
@@ -229,7 +22,7 @@
           <div class="banner-desc">{{ error_message }}</div>
         </div>
       </div>
-      <p style="color:#94a3b8; font-size:0.9rem; line-height:1.5;">
+      <p>
         The scanned QR code is either invalid, malformed, or does not correspond to any known signature record in the
         VeriMeet system.
       </p>
@@ -243,7 +36,7 @@
           <div class="banner-desc">{{ error_message }}</div>
         </div>
       </div>
-      <p style="color:#94a3b8; font-size:0.9rem; line-height:1.5;">
+      <p>
         This verification QR code has been revoked by the signing officer and can no longer be used for signature
         verification.
       </p>
@@ -257,7 +50,7 @@
           <div class="banner-desc">{{ error_message }}</div>
         </div>
       </div>
-      <p style="color:#94a3b8; font-size:0.9rem; line-height:1.5;">
+      <p>
         Only finalized documents (in Finished or Archived status) can be verified.
       </p>
     </div>
@@ -289,7 +82,7 @@
     {% endif %}
 
     <div class="card">
-      <h2 style="margin: 0 0 0.5rem 0; font-size: 1.35rem; color: #ffffff;">{{ meeting.title }}</h2>
+      <h2>{{ meeting.title }}</h2>
 
       <div class="meta-list">
         <div class="meta-row">
@@ -329,13 +122,13 @@
 
       {% if sig_result.valid and sig_result.is_legacy %}
       <div
-        style="background:rgba(245,158,11,0.1); border-left:3px solid #f59e0b; padding:0.75rem 1rem; border-radius:0 6px 6px 0; font-size:0.82rem; color:#fde68a; margin:1rem 0;">
+       >
         <strong>Legacy format notice:</strong> This signature was created under legacy payload specifications without
         meeting ID or department binding.
       </div>
       {% elif not sig_result.valid %}
       <div
-        style="background:rgba(239,68,68,0.1); border-left:3px solid #ef4444; padding:0.75rem 1rem; border-radius:0 6px 6px 0; font-size:0.82rem; color:#fca5a5; margin:1rem 0;">
+       >
         <strong>Verification failure:</strong> {{ sig_result.reason }}
       </div>
       {% endif %}
@@ -352,6 +145,6 @@
   <footer>
     VeriMeet &bull; Individual Cryptographic Signature Verification &bull; Independent Verification System
   </footer>
-</body>
+{% endblock %}
 
-</html>
+{% block primary_navigation %}{% endblock %}
