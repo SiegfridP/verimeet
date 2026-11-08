@@ -5,10 +5,10 @@
 <a href="{% url 'account_directory' %}">Manage accounts</a>
 
   <header class="vm-page-header">
-    <h1>Global Admin Dashboard</h1>
+    <div><p class="vm-eyebrow">Administration</p><h1>Global Admin Dashboard</h1><p class="vm-lead">Departments, access requests and meeting oversight.</p></div>
   </header>
-  <div><a href="{% url 'create_department' %}">Create Department</a><nav><a href="{% dashboard_url 'review_elevation_requests' %}">Review role-elevation requests</a>{% if user.is_staff %}<a href="{% url 'admin:accounts_department_changelist' %}">Department management</a>{% endif %}</nav>
-    <section>
+  <div><a class="button" href="{% url 'create_department' %}">Create Department</a><nav><a href="{% dashboard_url 'review_elevation_requests' %}">Review role-elevation requests</a>{% if user.is_staff %}<a href="{% url 'admin:accounts_department_changelist' %}">Department management</a>{% endif %}</nav>
+    <section class="vm-management-panel">
       <h2>Departments</h2>
       <table>
         <thead>
@@ -27,7 +27,7 @@
         </tbody>
       </table>
     </section>
-    <section>
+    <section class="vm-management-panel">
       <h2>Department management</h2>{% for department in departments %}<p>{{ department.name }} <a href="{% url 'delete_department' department.pk %}">Delete department</a></p>{% endfor %}<h2>Pending Role Elevation Requests</h2>
       {% if pending_requests %}
         <form method="post">{% csrf_token %}{% dashboard_field %}

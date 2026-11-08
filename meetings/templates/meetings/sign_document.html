@@ -7,7 +7,7 @@
     <span class="badge-status status-finished">FINISHED (LOCKED)</span>
   </header>
   <div>
-    <div class="card">
+    <div class="card vm-signing-panel">
       <h2>{{ meeting.title }}</h2>
       <p>
         Department: <strong>{{ meeting.department.name }}</strong> &bull;
@@ -31,8 +31,8 @@
       </div>
     </div>
 
-    <div class="card">
-      <h3>Submit Digital Signature</h3>
+    <div class="card vm-signing-panel">
+      <p class="vm-eyebrow">Review complete?</p><h3>Submit Digital Signature</h3>
       <div class="security-notice">
         Signing this document creates an immutable ECDSA cryptographic signature bound to the meeting title, department, finalized minutes, and your optional annotation. Once signed, your signature and annotation cannot be modified or withdrawn.
       </div>
@@ -59,7 +59,7 @@
           <div class="help-text">Maximum 2000 characters. Leave blank if signing without annotations.</div>
         </div>
 
-        <button type="submit" id="btn-sign-submit">Sign Document with Digital Signature</button>
+        <button class="vm-sign-action" type="submit" id="btn-sign-submit">Sign Document with Digital Signature</button>
       </form>
     </div>
   </div>

@@ -1,6 +1,6 @@
 {% load dashboard_navigation %}
 
-<section><h2>Meetings</h2>
+<section class="vm-meeting-workspace"><header class="vm-section-heading"><h2>Meetings</h2><p>Browse records and available actions.</p></header>
 <form method="get">{% dashboard_field reset=True %}
 <label>Title <input name="q" value="{{ filters.q }}" maxlength="200"></label>
 <label>Lifecycle <select name="status"><option value="">All</option>{% for value in lifecycle_choices %}<option value="{{ value }}" {% if filters.status == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label>
@@ -10,7 +10,7 @@
 <label>Your attendance <select name="attendance"><option value="">All</option>{% for value in attendance_choices %}<option {% if filters.attendance == value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label>
 <label>Your signing <select name="signing"><option value="">All</option><option value="signed" {% if filters.signing == 'signed' %}selected{% endif %}>Signed</option><option value="eligible" {% if filters.signing == 'eligible' %}selected{% endif %}>Eligible to sign</option><option value="awaiting" {% if filters.signing == 'awaiting' %}selected{% endif %}>Awaiting attendance</option><option value="unavailable" {% if filters.signing == 'unavailable' %}selected{% endif %}>Signing unavailable</option></select></label>
 {% endif %}<button type="submit">Filter</button> <a href="{{ request.path }}">Reset filters</a></form>
-<table><thead><tr><th>Title</th><th>Department</th><th>Lifecycle</th><th>Created</th><th>{% if officer_list %}Your assignment / attendance / signing{% else %}Assigned{% endif %}</th><th>Actions</th></tr></thead><tbody>
+<table class="vm-meeting-table"><thead><tr><th>Title</th><th>Department</th><th>Lifecycle</th><th>Created</th><th>{% if officer_list %}Your assignment / attendance / signing{% else %}Assigned{% endif %}</th><th>Actions</th></tr></thead><tbody>
 {% for meeting in meetings %}<tr>
 <td><strong>{{ meeting.title }}</strong></td><td>{{ meeting.department.name }}</td><td><span class="status-badge {% if meeting.status == 'Draft' %}status-draft{% elif meeting.status == 'Finished' %}status-finished{% else %}status-other{% endif %}">{{ meeting.status }}</span></td><td>{{ meeting.created_at|date:'M d, Y H:i' }}</td>
 {% if officer_list %}<td>{% if meeting.user_attendance %}Assigned Â· {{ meeting.user_attendance.status }} Â· {{ meeting.signing_label }}{% if meeting.user_attendance.has_signed %} {{ meeting.user_attendance.signed_at|date:'M d, Y H:i' }}{% endif %}{% else %}Not Assigned{% endif %}</td>
@@ -21,7 +21,7 @@
 <a href="{% dashboard_url 'review_meeting' meeting.pk %}">Review</a> <a href="{% dashboard_url 'document_history' meeting.pk %}">Document History</a>
 {% if meeting.status == 'Draft' %}
 <a href="{% dashboard_url 'edit_meeting' meeting.pk %}">Edit</a> <a href="{% dashboard_url 'assign_participants' meeting.pk %}">Assign Participants &amp; Signers</a>
-<form method="post" action="{% dashboard_url 'lock_meeting' meeting.pk %}" style="display:inline">{% csrf_token %}{% dashboard_field %}<button>Finalize &amp; Lock for Signing</button></form>
+<form method="post" action="{% dashboard_url 'lock_meeting' meeting.pk %}" style="display:inline">{% csrf_token %}{% dashboard_field %}<button class="btn-danger">Finalize &amp; Lock for Signing</button></form>
 {% elif meeting.status == 'Finished' %}<a href="{% dashboard_url 'meeting_attendance' meeting.pk %}">Attendance</a> <a href="{% dashboard_url 'review_meeting' meeting.pk %}#qr-workflows">QR workflows</a>
 {% endif %}
 {% if meeting.status == 'Finished' or meeting.status == 'Archived' %}<a href="{% url 'export_meeting_pdf' meeting.pk %}">Export PDF</a>{% endif %}</td>{% endif %}

@@ -1,9 +1,13 @@
 {% load static %}<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block head_title %}VeriMeet{% endblock %}</title>
-<link rel="stylesheet" href="{% static 'css/verimeet.css' %}">{% block extra_head %}{% endblock %}</head>
-<body class="vm-app {% block body_class %}{% endblock %}"><a class="vm-skip" href="#main-content">Skip to content</a>
-<header class="vm-topbar"><a class="vm-brand" href="{% url 'routing_view' %}">VeriMeet</a>
-{% block primary_navigation %}<nav aria-label="Main navigation">{% if user.is_authenticated %}<a href="{% url 'central_dashboard' %}">My Dashboard</a><a href="{% url 'account_settings' %}">Account Settings</a><a href="{% url 'account_email' %}">Email Settings</a><a href="{% url 'account_logout' %}">Log out</a>{% else %}<a href="{% url 'account_login' %}">Log in</a><a href="{% url 'account_signup' %}">Register</a>{% endif %}</nav>{% endblock %}</header>
+<link rel="stylesheet" href="{% static 'css/verimeet.css' %}">
+<script src="{% static 'js/workspace.js' %}" defer></script>{% block extra_head %}{% endblock %}</head>
+<body class="vm-app {% block body_class %}{% if user.is_authenticated %}vm-workspace{% else %}vm-public{% endif %}{% endblock %}">
+<a class="vm-skip" href="#main-content">Skip to content</a>
+<header class="vm-topbar"><a class="vm-brand" href="{% url 'routing_view' %}"><span class="vm-brand-mark" aria-hidden="true">V</span>VeriMeet</a>
+<button type="button" class="vm-nav-toggle" id="workspace-toggle" aria-controls="workspace-navigation" aria-expanded="true" hidden>Workspace menu</button>
+{% block primary_navigation %}{% if not user.is_authenticated %}<nav aria-label="Main navigation"><a href="{% url 'account_login' %}">Log in</a><a href="{% url 'account_signup' %}">Register</a></nav>{% endif %}{% endblock %}</header>
+{% block workspace_navigation %}{% if user.is_authenticated %}{% include 'accounts/workspace_navigation.html' %}{% endif %}{% endblock %}
 <main id="main-content" class="vm-content" tabindex="-1">{% block notifications %}{% include 'accounts/messages.html' %}{% endblock %}{% block content %}{% endblock %}</main>
 <footer class="vm-footer">VeriMeet | Meeting management &amp; document verification</footer>{% block extra_body %}{% endblock %}</body></html>

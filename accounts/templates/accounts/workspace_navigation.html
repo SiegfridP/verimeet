@@ -1,0 +1,11 @@
+{% load dashboard_navigation %}
+<aside class="vm-sidebar" id="workspace-navigation" aria-label="Workspace">
+<a class="vm-brand" href="{% url 'routing_view' %}"><span class="vm-brand-mark" aria-hidden="true">V</span>VeriMeet</a>
+<p class="vm-nav-caption">Workspace</p>
+<nav aria-label="Workspace navigation">
+<a href="{% url 'central_dashboard' %}" {% if request.resolver_match.url_name == 'central_dashboard' %}aria-current="page"{% endif %}>{% include 'accounts/ui_icon.html' with icon='dashboard' %}My Dashboard</a>
+{% if department %}<a href="{% dashboard_entry_url department.pk %}" {% if request.resolver_match.url_name == 'department_dashboard' %}aria-current="page"{% endif %}>{% include 'accounts/ui_icon.html' with icon='department' %}{{ department.name }}</a>{% endif %}
+</nav>
+{% if switch_departments %}<p class="vm-nav-caption">Departments</p><nav aria-label="Workspace departments">{% for dept in switch_departments %}<a href="{% dashboard_entry_url dept.pk %}" {% if department.pk == dept.pk %}aria-current="page"{% endif %}>{{ dept.name }}</a>{% endfor %}</nav>{% endif %}
+<div class="vm-sidebar-account"><p class="vm-nav-caption">Account</p>{% include 'accounts/account_navigation.html' %}</div>
+</aside>

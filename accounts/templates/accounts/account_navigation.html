@@ -1,4 +1,5 @@
 <nav class="vm-account-navigation" aria-label="Account">
-<a href="{% url 'account_settings' %}">Account Settings</a>
-<a href="{% url 'account_logout' %}">Log out</a>
+<a href="{% url 'account_settings' %}" {% if request.resolver_match.url_name == 'account_settings' %}aria-current="page"{% endif %}>{% include 'accounts/ui_icon.html' with icon='settings' %}Account Settings</a>
+<a href="{% url 'account_email' %}" {% if request.resolver_match.url_name == 'account_email' %}aria-current="page"{% endif %}>{% include 'accounts/ui_icon.html' with icon='email' %}Email Settings</a>
+<a href="{% url 'account_logout' %}">{% include 'accounts/ui_icon.html' with icon='logout' %}Log out</a>
 </nav>

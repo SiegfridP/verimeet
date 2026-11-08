@@ -1,3 +1,6 @@
 {% extends "base_app.html" %}
 {% block head_title %}Something went wrong - VeriMeet{% endblock %}
 {% block content %}<section class="card"><h1>Something went wrong</h1><p>The request could not be completed. Please try again later.</p><a href="{% url 'routing_view' %}">Return to VeriMeet</a></section>{% endblock %}
+
+{% block body_class %}vm-error{% endblock %}
+{% block workspace_navigation %}{% endblock %}

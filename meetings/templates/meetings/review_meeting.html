@@ -26,7 +26,7 @@
       </div>
     {% endif %}
 
-    <div class="card">
+    <div class="card vm-document-panel">
       <h2 class="section-title">Meeting Overview</h2>
       <div class="meta-grid">
         <div class="meta-item">
@@ -52,8 +52,8 @@
       </div>
     </div>
 
-    <div class="card">
-      <h2 class="section-title">Minutes Content / Agenda</h2>
+    <div class="card vm-document-panel">
+      <h2 class="section-title">Minutes Content / Agenda</h2><p class="vm-panel-caption">Document content</p>
       {% if meeting.minutes_content %}
         <div class="minutes-preview">{{ meeting.minutes_content }}</div>
       {% else %}
@@ -61,7 +61,7 @@
       {% endif %}
     </div>
 
-    <div class="card">
+    <div class="card vm-document-panel">
       <h2 class="section-title">Assigned Participants & Intended Signers ({{ attendees|length }})</h2>
       {% if attendees %}
         <ul class="participant-list">
@@ -99,7 +99,7 @@
       {% endif %}
     </div>
 
-    <div class="card">
+    <div class="card vm-document-panel">
       <h2 class="section-title" id="qr-workflows">Actions</h2>
       <div class="actions-row">
         {% if meeting.status == 'Draft' %}

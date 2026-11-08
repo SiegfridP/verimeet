@@ -7,7 +7,7 @@
     <span class="dept-badge">{{ department.name }}</span>
   </header>
   <div>
-    <div class="card">
+    <div class="card vm-editor-panel">
       {% if form.non_field_errors %}
         <div class="alert-error">
           {{ form.non_field_errors }}
@@ -19,7 +19,7 @@
         <input type="hidden" name="department_id" value="{{ department.id }}" />
 
         <div class="form-group">
-          <label for="id_title">Meeting Title / Subject <span>*</span></label>
+          <p class="vm-eyebrow">Meeting information</p><label for="id_title">Meeting Title / Subject <span>*</span></label>
           {{ form.title }}
           {% if form.title.errors %}
             {{ form.title.errors }}

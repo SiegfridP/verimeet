@@ -2,7 +2,7 @@
 {% load dashboard_navigation %}
 {% block head_title %}Confirm attendance{% endblock %}
 {% block content %}
-<h1>Confirm attendance</h1>
+<p class="vm-eyebrow">Attendance check-in</p><h1>Confirm attendance</h1>
 <p>{{ meeting.title }} — {{ meeting.department.name }}</p>
 <p>Your current attendance: {{ attendance.status }}. Confirm to record your attendance.</p>
 <form method="post" action="{% dashboard_url 'scan_attendance_qr' meeting.pk %}">

@@ -2,9 +2,9 @@
 
 {% block head_title %}Account Settings - VeriMeet{% endblock %}
 {% block content %}
-<div>
+<div class="vm-settings-panel">
 
-<h1>Account Settings</h1>
+<p class="vm-eyebrow">Personal workspace</p><h1>Account Settings</h1>
 
 <p>Current username: {{ user.username }}</p>
 <form method="post">{% csrf_token %}{{ form.as_p }}<button type="submit">Save username</button></form>

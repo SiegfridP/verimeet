@@ -78,3 +78,53 @@ class ApplicationPresentationTests(TestCase):
         self.assertIn('_auth_user_id', self.client.session)
         self.client.post(reverse('account_logout'))
         self.assertNotIn('_auth_user_id', self.client.session)
+
+    def test_workspace_navigation_active_state_and_public_variants(self):
+        from types import SimpleNamespace
+        from django.test import RequestFactory
+        from .models import User
+        user = User.objects.create_user(username='workspace-navigation')
+        request = RequestFactory().get(reverse('account_settings'))
+        request.user = user
+        request.session = {}
+        request.resolver_match = SimpleNamespace(url_name='account_settings')
+        html = get_template('base_app.html').render({}, request)
+        self.assertIn('id="workspace-navigation"', html)
+        self.assertIn('aria-controls="workspace-navigation"', html)
+        self.assertIn('aria-expanded="true"', html)
+        self.assertIn('href="' + reverse('account_settings') + '" aria-current="page"', html)
+        self.assertNotIn('Manage accounts', html)
+        for name in ('allauth/layouts/base.html', '403.html', '404.html', '500.html',
+                     'meetings/individual_signature_verification.html', 'meetings/qr_projector.html'):
+            with self.subTest(template=name):
+                department = SimpleNamespace(id=1, pk=1, name='Public display')
+                context = {'status': 'invalid', 'meeting': None}
+                if name.endswith('qr_projector.html'):
+                    context = {'meeting': SimpleNamespace(id=1, title='Projector', department=department),
+                               'qr_session': True, 'qr_image_b64': 'preview', 'signing_url': '/sign/'}
+                html = get_template(name).render(context, request)
+                self.assertNotIn('id="workspace-navigation"', html)
+                self.assertNotIn('aria-label="Account"', html)
+                if name.endswith('qr_projector.html'):
+                    self.assertIn('width="280"', html)
+                    self.assertIn('height="280"', html)
+                    self.assertIn('id="signing-link"', html)
+
+    def test_signing_fields_and_annotation_handler_remain_in_workspace(self):
+        from types import SimpleNamespace
+        from django.test import RequestFactory
+        from .models import User
+        request = RequestFactory().get('/')
+        request.user = User(username='signer')
+        request.session = {}
+        department = SimpleNamespace(id=1, pk=1, name='Department')
+        html = get_template('meetings/sign_document.html').render({
+            'meeting': SimpleNamespace(id=1, title='Final document', department=department, minutes_content='Minutes'),
+            'attendance': SimpleNamespace(status='Attended'),
+            'qr_token': 'test-token', 'timestamp': '123', 'sig': 'test-signature',
+        }, request)
+        for fragment in ('name="token" value="test-token"', 'name="t" value="123"',
+                         'name="sig" value="test-signature"', 'name="annotation"',
+                         'id="char-counter"', 'id="btn-sign-submit"', 'oninput=',
+                         'csrfmiddlewaretoken', 'method="post"'):
+            self.assertIn(fragment, html)
