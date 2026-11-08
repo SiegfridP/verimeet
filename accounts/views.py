@@ -52,15 +52,53 @@ def account_settings(request):
             if saved:
                 messages.success(request, 'Username saved.')
                 return redirect('account_settings')
+    from .forms import SignatureReplacementForm
+    from .signature_replacement import version
+    ready = signature_valid(request.user)
     return render(request, 'accounts/account_settings.html', {
+        'replacement_form': SignatureReplacementForm(initial={'version': version(request.user)})
+            if ready and not is_global_admin(request.user) else None,
         'form': form,
         'email_addresses': EmailAddress.objects.filter(user=request.user).order_by('-primary', 'email'),
         'memberships': Membership.objects.filter(user=request.user, department__is_active=True)
             .select_related('department').order_by('department__name', 'department_id'),
-        'signature_ready': signature_valid(request.user),
+        'signature_ready': ready,
         'has_password': request.user.has_usable_password(),
         'global_admin': is_global_admin(request.user),
     })
+
+
+@login_required
+@require_http_methods(['POST'])
+def replace_account_signature(request):
+    from .forms import SignatureReplacementForm
+    from .signature_replacement import replace_signature
+    from django.db import OperationalError, connection
+    if is_global_admin(request.user):
+        raise PermissionDenied('Signature management is unavailable.')
+    form = SignatureReplacementForm(request.POST, request.FILES)
+    if form.is_valid():
+        try:
+            replace_signature(request.user, form.cleaned_data['signature'], form.cleaned_data['version'])
+        except ValidationError as error:
+            form.add_error(None, error)
+        except OperationalError as error:
+            from sqlite3 import SQLITE_BUSY, SQLITE_LOCKED
+            code = getattr(error.__cause__, 'sqlite_errorcode', None)
+            locked = ((code & 255) in (SQLITE_BUSY, SQLITE_LOCKED) if code is not None else
+                      str(error).lower().partition(':')[0] in {
+                          'database is locked', 'database is busy',
+                          'database table is locked', 'database schema is locked',
+                      })
+            if connection.vendor != 'sqlite' or not locked:
+                raise
+            form.add_error(None, 'Replacement could not be saved. Refresh Settings and retry.')
+        except OSError:
+            form.add_error(None, 'Replacement could not be saved. Refresh Settings and retry.')
+        else:
+            messages.success(request, 'Signature replaced. Previous versions remain privately retained.')
+            return redirect('account_settings')
+    return render(request, 'accounts/signature_replacement_error.html', {'form': form}, status=400)
 
 
 def onboarding_destination(request):
@@ -103,26 +141,31 @@ def onboarding(request):
                 form = OnboardingForm(request.POST, request.FILES or None,
                                       user=user, needs_signature=not valid)
                 if form.is_valid():
+                    # Recovery already persists signature state atomically. This
+                    # later save is only for non-signature onboarding changes.
+                    onboarding_fields = ['username', 'username_confirmation_required']
                     if user.username_confirmation_required or not user.username:
                         user.username = form.cleaned_data['username']
                         user.username_confirmation_required = False
                     if not valid:
                         upload = form.cleaned_data['signature']
-                        stored = storage.save(upload.name, upload)
-                        user.signature_image = stored
-                        user.signature_validation_hash = ''
-                        user.signature_validated = False
-                    user.save(update_fields=['username', 'username_confirmation_required', 'signature_image',
-                                             'signature_validation_hash', 'signature_validated'])
+                        if user.signature_image:
+                            from .signature_replacement import _recover_onboarding_signature
+                            stored = _recover_onboarding_signature(user, upload)
+                            user.refresh_from_db(fields=['signature_image', 'signature_validation_hash', 'signature_validated'])
+                        else:
+                            stored = storage.save(upload.name, upload)
+                            user.signature_image = stored
+                            user.signature_validation_hash = ''
+                            user.signature_validated = False
+                            # Initial storage writes have not persisted a User reference yet.
+                            onboarding_fields.extend(['signature_image', 'signature_validation_hash', 'signature_validated'])
+                    user.save(update_fields=onboarding_fields)
                     if not user.username or user.username_confirmation_required or not signature_valid(user):
                         raise ValueError('Incomplete saved onboarding')
                     saved = True
         except Exception:
-            if stored:
-                try:
-                    storage.delete(stored)
-                except OSError:
-                    pass  # An unreferenced private file is safer than losing the form response.
+            # Failed new uploads remain private orphans; physical deletion is disabled.
             request.user.refresh_from_db(fields=['username', 'username_confirmation_required',
                 'signature_image', 'signature_validation_hash', 'signature_validated'])
             valid = signature_valid(request.user)

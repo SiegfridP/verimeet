@@ -4,6 +4,12 @@ from .models import User
 from .signatures import validate_signature_upload
 
 
+class SignatureReplacementForm(forms.Form):
+    signature = forms.FileField(validators=[validate_signature_upload])
+    confirm = forms.BooleanField(label='I confirm replacement; previous PNG versions will be retained.')
+    version = forms.CharField(widget=forms.HiddenInput, max_length=512)
+
+
 def clean_account_username(value, user):
     get_adapter().clean_username(value, shallow=True)
     if User.objects.filter(username__iexact=value).exclude(pk=user.pk).exists():

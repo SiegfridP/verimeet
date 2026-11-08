@@ -8,7 +8,7 @@ from django.core.files.storage import FileSystemStorage
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.forms import modelform_factory
 from django.test import TestCase, override_settings
-from django.db import transaction
+from django.db import transaction, models
 from PIL import Image
 from .admin import SignatureUserChangeForm
 from .models import User
@@ -53,9 +53,10 @@ class SignatureUploadPathTests(TestCase):
         image.paste((0, 0, 0, 255), (40, 45, 60, 55))
         stream = BytesIO(); metadata = PngInfo(); metadata.add_text('private', 'remove')
         image.save(stream, 'PNG', pnginfo=metadata)
-        for path in ('admin', 'assignment', 'fieldfile', 'storage'):
-            for data in (opaque, stream.getvalue(), png()):
+        for path in ('assignment', 'fieldfile', 'storage'):
+            for index, data in enumerate((opaque, stream.getvalue(), png())):
                 with self.subTest(path=path, input_size=len(data)):
+                    self.user = User.objects.create_user(username=f'initial-{path}-{index}')
                     name = self.upload(path, data)
                     self.assertRegex(name, r'^normalized/[0-9a-f]{32}\.png$')
                     saved = (self.private / name).read_bytes()
@@ -77,7 +78,7 @@ class SignatureUploadPathTests(TestCase):
                    ('signature.png', png((4097, 1))), ('signature.png', png((1, 4097))),
                    ('signature.png', animated.getvalue()), ('signature.jpg', png()),
                    ('signature.png', png(color=(0, 0, 0, 0)))]
-        for path in ('admin', 'assignment', 'fieldfile', 'storage'):
+        for path in ('assignment', 'fieldfile', 'storage'):
             for name, data in invalid:
                 with self.subTest(path=path, name=name, size=len(data)):
                     self.user.refresh_from_db()
@@ -91,7 +92,8 @@ class SignatureUploadPathTests(TestCase):
     def test_existing_legacy_signature_is_not_rewritten_by_model_or_admin(self):
         original = png((100, 50))
         name = FileSystemStorage(location=self.media).save('signatures/legacy.png', ContentFile(original))
-        User.objects.filter(pk=self.user.pk).update(signature_image=name)
+        # Seed a pre-existing legacy reference, not a supported new upload.
+        models.QuerySet.update(User.objects.filter(pk=self.user.pk), signature_image=name)
         self.user.refresh_from_db()
         keys = (self.user.public_key, self.user.private_key)
         self.assertTrue(signature_valid(self.user))

@@ -18,6 +18,11 @@ class SignatureUserChangeForm(UserChangeForm):
     class Meta(UserChangeForm.Meta):
         model = User
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.instance.pk:
+            self.fields.pop('signature_image', None)
+
 @admin.register(Department)
 class DepartmentAdmin(admin.ModelAdmin):
     list_display = ('name', 'contact_email', 'is_active', 'created_at')
@@ -55,6 +60,11 @@ class DepartmentAdmin(admin.ModelAdmin):
 
 @admin.register(User)
 class CustomUserAdmin(UserAdmin):
+    readonly_fields = ('signature_status',)
+
+    @admin.display(description='Signature status')
+    def signature_status(self, obj):
+        return 'Validated' if obj.signature_validated else 'Not validated'
     form = SignatureUserChangeForm
     # Generic file widgets must never ask private storage for a public URL.
     formfield_overrides = {models.ImageField: {'widget': forms.FileInput}}
@@ -62,7 +72,7 @@ class CustomUserAdmin(UserAdmin):
     list_filter = ('department', 'is_admin')
     fieldsets = UserAdmin.fieldsets + (
         ('VeriMeet SaaS Roles & Crypto', {
-            'fields': ('department', 'is_admin', 'signature_image', 'public_key', 'private_key')
+            'fields': ('department', 'is_admin', 'signature_status', 'public_key', 'private_key')
         }),
     )
     def save_model(self, request, obj, form, change):

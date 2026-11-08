@@ -76,6 +76,7 @@ LOGIN_URL = 'account_login'
 ACCOUNT_ADAPTER = 'accounts.adapter.InvitationAccountAdapter'
 SOCIALACCOUNT_ADAPTER = 'accounts.adapter.OnboardingSocialAdapter'
 PRIVATE_SIGNATURE_ROOT = Path(os.getenv('PRIVATE_SIGNATURE_ROOT', str(BASE_DIR / 'private-signatures')))
+SIGNATURE_RETENTION_DAYS = 90
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',

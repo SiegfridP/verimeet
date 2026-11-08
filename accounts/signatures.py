@@ -16,6 +16,10 @@ LIMIT = 2097152
 
 @deconstructible
 class SignatureStorage(FileSystemStorage):
+    def delete(self, name):
+        from django.core.exceptions import PermissionDenied
+        raise PermissionDenied('Physical signature deletion is disabled.')
+
     def save(self, name, content, max_length=None):
         # Common boundary for onboarding, Admin and FieldFile/model uploads.
         # Never reuse a caller-controlled path, including a legacy file's name.

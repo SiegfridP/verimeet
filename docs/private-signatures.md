@@ -1,5 +1,44 @@
 # Private signature deployment
 
+## Owner replacement and retention
+
+Completed non-admin accounts replace PNGs through Settings with explicit confirmation
+and a signed, owner-bound current-version token. Global Admins receive no PNG
+management interface; Admin signatures are status-only. Supported User.save,
+FieldFile and QuerySet/bulk replacement paths reject untracked changes. The
+replacement service uses a private raw QuerySet update after its transaction guard,
+retention insert and stale-version checks. Raw SQL, private ORM internals and direct
+filesystem access remain trusted-code boundaries, not security sandboxes.
+QuerySet filename assignment is not an initial-upload API: only conditional no-op
+signature reference updates are allowed. Initial uploads use FieldFile/model file
+assignment and storage validation. Private/base managers, raw SQL and explicit
+base QuerySet method calls can bypass application guards and must not be exposed
+to untrusted input. Recovery independently locks/reloads the account, compares
+the caller's version, and validates the new stored bytes before committing its
+ledger, active reference and audit event. When invoked by onboarding, all of this
+also rolls back if subsequent onboarding persistence fails. Neither rollback
+path physically removes files.
+
+Superseded files remain untouched. Retention starts at supersession, defaults to
+90 days and SIGNATURE_RETENTION_DAYS must never be less than 90. Ledger owners
+use SET_NULL plus a stable numeric identifier. Historical associations remain
+unknown and preservation holds remain enabled. No physical deletion is available,
+including via SignatureStorage.delete. Database rollback cannot roll back a new
+filesystem write: failed new files remain private orphans. Reconciliation must
+compare ledger and active references without deleting files. Legacy identifiers
+retain their original namespace; missing/corrupt onboarding assets are recorded
+as unresolved when recovered.
+
+Run `python manage.py inspect_signature_retention --limit 100` for bounded,
+metadata-only inspection. Continue with `--after RECORD_UUID`. Output includes
+safe ledger IDs, holds and age eligibility, never private paths. It does not
+inspect file existence and age eligibility does not authorize deletion.
+
+PNG replacement does not modify ECDSA payloads, attendance, annotations or PDFs.
+Workstream 4 may reference stable retained asset IDs from signing-time snapshots;
+it must not infer historical image associations from current profile PNGs. Future
+cleanup must check active references, protected snapshot references and holds.
+
 New signature files live in `PRIVATE_SIGNATURE_ROOT`, outside `MEDIA_ROOT` by
 default. Keep that directory outside every web server alias, static root, public
 bucket, and CDN origin. Grant filesystem access only to the application identity.

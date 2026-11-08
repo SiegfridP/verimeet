@@ -144,7 +144,7 @@ class AccountSettingsTests(TestCase):
         self.assertNotContains(response, 'Unjoined')
         self.assertContains(response, reverse('signature_preview'))
         self.assertNotContains(response, self.user.signature_image.name)
-        self.assertNotContains(response, 'type="file"')
+        self.assertContains(response, reverse('replace_account_signature'))
         self.assertEqual(self.client.get(reverse('signature_preview')).status_code, 200)
         self.client.force_login(self.admin)
         self.assertEqual(self.client.get(reverse('signature_preview')).status_code, 404)

@@ -4,6 +4,7 @@ from django.core.validators import FileExtensionValidator
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 from .signatures import SignatureStorage
+from .signature_guards import SignatureField, SignatureUserManager
 from meetings.crypto import generate_ecdsa_keypair, encrypt_private_key  # Updated to include encryption helper
 
 class Department(models.Model):
@@ -16,6 +17,7 @@ class Department(models.Model):
         return self.name
 
 class User(AbstractUser):
+    objects = SignatureUserManager()
     username_confirmation_required = models.BooleanField(default=False)
     signature_validation_hash = models.CharField(max_length=64, blank=True)
     signature_validated = models.BooleanField(default=False)
@@ -24,7 +26,7 @@ class User(AbstractUser):
     is_admin = models.BooleanField(default=False)
     
     # Strict PNG requirement for signatures
-    signature_image = models.ImageField(
+    signature_image = SignatureField(
         storage=SignatureStorage(),
         upload_to='signatures/',
         validators=[FileExtensionValidator(allowed_extensions=['png'])],
@@ -38,6 +40,42 @@ class User(AbstractUser):
 
     def __str__(self):
         return self.email or self.username
+
+    def save(self, *args, **kwargs):
+        from django.core.exceptions import PermissionDenied
+        from django.db import transaction
+        from django.db.models import F
+        fields = kwargs.get('update_fields')
+        if self.pk and (fields is None or 'signature_image' in fields):
+            with transaction.atomic():
+                type(self).objects.filter(pk=self.pk).update(username=F('username'))
+                old = type(self).objects.filter(pk=self.pk).values_list('signature_image', flat=True).first()
+                if old and (self.signature_image.name != old or not self.signature_image._committed):
+                    raise PermissionDenied('Use the owner signature replacement service.')
+                return super().save(*args, **kwargs)
+        return super().save(*args, **kwargs)
+
+
+class RetainedSignature(models.Model):
+    import uuid
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    owner = models.ForeignKey(User, null=True, on_delete=models.SET_NULL)
+    owner_identifier = models.CharField(max_length=64)
+    storage_namespace = models.CharField(max_length=16)
+    storage_identifier = models.CharField(max_length=255)
+    superseded_at = models.DateTimeField()
+    eligible_at = models.DateTimeField()
+    content_sha256 = models.CharField(max_length=64, blank=True)
+    file_size = models.PositiveBigIntegerField(null=True)
+    state = models.CharField(max_length=16, default='retained')
+    historical_hold = models.BooleanField(default=True)
+    historical_association = models.CharField(max_length=16, default='unknown')
+    source = models.CharField(max_length=16, default='owner')
+    actor_identifier = models.CharField(max_length=64)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['owner_identifier', 'storage_namespace',
+            'storage_identifier'], name='unique_signature_supersession')]
 
 # Auto-generate ECDSA keys when a new user is created
 @receiver(post_save, sender=User)
