@@ -4255,7 +4255,8 @@ class Batch09StructuredAuditTests(TestCase):
     setUp = Batch04DraftEditingReviewFinalizationTests.setUp
 
     def test_retention_and_legacy_defaults(self):
-        event = AuditLog.objects.create(meeting=self.draft_meeting, department=self.dept,
+        safe_department = Department.objects.create(name='Audit retention safe department')
+        event = AuditLog.objects.create(meeting=self.draft_meeting, department=safe_department,
                                         user=self.officer, action='Legacy')
         other = AuditLog(action='Another')
         event.metadata['x'] = 1
@@ -4269,7 +4270,7 @@ class Batch09StructuredAuditTests(TestCase):
         self.draft_meeting.delete()
         event.refresh_from_db()
         self.assertIsNone(event.meeting_id)
-        self.dept.delete()
+        safe_department.delete()
         event.refresh_from_db()
         self.assertIsNone(event.department_id)
 

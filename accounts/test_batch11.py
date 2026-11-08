@@ -41,8 +41,8 @@ class Batch11DashboardTests(TestCase):
 
     def test_isolation_and_no_membership_side_effect(self):
         before = Membership.objects.count()
-        self.assertEqual(self.dashboard(self.ap, dept=self.other).status_code, 403)
-        self.assertEqual(self.dashboard(self.officer, dept=self.other).status_code, 403)
+        self.assertEqual(self.dashboard(self.ap, dept=self.other).status_code, 404)
+        self.assertEqual(self.dashboard(self.officer, dept=self.other).status_code, 404)
         self.dashboard(self.admin, dept=self.other)
         self.assertEqual(Membership.objects.count(), before)
 
@@ -174,11 +174,11 @@ class Batch11DashboardTests(TestCase):
         legacy_url = reverse('department_dashboard', args=[self.other.pk])
         self.assertRedirects(self.client.get(reverse('routing_view')),
                              reverse('department_dashboard', args=[self.dept.pk]))
-        self.assertEqual(self.client.get(legacy_url).status_code, 403)
+        self.assertEqual(self.client.get(legacy_url).status_code, 404)
         Department.objects.filter(pk=self.dept.pk).update(is_active=False)
         self.assertRedirects(self.client.get(reverse('routing_view')), reverse('waiting_room'))
         self.assertContains(self.client.get(reverse('waiting_room')), 'Waiting Room')
-        self.assertEqual(self.client.get(legacy_url).status_code, 403)
+        self.assertEqual(self.client.get(legacy_url).status_code, 404)
         self.assertFalse(Membership.objects.filter(user=self.officer, department=self.other).exists())
 
     def test_global_precedence_and_staff_distinction_with_inactive_memberships(self):

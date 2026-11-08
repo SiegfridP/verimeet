@@ -176,17 +176,17 @@ class MultiDepartmentAndRBACTests(TestCase):
 
         # Forbidden in Dept B
         r_b = self.client.get(reverse('invite_member', args=[self.dept_b.id]))
-        self.assertEqual(r_b.status_code, 403)
+        self.assertEqual(r_b.status_code, 404)
 
     def test_ordinary_officer_cannot_invite_or_request_elevation(self):
         """Ordinary Officer cannot issue invitations or request elevation."""
         self.client.force_login(self.regular_officer)
 
         r_inv = self.client.get(reverse('invite_member', args=[self.dept_b.id]))
-        self.assertEqual(r_inv.status_code, 403)
+        self.assertEqual(r_inv.status_code, 404)
 
         r_elev = self.client.get(reverse('request_authorized_personnel', args=[self.dept_b.id]))
-        self.assertEqual(r_elev.status_code, 403)
+        self.assertEqual(r_elev.status_code, 404)
 
     def test_invitation_creation_and_acceptance_roles(self):
         """Invitations grant Officer role upon acceptance."""
@@ -366,7 +366,8 @@ class Batch09AdministrativeAuditTests(TestCase):
         model_admin.save_model(self.request, self.target, self.form, True)
         self.assertEqual(AuditLog.objects.get(event_type='user.activation_changed').user, self.actor)
         self.assertEqual(AuditLog.objects.get(event_type='user.role_changed').metadata['new_role'], 'Global Admin')
-        self.assertEqual(AuditLog.objects.filter(event_type='membership.added').count(), 1)
+        self.assertFalse(Membership.objects.filter(user=self.target).exists())
+        Membership.objects.create(user=self.target, department=self.department)
         model_admin.delete_model(self.request, self.target)
         self.assertEqual(AuditLog.objects.get(event_type='membership.removed').user, self.actor)
 

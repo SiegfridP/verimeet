@@ -94,7 +94,8 @@ class ParentDeletionTests(TestCase):
         for parent in ('attendance', 'meeting', 'user', 'department'):
             dept = Department.objects.create(name=f'Safe {parent}')
             user = User.objects.create_user(username=f'safe_{parent}')
-            meeting = Meeting.objects.create(department=dept, title='Safe', status='Finished')
+            # Department deletion now protects Finished meetings even unsigned.
+            meeting = Meeting.objects.create(department=dept, title='Safe', status='Draft' if parent == 'department' else 'Finished')
             attendance = Attendance.objects.create(meeting=meeting, user=user)
             target = {'attendance': attendance, 'meeting': meeting, 'user': user, 'department': dept}[parent]
             target.delete()

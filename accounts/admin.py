@@ -17,17 +17,26 @@ class DepartmentAdmin(admin.ModelAdmin):
                        obj, obj, {'changed_fields': sorted(form.changed_data)})
 
     def delete_model(self, request, obj):
-        with transaction.atomic():
-            for membership in Membership.objects.filter(department=obj):
-                record(request.user, 'membership.removed', membership, obj,
-                       {'user_id': membership.user_id, 'previous_role': membership.role})
-            record(request.user, 'department.deleted', obj, obj)
-            super().delete_model(request, obj)
+        from .department_deletion import delete_with_audit
+        delete_with_audit(request.user, obj)
+
+    def has_delete_permission(self, request, obj=None):
+        return (request.user.is_admin or request.user.is_superuser) and super().has_delete_permission(request, obj)
 
     def delete_queryset(self, request, queryset):
-        with transaction.atomic():
-            for obj in queryset:
-                self.delete_model(request, obj)
+        from django.core.exceptions import PermissionDenied
+        from django.db.models import F
+        from .department_deletion import delete_with_audit
+        if not (request.user.is_admin or request.user.is_superuser):
+            raise PermissionDenied('Global Admin access required')
+        using = queryset.db
+        with transaction.atomic(using=using):
+            departments = list(queryset.order_by('pk'))
+            # Acquire all Department locks before any Meeting/Attendance locks.
+            for department in departments:
+                Department.objects.using(using).filter(pk=department.pk).update(name=F('name'))
+            for department in departments:
+                delete_with_audit(request.user, department, using=using)
 
 
 @admin.register(User)

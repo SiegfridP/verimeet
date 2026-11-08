@@ -52,14 +52,7 @@ def create_user_keys(sender, instance, created, **kwargs):
         instance.private_key = encrypted_priv
         instance.public_key = pub_pem
 
-    # Backward compatibility: If instance.department is set, ensure Membership exists
-    if instance.department:
-        # Assigned department members default to canonical Officer ('O')
-        Membership.objects.get_or_create(
-            user=instance,
-            department=instance.department,
-            defaults={'role': 'O'}
-        )
+    # Legacy department is readable; user saves never create memberships.
 
 # ====================
 # RBAC / Multi‑tenancy models

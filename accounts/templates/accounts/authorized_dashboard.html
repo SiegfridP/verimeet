@@ -20,7 +20,7 @@
     .status-other {background:rgba(160,174,192,0.2);color:#cbd5e0;}
   </style>
 </head>
-<body><main>
+<body><main><a href="{% url 'create_department' %}">Create Department</a>
 {% include 'accounts/messages.html' %}
 {% if global_admin %}<h1>Global Admin — Department Dashboard</h1><a href="{% overview_url %}">Global Admin Dashboard</a>{% else %}<h1>Authorized Personnel Dashboard</h1>{% endif %}
 <h2>Department: {{ department.name }}</h2><p>Your role: {% if global_admin %}Global Admin{% else %}Authorized Personnel{% endif %}</p>

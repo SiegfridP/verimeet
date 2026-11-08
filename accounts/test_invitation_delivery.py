@@ -158,7 +158,7 @@ class InvitationDeliveryTests(TransactionTestCase):
         url = reverse('retry_invitation_delivery', args=[self.invitation.pk])
         for actor in (self.officer, self.other):
             self.client.force_login(actor)
-            self.assertEqual(self.client.post(url).status_code, 403)
+            self.assertEqual(self.client.post(url).status_code, 404)
         self.client.force_login(self.ap)
         self.assertEqual(self.client.get(url).status_code, 405)
         self.assertEqual(self.client.post(url).status_code, 400)

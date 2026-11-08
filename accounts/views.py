@@ -5,6 +5,8 @@ from .models import Department, Membership, Invitation, RoleElevationRequest, Us
 from django import forms
 from django.utils import timezone
 from django.db import transaction
+from django.core.exceptions import ValidationError, PermissionDenied
+from django.views.decorators.http import require_http_methods
 from .audit import record, grant_ap
 from django.contrib import messages
 from django.core.paginator import Paginator
@@ -67,6 +69,62 @@ def meeting_list_context(request, queryset, officer=False):
             'officer_list': officer, 'lifecycle_choices': ('Draft', 'Finished', 'Archived'),
             'attendance_choices': ('Attended', 'Late', 'Absent')}
 
+
+def department_scope(user, role=None):
+    scope = Department.objects.filter(is_active=True)
+    if is_global_admin(user):
+        return scope
+    memberships = Membership.objects.filter(user=user)
+    if role:
+        memberships = memberships.filter(role=role)
+    if not role and user.department_id and not Membership.objects.filter(user=user).exists():
+        return scope.filter(pk=user.department_id)
+    return scope.filter(pk__in=memberships.values('department_id'))
+
+class DepartmentForm(forms.ModelForm):
+    class Meta:
+        model = Department
+        fields = ('name', 'contact_email')
+        error_messages = {'name': {'unique': 'This name is unavailable. Choose another name.'}}
+
+@login_required
+@require_http_methods(['GET', 'POST'])
+def create_department(request):
+    form = DepartmentForm(request.POST if request.method == 'POST' else None)
+    if request.method == 'POST' and form.is_valid():
+        try:
+            with transaction.atomic():
+                department = form.save(commit=False)
+                department.is_active = True
+                department.save()
+                record(request.user, 'department.created', department, department)
+                membership = Membership.objects.create(user=request.user, department=department, role='AP')
+                record(request.user, 'membership.added', membership, department,
+                       {'user_id': request.user.pk, 'new_role': 'AP'})
+        except Exception:
+            form.add_error(None, 'Department could not be created. Please retry with another name.')
+        else:
+            return redirect('department_dashboard', dept_id=department.pk)
+    return render(request, 'accounts/create_department.html', {'form': form})
+
+@login_required
+@require_http_methods(['GET', 'POST'])
+def delete_department(request, dept_id):
+    if not is_global_admin(request.user):
+        return HttpResponseForbidden('Global Admin access required')
+    department = get_object_or_404(Department, pk=dept_id)
+    error = None
+    if request.method == 'POST':
+        try:
+            from .department_deletion import delete_with_audit
+            delete_with_audit(request.user, department)
+        except PermissionDenied as exc:
+            error = str(exc)
+        else:
+            return redirect('admin_dashboard')
+    return render(request, 'accounts/delete_department.html', {'department': department, 'error': error},
+                  status=400 if error else 200)
+
 # Helper decorators
 
 def is_global_admin(user):
@@ -105,7 +163,10 @@ def admin_dashboard(request):
             return HttpResponseBadRequest('Missing request_id or action')
         req = get_object_or_404(RoleElevationRequest.objects.select_for_update(), pk=req_id, status='P')
         if action == 'approve':
-            grant_ap(request.user, req.target_user, req.department)
+            try:
+                grant_ap(request.user, req.target_user, req.department)
+            except ValidationError:
+                return HttpResponseBadRequest('Active department membership required.')
             req.status = 'A'
         elif action == 'reject':
             req.status = 'R'
@@ -135,7 +196,7 @@ def admin_dashboard(request):
 def department_dashboard(request, dept_id=None):
     # Determine department context
     if dept_id:
-        department = get_object_or_404(Department, pk=dept_id, is_active=True)
+        department = get_object_or_404(department_scope(request.user), pk=dept_id)
     else:
         # pick first membership if only one, otherwise require explicit dept_id
         memberships = Membership.objects.filter(user=request.user, department__is_active=True)
@@ -173,7 +234,7 @@ class InvitationForm(forms.Form):
 @login_required
 @transaction.atomic
 def invite_member(request, dept_id):
-    department = get_object_or_404(Department, pk=dept_id, is_active=True)
+    department = get_object_or_404(department_scope(request.user, 'AP'), pk=dept_id)
     # Only Authorized Personnel (or Global Admin) can invite
     if not is_global_admin(request.user) and not has_membership(request.user, department, role='AP'):
         return HttpResponseForbidden('Only Authorized Personnel may invite')
@@ -260,7 +321,7 @@ class ElevationRequestForm(forms.Form):
 
 @login_required
 def request_authorized_personnel(request, dept_id):
-    department = get_object_or_404(Department, pk=dept_id, is_active=True)
+    department = get_object_or_404(department_scope(request.user, 'AP'), pk=dept_id)
     # Only current Authorized Personnel (or Global Admin) can request new one
     if not is_global_admin(request.user) and not has_membership(request.user, department, role='AP'):
         return HttpResponseForbidden('Only Authorized Personnel may request')
@@ -270,7 +331,7 @@ def request_authorized_personnel(request, dept_id):
             target_email = form.cleaned_data['target_email']
             note = form.cleaned_data['note']
             target_user = User.objects.filter(email=target_email).first()
-            if not target_user:
+            if not target_user or not Membership.objects.filter(user=target_user, department=department).exists():
                 return HttpResponseBadRequest('Target user does not exist')
             elevation, created = RoleElevationRequest.objects.get_or_create(
                 department=department,
@@ -300,7 +361,10 @@ def review_elevation_requests(request):
         req = get_object_or_404(RoleElevationRequest.objects.select_for_update(), pk=req_id, status='P')
         if action == 'approve':
             # Grant Authorized Personnel role in the department
-            grant_ap(request.user, req.target_user, req.department)
+            try:
+                grant_ap(request.user, req.target_user, req.department)
+            except ValidationError:
+                return HttpResponseBadRequest('Active department membership required.')
             req.status = 'A'
         elif action == 'reject':
             req.status = 'R'
@@ -335,7 +399,8 @@ def waiting_room(request):
     """The default page for users without an assigned department."""
     if is_global_admin(request.user) or active_department_for_user(request.user):
         return redirect('routing_view')
-    return render(request, 'accounts/waiting_room.html')
+    from .invitations import pending_invitation_url
+    return render(request, 'accounts/waiting_room.html', {'pending_invitation_url': pending_invitation_url(request)})
 
 
 @login_required
@@ -346,7 +411,11 @@ def retry_invitation_delivery(request, invitation_id):
     from .models import InvitationDelivery
     if request.method != 'POST':
         return HttpResponseNotAllowed(['POST'])
-    invitation = get_object_or_404(Invitation, pk=invitation_id)
+    invitations = Invitation.objects.all()
+    if not is_global_admin(request.user):
+        invitations = invitations.filter(department__memberships__user=request.user,
+                                         department__memberships__role='AP')
+    invitation = get_object_or_404(invitations, pk=invitation_id)
     if not is_global_admin(request.user) and not has_membership(request.user, invitation.department, role='AP'):
         return HttpResponseForbidden('Authorized Personnel access required.')
     if not Department.objects.filter(pk=invitation.department_id, is_active=True).update(name=F('name')):

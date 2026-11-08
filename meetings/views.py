@@ -36,7 +36,7 @@ from .forms import (
 )
 from accounts.models import Membership, Department, User
 from accounts.dashboard_context import workflow_redirect
-from accounts.views import is_global_admin, has_membership
+from accounts.views import is_global_admin, has_membership, department_scope
 
 def user_in_department(user, meeting):
     if not user.is_authenticated:
@@ -51,7 +51,7 @@ def authorized_personnel_dashboard(request):
     dept_id = request.GET.get('dept_id')
     if dept_id:
         try:
-            department = Department.objects.get(pk=dept_id, is_active=True)
+            department = department_scope(request.user, 'AP').get(pk=dept_id)
         except (Department.DoesNotExist, ValueError):
             return HttpResponseForbidden('Department not found')
     elif request.user.department:
@@ -75,7 +75,7 @@ def officer_dashboard(request):
     dept_id = request.GET.get('dept_id')
     if dept_id:
         try:
-            department = Department.objects.get(pk=dept_id, is_active=True)
+            department = department_scope(request.user).get(pk=dept_id)
             if not is_global_admin(request.user) and not has_membership(request.user, department):
                 return HttpResponseForbidden('No membership in this department')
             return redirect('department_dashboard', dept_id=department.id)
@@ -761,7 +761,8 @@ def create_meeting(request, dept_id=None):
 
     if target_dept_id:
         try:
-            department = Department.objects.get(pk=target_dept_id, is_active=True)
+            from accounts.views import department_scope
+            department = department_scope(request.user, 'AP').get(pk=target_dept_id)
         except (Department.DoesNotExist, ValueError):
             return HttpResponseForbidden("Invalid or inactive department.")
     elif request.user.department and (is_global_admin(request.user) or has_membership(request.user, request.user.department, role='AP')):
