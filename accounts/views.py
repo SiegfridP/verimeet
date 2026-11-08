@@ -7,6 +7,7 @@ from django.utils import timezone
 from django.db import transaction
 from django.core.exceptions import ValidationError, PermissionDenied
 from django.views.decorators.http import require_http_methods
+from django.views.decorators.cache import never_cache
 from .audit import record, grant_ap
 from django.contrib import messages
 from django.core.paginator import Paginator
@@ -559,12 +560,53 @@ def review_elevation_requests(request):
     return render(request, 'accounts/review_elevation_requests.html', {'pending_requests': pending})
 
 # ---------- Default and central dashboard routing ----------
+def _invitation_page_identity(request):
+    from django.utils.crypto import salted_hmac
+    return salted_hmac('invitation-page-identity',
+        f'{request.user.pk}:{request.session.session_key}:{request.user.get_session_auth_hash()}').hexdigest()
+
+
+def _invitation_page_marker(request):
+    from django.core import signing
+    return signing.dumps(_invitation_page_identity(request), salt='invitation-page')
+
+
+@never_cache
+@require_http_methods(['GET'])
+@login_required
+def invitation_fragment(request):
+    from django.core import signing
+    from django.utils.crypto import constant_time_compare
+    from .signatures import complete
+    # Authentication/middleware may have loaded User before a status or role change.
+    current_user = User.objects.filter(pk=request.user.pk).first()
+    if (current_user is None or not current_user.is_active or is_global_admin(current_user)
+            or not complete(current_user)):
+        return HttpResponseForbidden('Dashboard session unavailable.')
+    request.user = current_user
+    try:
+        marker = request.headers.get('X-Invitation-Page', '')
+        if len(marker) > 512:
+            raise signing.BadSignature()
+        identity = signing.loads(marker, salt='invitation-page', max_age=86400)
+        if not isinstance(identity, str) or not constant_time_compare(identity, _invitation_page_identity(request)):
+            raise signing.BadSignature()
+    except (signing.BadSignature, TypeError, ValueError):
+        return HttpResponseForbidden('Dashboard session changed.')
+    from .invitations import dashboard_invitations
+    response = render(request, 'accounts/_invitation_cards.html', {
+        'pending_invitations': dashboard_invitations(request)})
+    response['X-VeriMeet-Fragment'] = 'invitations'
+    return response
+
+
 @login_required
 def routing_view(request):
     """Default landing only; explicit authentication continuations take precedence."""
     return redirect('admin_dashboard' if is_global_admin(request.user) else 'central_dashboard')
 
 
+@never_cache
 @login_required
 def central_dashboard(request):
     if is_global_admin(request.user):
@@ -584,6 +626,7 @@ def central_dashboard(request):
     return render(request, 'accounts/central_dashboard.html', {
         'department_entries': entries,
         'pending_invitations': dashboard_invitations(request),
+        'invitation_page_marker': _invitation_page_marker(request),
     })
 
 

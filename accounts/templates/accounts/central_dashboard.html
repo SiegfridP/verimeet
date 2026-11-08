@@ -27,16 +27,86 @@
 <p>You have no active departments. Create a department or join through an invitation from Authorized Personnel.</p>
 {% endfor %}
 </section>
-{% if pending_invitations %}
-<section aria-labelledby="invitation-heading"><h2 id="invitation-heading">Pending invitations</h2>
-<ul class="invitation-list" role="list">{% for invitation in pending_invitations %}
-<li class="invitation-card">
-<h3>{{ invitation.department.name }}</h3>
-<p>Expires <time datetime="{{ invitation.expires_at|date:'c' }}">{{ invitation.expires_at|date:"c" }}</time></p>
-<a class="invitation-card__review" href="{% url 'accept_invitation' invitation.token %}" aria-label="Review invitation to {{ invitation.department.name }}">Review invitation</a>
-</li>
-{% endfor %}</ul></section>
-{% else %}
-<p>To accept an invitation, open the link provided by your department's Authorized Personnel.</p>
-{% endif %}
+<div id="invitation-region" data-refresh-url="{% url 'invitation_fragment' %}" data-page-marker="{{ invitation_page_marker }}">{% include 'accounts/_invitation_cards.html' %}</div>
+<p id="invitation-status" aria-live="polite" role="status"></p>
+<script type="text/javascript">
+(() => {
+  const region = document.getElementById('invitation-region');
+  const status = document.getElementById('invitation-status');
+  if (!window.fetch || !window.AbortController || !window.DOMParser) return;
+  let stopped = false, busy = false, timer, delay = 30000, deferred = null, activeRequest = null;
+  let current = region.firstElementChild.outerHTML;
+  function stop() {
+    if (stopped) return;
+    stopped = true;
+    clearTimeout(timer);
+    deferred = null;
+    if (activeRequest) activeRequest.abort();
+    const message = document.createElement('p');
+    message.textContent = 'Your session or account has changed. ';
+    const reload = document.createElement('a');
+    reload.href = window.location.pathname;
+    reload.textContent = 'Reload page';
+    message.appendChild(reload);
+    region.replaceChildren(message);
+    status.textContent = 'Invitation refresh stopped. Reload the page to continue.';
+  }
+  function apply(fragment) {
+    if (stopped) return;
+    if (fragment.outerHTML === current) { deferred = null; return; }
+    if (region.contains(document.activeElement)) { deferred = fragment; return; }
+    current = fragment.outerHTML;
+    region.replaceChildren(fragment);
+    deferred = null;
+    status.textContent = 'Pending invitations updated.';
+  }
+  function schedule() {
+    clearTimeout(timer);
+    if (!stopped && !document.hidden) timer = setTimeout(refresh, delay);
+  }
+  async function refresh() {
+    if (stopped || busy || document.hidden) return;
+    busy = true;
+    const controller = new AbortController();
+    activeRequest = controller;
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    try {
+      const response = await fetch(region.dataset.refreshUrl, {
+        credentials: 'same-origin', cache: 'no-store', redirect: 'manual',
+        headers: {'X-Invitation-Page': region.dataset.pageMarker}, signal: controller.signal
+      });
+      if (stopped) return;
+      if (response.type === 'opaqueredirect' || response.redirected ||
+          [401, 403, 409].includes(response.status) || (response.status >= 300 && response.status < 400)) {
+        stop(); return;
+      }
+      if (response.status !== 200 || response.headers.get('X-VeriMeet-Fragment') !== 'invitations' ||
+          !(response.headers.get('Content-Type') || '').startsWith('text/html')) throw new Error('Unexpected response');
+      const html = await response.text();
+      if (stopped) return;
+      const parsed = new DOMParser().parseFromString(html, 'text/html');
+      const fragment = parsed.body.firstElementChild;
+      if (parsed.body.children.length !== 1 || !fragment || !fragment.hasAttribute('data-invitation-fragment') ||
+          parsed.querySelector('script, form, iframe')) throw new Error('Unexpected fragment');
+      delay = 30000;
+      if (!document.hidden) apply(fragment);
+    } catch (error) {
+      if (!stopped) delay = Math.min(delay * 2, 300000);
+    } finally {
+      clearTimeout(timeout);
+      activeRequest = null;
+      busy = false;
+      schedule();
+    }
+  }
+  region.addEventListener('focusout', () => setTimeout(() => {
+    if (!stopped && !document.hidden && deferred) apply(deferred);
+  }, 0));
+  document.addEventListener('visibilitychange', () => {
+    clearTimeout(timer);
+    if (!document.hidden && !stopped) refresh();
+  });
+  schedule();
+})();
+</script>
 </main></body></html>

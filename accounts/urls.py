@@ -14,6 +14,7 @@ urlpatterns = [
     path('department/<int:dept_id>/delete/', views.delete_department, name='delete_department'),
     path('route/', views.routing_view, name='routing_view'),
     path('dashboard/', views.central_dashboard, name='central_dashboard'),
+    path('dashboard/invitations/', views.invitation_fragment, name='invitation_fragment'),
     path('waiting-room/', views.waiting_room, name='waiting_room'),
     path('login/', RedirectView.as_view(pattern_name='account_login', permanent=False), name='login'),
     # RBAC dashboards

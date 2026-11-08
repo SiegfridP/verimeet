@@ -171,3 +171,154 @@ class InvitationDiscoveryTests(TestCase):
         self.assertFalse(recipient_invitations(self.user).exists())
         self.client.force_login(self.admin)
         self.assertRedirects(self.client.get(self.url), reverse('admin_dashboard'))
+
+
+class InvitationFragmentTests(TestCase):
+    """Run discovery/card contracts against the same partial and test the polling boundary."""
+    setUp = InvitationDiscoveryTests.setUp
+    invite = InvitationDiscoveryTests.invite
+    verify = InvitationDiscoveryTests.verify
+    def marker(self):
+        return self.client.get(reverse('central_dashboard')).context['invitation_page_marker']
+
+    def fragment(self, marker=None, **query):
+        return self.client.get(reverse('invitation_fragment'), query,
+                               HTTP_X_INVITATION_PAGE=marker or self.marker())
+
+    def test_fragment_matches_initial_markup_and_does_not_mutate_state(self):
+        from django.template.loader import render_to_string
+        self.verify()
+        invitation = self.invite()
+        session = self.client.session
+        session['pending_invite_token'] = invitation.token
+        session['invite_verification_intent'] = [invitation.token, self.user.pk]
+        session.save()
+        page = self.client.get(self.url)
+        marker = page.context['invitation_page_marker']
+        expected = render_to_string('accounts/_invitation_cards.html', {
+            'pending_invitations': page.context['pending_invitations']})
+        before = (list(Invitation.objects.values()), list(Membership.objects.values()),
+                  list(EmailAddress.objects.values()), list(User.objects.values()),
+                  list(AuditLog.objects.values()), dict(self.client.session))
+        response = self.fragment(marker)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content.decode(), expected)
+        self.assertContains(page, expected)
+        self.assertEqual(response['X-VeriMeet-Fragment'], 'invitations')
+        self.assertIn('private', response['Cache-Control'])
+        self.assertIn('no-store', response['Cache-Control'])
+        self.assertEqual(before, (list(Invitation.objects.values()), list(Membership.objects.values()),
+                         list(EmailAddress.objects.values()), list(User.objects.values()),
+                         list(AuditLog.objects.values()), dict(self.client.session)))
+
+    def test_missing_invalid_and_cross_account_markers(self):
+        self.verify(); invitation = self.invite()
+        marker = self.marker()
+        endpoint = reverse('invitation_fragment')
+        for supplied in ('', 'invalid', marker + 'tamper', 'x' * 513):
+            response = self.client.get(endpoint, HTTP_X_INVITATION_PAGE=supplied)
+            self.assertEqual(response.status_code, 403)
+            self.assertNotContains(response, invitation.token, status_code=403)
+        other = User.objects.create_user(username='other-recipient')
+        complete_onboarding(other)
+        self.client.force_login(other)
+        self.assertEqual(self.fragment(marker).status_code, 403)
+
+    def test_fragment_rechecks_account_changes_after_authentication_loaded_user(self):
+        from django.test import RequestFactory
+        from django.db import transaction
+        from .views import invitation_fragment
+        from .account_status import change_account_status
+        self.verify()
+        invitation = self.invite()
+        marker = self.marker()
+        for state in ('admin', 'superuser', 'incomplete', 'inactive', 'reactivated', 'password'):
+            with self.subTest(state=state), transaction.atomic():
+                request = RequestFactory().get(reverse('invitation_fragment'), HTTP_X_INVITATION_PAGE=marker)
+                request.user = User.objects.get(pk=self.user.pk)
+                request.session = self.client.session
+                if state in ('inactive', 'reactivated'):
+                    change_account_status(self.admin, self.user.pk, False)
+                    if state == 'reactivated':
+                        change_account_status(self.admin, self.user.pk, True)
+                else:
+                    field, value = {
+                        'admin': ('is_admin', True), 'superuser': ('is_superuser', True),
+                        'incomplete': ('username_confirmation_required', True),
+                        'password': ('password', 'changed-authentication-hash'),
+                    }[state]
+                    User.objects.filter(pk=self.user.pk).update(**{field: value})
+                response = invitation_fragment(request)
+                self.assertEqual(response.status_code, 403)
+                self.assertNotContains(response, invitation.token, status_code=403)
+                self.assertNotIn('X-VeriMeet-Fragment', response)
+                self.assertIn('no-store', response['Cache-Control'])
+                transaction.set_rollback(True)
+
+    def test_login_session_and_account_version_invalidate_marker(self):
+        marker = self.marker()
+        session = self.client.session; session.cycle_key(); session.save()
+        from django.conf import settings
+        self.client.cookies[settings.SESSION_COOKIE_NAME] = session.session_key
+        self.assertEqual(self.fragment(marker).status_code, 403)
+        marker = self.marker()
+        self.client.logout(); self.client.force_login(self.user)
+        self.assertEqual(self.fragment(marker).status_code, 403)
+        marker = self.marker()
+        from .account_status import change_account_status
+        change_account_status(self.admin, self.user.pk, False)
+        self.assertEqual(self.fragment(marker).status_code, 302)
+        change_account_status(self.admin, self.user.pk, True)
+        self.user.refresh_from_db(); self.client.force_login(self.user)
+        self.assertEqual(self.fragment(marker).status_code, 403)
+
+    def test_fragment_access_and_methods(self):
+        marker = self.marker()
+        endpoint = reverse('invitation_fragment')
+        for method in ('post', 'put', 'patch', 'delete', 'head', 'options'):
+            response = getattr(self.client, method)(endpoint, HTTP_X_INVITATION_PAGE=marker)
+            self.assertEqual(response.status_code, 405)
+        self.client.logout()
+        self.assertEqual(self.fragment(marker).status_code, 302)
+        incomplete = User.objects.create_user(username='incomplete')
+        self.client.force_login(incomplete)
+        self.assertRedirects(self.fragment(marker), reverse('onboarding'))
+        self.client.force_login(self.admin)
+        self.assertEqual(self.fragment(marker).status_code, 403)
+        self.assertRedirects(self.client.get(self.url), reverse('admin_dashboard'))
+
+    def test_fragment_filters_and_empty_transitions(self):
+        self.verify(primary=True)
+        self.verify('secondary@example.com')
+        EmailAddress.objects.create(user=self.user, email='unverified@example.com', verified=False)
+        marker = self.marker()
+        self.assertNotContains(self.fragment(marker), '<li class="invitation-card">')
+        valid = self.invite('SECONDARY@EXAMPLE.COM')
+        hidden = [self.invite('unverified@example.com'), self.invite('other@example.com'),
+                  self.invite(expires_at=timezone.now()-timedelta(seconds=1)), self.invite(accepted=True)]
+        response = self.fragment(marker, email='other@example.com', department=self.department.pk)
+        self.assertContains(response, reverse('accept_invitation', args=[valid.token]), count=1)
+        for invitation in hidden:
+            self.assertNotContains(response, invitation.token)
+        self.assertNotContains(response, valid.email)
+        Invitation.objects.filter(pk=valid.pk).update(accepted=True)
+        self.assertNotContains(self.fragment(marker), '<li class="invitation-card">')
+        Invitation.objects.filter(pk=valid.pk).update(accepted=False)
+        Department.objects.filter(pk=self.department.pk).update(is_active=False)
+        self.assertNotContains(self.fragment(marker), '<li class="invitation-card">')
+
+    def test_fragment_limit_continuation_replacement_and_escaping(self):
+        self.verify()
+        self.department.name = '<em>Private & "team"</em>'; self.department.save()
+        invitations = [self.invite() for _ in range(DISCOVERY_LIMIT + 2)]
+        continuation = invitations[0]
+        session = self.client.session; session['pending_invite_token'] = continuation.token; session.save()
+        marker = self.marker()
+        response = self.fragment(marker)
+        self.assertContains(response, '<li class="invitation-card">', count=DISCOVERY_LIMIT + 1)
+        self.assertContains(response, reverse('accept_invitation', args=[continuation.token]), count=1)
+        self.assertNotContains(response, '<em>')
+        continuation.delete()  # Replacement revokes the former token by deleting its row.
+        response = self.fragment(marker)
+        self.assertNotContains(response, continuation.token)
+        self.assertEqual(self.client.session['pending_invite_token'], continuation.token)

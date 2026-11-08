@@ -1,0 +1,14 @@
+<div data-invitation-fragment>
+{% if pending_invitations %}
+<section aria-labelledby="invitation-heading"><h2 id="invitation-heading">Pending invitations</h2>
+<ul class="invitation-list" role="list">{% for invitation in pending_invitations %}
+<li class="invitation-card">
+<h3>{{ invitation.department.name }}</h3>
+<p>Expires <time datetime="{{ invitation.expires_at|date:'c' }}">{{ invitation.expires_at|date:"c" }}</time></p>
+<a class="invitation-card__review" href="{% url 'accept_invitation' invitation.token %}" aria-label="Review invitation to {{ invitation.department.name }}">Review invitation</a>
+</li>
+{% endfor %}</ul></section>
+{% else %}
+<p>To accept an invitation, open the link provided by your department's Authorized Personnel.</p>
+{% endif %}
+</div>
