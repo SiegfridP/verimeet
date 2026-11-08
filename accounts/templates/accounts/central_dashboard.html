@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>My Dashboard - VeriMeet</title></head>
+<body><main>
+<h1>My Dashboard</h1>
+{% include 'accounts/messages.html' %}
+<p>Select a department to view its dashboard.</p>
+<a href="{% url 'create_department' %}">Create Department</a>
+<section aria-labelledby="departments-heading">
+<h2 id="departments-heading">My departments</h2>
+{% for entry in department_entries %}
+<article><h3>{{ entry.department.name }}</h3><p>Your role: {{ entry.role }}</p>
+<a href="{% url 'department_dashboard' entry.department.pk %}">Enter {{ entry.department.name }}</a></article>
+{% empty %}
+<p>You have no active departments. Create a department or join through an invitation from Authorized Personnel.</p>
+{% endfor %}
+</section>
+{% if pending_invitation_url %}
+<section aria-labelledby="invitation-heading"><h2 id="invitation-heading">Accept Invitation</h2>
+<a href="{{ pending_invitation_url }}">Continue to your invitation</a></section>
+{% else %}
+<p>To accept an invitation, open the link provided by your department's Authorized Personnel.</p>
+{% endif %}
+<!-- Future account settings and invitation discovery belong in separate sections. -->
+</main></body></html>

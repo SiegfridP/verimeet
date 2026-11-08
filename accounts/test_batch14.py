@@ -52,12 +52,12 @@ class Batch14Tests(TestCase):
         self.assertNotContains(response, 'private@example.com')
 
     def test_waiting_and_pending_invitation(self):
-        response = self.client.get(reverse('waiting_room'))
-        self.assertContains(response, 'Create Department'); self.assertContains(response, 'Accept Invitation')
+        response = self.client.get(reverse('central_dashboard'))
+        self.assertContains(response, 'Create Department'); self.assertContains(response, 'To accept an invitation')
         self.assertNotContains(response, self.dept.name)
         invite = Invitation.objects.create(email='x@example.com', department=self.dept, inviter=self.admin)
         session = self.client.session; session['pending_invite_token'] = invite.token; session.save()
-        self.assertContains(self.client.get(reverse('waiting_room')), reverse('accept_invitation', args=[invite.token]))
+        self.assertContains(self.client.get(reverse('central_dashboard')), reverse('accept_invitation', args=[invite.token]))
 
     def test_private_endpoints(self):
         for name in ('department_dashboard', 'invite_member', 'request_authorized_personnel'):

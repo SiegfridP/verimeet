@@ -23,7 +23,7 @@
     .status-absent{background:rgba(252,129,129,0.2);color:#fc8181;}
   </style>
 </head>
-<body><main><a href="{% url 'create_department' %}">Create Department</a>
+<body><main>{% if not global_admin %}<a href="{% url 'central_dashboard' %}">Back to My Dashboard</a>{% endif %}
 <h1>Officer Dashboard</h1>{% include 'accounts/messages.html' %}<h2>Department: {{ department.name }}</h2><p>Your role: Officer</p><p>All department meetings are listed. Attendance, signing, and verification details belong only to your own assignment.</p>
 {% if switch_departments %}<nav aria-label="Switch department">Switch department: {% for dept in switch_departments %}<a href="{% dashboard_entry_url dept.pk %}" {% if department.pk == dept.pk %}aria-current="page"{% endif %}>{{ dept.name }}</a>{% endfor %}</nav>{% endif %}
 {% include 'accounts/meeting_list.html' %}</main></body></html>

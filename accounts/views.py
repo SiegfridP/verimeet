@@ -378,29 +378,39 @@ def review_elevation_requests(request):
     pending = RoleElevationRequest.objects.filter(status='P')
     return render(request, 'accounts/review_elevation_requests.html', {'pending_requests': pending})
 
-# ---------- Routing Adjustments ----------
+# ---------- Default and central dashboard routing ----------
 @login_required
 def routing_view(request):
-    """Routes users based on their Department assignment after logging in."""
-    # Admins (including superusers) get admin dashboard
+    """Default landing only; explicit authentication continuations take precedence."""
+    return redirect('admin_dashboard' if is_global_admin(request.user) else 'central_dashboard')
+
+
+@login_required
+def central_dashboard(request):
     if is_global_admin(request.user):
         return redirect('admin_dashboard')
+    memberships = Membership.objects.filter(user=request.user)
+    entries = [
+        {'department': membership.department, 'role': membership.get_role_display()}
+        for membership in memberships.filter(department__is_active=True)
+        .select_related('department').order_by('department__name', 'department_id')
+    ]
+    # Real memberships are authoritative, including inactive-only memberships.
+    if not entries and not memberships.exists():
+        department = active_department_for_user(request.user)
+        if department:
+            entries.append({'department': department, 'role': 'Officer'})
+    from .invitations import pending_invitation_url
+    return render(request, 'accounts/central_dashboard.html', {
+        'department_entries': entries,
+        'pending_invitation_url': pending_invitation_url(request),
+    })
 
-    # Resolve active department via Membership or legacy department
-    department = active_department_for_user(request.user)
-    if department:
-        return redirect('department_dashboard', dept_id=department.pk)
-
-    # No department assigned – show waiting room
-    return redirect('waiting_room')
 
 @login_required
 def waiting_room(request):
-    """The default page for users without an assigned department."""
-    if is_global_admin(request.user) or active_department_for_user(request.user):
-        return redirect('routing_view')
-    from .invitations import pending_invitation_url
-    return render(request, 'accounts/waiting_room.html', {'pending_invitation_url': pending_invitation_url(request)})
+    """Compatibility destination for bookmarks and authentication continuations."""
+    return redirect('admin_dashboard' if is_global_admin(request.user) else 'central_dashboard')
 
 
 @login_required

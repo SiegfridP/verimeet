@@ -48,7 +48,7 @@ class RoutingAndAuthTests(TestCase):
         """Authenticated user without a department visiting / is sent to the waiting room."""
         self.client.force_login(self.user_no_dept)
         response = self.client.get('/')
-        self.assertRedirects(response, reverse('waiting_room'))
+        self.assertRedirects(response, reverse('central_dashboard'))
 
     def test_root_authenticated_admin(self):
         """Authenticated admin visiting / is sent to the admin dashboard."""
@@ -60,14 +60,14 @@ class RoutingAndAuthTests(TestCase):
         """Authenticated officer visiting / is sent to their department dashboard."""
         self.client.force_login(self.officer_user)
         response = self.client.get('/')
-        self.assertRedirects(response, reverse('department_dashboard', args=[self.dept.id]))
+        self.assertRedirects(response, reverse('central_dashboard'))
 
     def test_routing_view_destinations(self):
         """Verify role-based routing from /accounts/route/."""
         # No department -> waiting room
         self.client.force_login(self.user_no_dept)
         r1 = self.client.get(reverse('routing_view'))
-        self.assertRedirects(r1, reverse('waiting_room'))
+        self.assertRedirects(r1, reverse('central_dashboard'))
 
         # Admin -> admin dashboard
         self.client.force_login(self.admin_user)
@@ -77,30 +77,21 @@ class RoutingAndAuthTests(TestCase):
         # Officer -> department dashboard
         self.client.force_login(self.officer_user)
         r3 = self.client.get(reverse('routing_view'))
-        self.assertRedirects(r3, reverse('department_dashboard', args=[self.dept.id]))
+        self.assertRedirects(r3, reverse('central_dashboard'))
 
     def test_waiting_room_renders_content(self):
         """Waiting room page displays successfully with explanatory content."""
         self.client.force_login(self.user_no_dept)
-        response = self.client.get(reverse('waiting_room'))
+        response = self.client.get(reverse('central_dashboard'))
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'Waiting Room')
+        self.assertContains(response, 'My Dashboard')
         self.assertGreater(len(response.content.strip()), 0)
 
     def test_waiting_room_redirects_assigned_user(self):
-        """User with assigned department is redirected away from waiting room without loops."""
         self.client.force_login(self.officer_user)
-        response = self.client.get(reverse('waiting_room'))
-        self.assertEqual(response.status_code, 302)
-        self.assertEqual(response.headers['Location'], reverse('routing_view'))
-        
-        # Follow the entire redirection chain to ensure no infinite loop
-        chain_response = self.client.get(reverse('waiting_room'), follow=True)
-        self.assertEqual(chain_response.status_code, 200)
-        self.assertEqual(chain_response.redirect_chain, [
-            (reverse('routing_view'), 302),
-            (reverse('department_dashboard', args=[self.dept.id]), 302)
-        ])
+        response = self.client.get(reverse('waiting_room'), follow=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.redirect_chain, [(reverse('central_dashboard'), 302)])
 
     def test_google_oauth_urls(self):
         """Google OAuth login and callback URLs are properly registered and consistent."""
