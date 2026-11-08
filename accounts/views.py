@@ -14,6 +14,55 @@ from django.db.models import Count, Exists, OuterRef, Prefetch
 from .dashboard_context import FILTER_CHOICES, department_allowed, workflow_redirect, overview_department
 
 
+@login_required
+@require_http_methods(['GET', 'POST'])
+def account_settings(request):
+    from .forms import UsernameSettingsForm
+    from .signatures import signature_valid
+    from allauth.account.models import EmailAddress
+    from django.db import IntegrityError, OperationalError, connection
+    form = UsernameSettingsForm(request.POST if request.method == 'POST' else None, user=request.user)
+    if request.method == 'POST':
+        saved = False
+        try:
+            with transaction.atomic():
+                user = User.objects.select_for_update().get(pk=request.user.pk)
+                form = UsernameSettingsForm(request.POST, user=user)
+                if form.is_valid():
+                    username = form.cleaned_data['username']
+                    if username != user.username:
+                        user.username = username
+                        user.save(update_fields=['username'])
+                        record(user, 'user.username_changed', user)
+                    saved = True
+        except IntegrityError:
+            form.add_error('username', 'This username is no longer available. Please choose another.')
+        except OperationalError as error:
+            from sqlite3 import SQLITE_BUSY, SQLITE_LOCKED
+            code = getattr(error.__cause__, 'sqlite_errorcode', None)
+            locked = ((code & 255) in (SQLITE_BUSY, SQLITE_LOCKED) if code is not None else
+                      str(error).lower().partition(':')[0] in {
+                          'database is locked', 'database is busy',
+                          'database table is locked', 'database schema is locked',
+                      })
+            if connection.vendor != 'sqlite' or not locked:
+                raise
+            form.add_error(None, 'The account could not be saved right now. Please retry.')
+        else:
+            if saved:
+                messages.success(request, 'Username saved.')
+                return redirect('account_settings')
+    return render(request, 'accounts/account_settings.html', {
+        'form': form,
+        'email_addresses': EmailAddress.objects.filter(user=request.user).order_by('-primary', 'email'),
+        'memberships': Membership.objects.filter(user=request.user, department__is_active=True)
+            .select_related('department').order_by('department__name', 'department_id'),
+        'signature_ready': signature_valid(request.user),
+        'has_password': request.user.has_usable_password(),
+        'global_admin': is_global_admin(request.user),
+    })
+
+
 def onboarding_destination(request):
     from .invitations import pending_invitation
     from allauth.account.utils import has_verified_email

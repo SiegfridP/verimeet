@@ -4,6 +4,25 @@ from .models import User
 from .signatures import validate_signature_upload
 
 
+def clean_account_username(value, user):
+    get_adapter().clean_username(value, shallow=True)
+    if User.objects.filter(username__iexact=value).exclude(pk=user.pk).exists():
+        raise forms.ValidationError('This username is already in use.')
+    return value
+
+
+class UsernameSettingsForm(forms.Form):
+    username = forms.CharField(max_length=150, label='Username')
+
+    def __init__(self, *args, user, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.user = user
+        self.fields['username'].initial = user.username
+
+    def clean_username(self):
+        return clean_account_username(self.cleaned_data['username'], self.user)
+
+
 class OnboardingForm(forms.Form):
     username = forms.CharField(max_length=150)
     signature = forms.FileField(label='PNG signature')
@@ -19,11 +38,7 @@ class OnboardingForm(forms.Form):
             self.fields.pop('signature')
 
     def clean_username(self):
-        value = self.cleaned_data['username']
-        get_adapter().clean_username(value, shallow=True)
-        if User.objects.filter(username__iexact=value).exclude(pk=self.user.pk).exists():
-            raise forms.ValidationError('This username is already in use.')
-        return value
+        return clean_account_username(self.cleaned_data['username'], self.user)
 
     def clean_signature(self):
         upload = self.cleaned_data['signature']

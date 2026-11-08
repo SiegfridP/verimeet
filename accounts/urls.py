@@ -3,6 +3,7 @@ from django.views.generic import RedirectView
 from . import views
 
 urlpatterns = [
+    path('settings/', views.account_settings, name='account_settings'),
     path('onboarding/', views.onboarding, name='onboarding'),
     path('signature/preview/', views.signature_preview, name='signature_preview'),
     path('department/create/', views.create_department, name='create_department'),
