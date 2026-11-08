@@ -115,10 +115,14 @@ class AccountSettingsTests(TestCase):
         token = client.cookies['csrftoken'].value
         client.post(target, {'email': other.email, 'action_send': '', 'csrfmiddlewaretoken': token})
         self.assertEqual(len(mail.outbox), 0)
-        for attempt in range(2):
-            client.post(target, {'email': address.email, 'action_send': '', 'csrfmiddlewaretoken': token})
-            self.assertEqual(len(mail.outbox), 1)
-        self.assertEqual(mail.outbox[0].to, [address.email])
+        from .verification_delivery import enqueue
+        from .models import VerificationEmailDelivery
+        with patch('accounts.verification_delivery.enqueue', wraps=enqueue) as queued:
+            for attempt in range(2):
+                client.post(target, {'email': address.email, 'action_send': '', 'csrfmiddlewaretoken': token})
+                self.assertEqual(len(mail.outbox), 0)
+            self.assertEqual(queued.call_count, 1)  # Cooldown, not just outbox coalescing.
+        self.assertEqual(VerificationEmailDelivery.objects.get().recipient, address.email)
 
     def test_username_change_and_audit_preserve_other_fields(self):
         before = User.objects.values().get(pk=self.user.pk)

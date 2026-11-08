@@ -41,6 +41,9 @@ def change_account_status(actor, target_id, active, expected_active=None, expect
         target.session_version += 1
         models.QuerySet.update(User.objects.filter(pk=target.pk), is_active=target.is_active,
                                session_version=target.session_version)
+        if not active:
+            from .verification_delivery import cancel, Delivery
+            cancel(Delivery.objects.filter(original_user_id=target.pk))
         record(current_actor, 'user.activation_changed', target,
                metadata={'previous_status': previous, 'new_status': active})
         return True

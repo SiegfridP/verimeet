@@ -15,6 +15,10 @@ class OnboardingSocialAdapter(DefaultSocialAccountAdapter):
 
 
 class InvitationAccountAdapter(DefaultAccountAdapter):
+    def send_confirmation_mail(self, request, emailconfirmation, signup):
+        from .verification_delivery import enqueue
+        enqueue(emailconfirmation.email_address, signup=signup)
+
     def post_login(self, request, user, **kwargs):
         destination = pending_invitation_url(request)
         # Allauth carries explicit next through password login, signup and OAuth state.

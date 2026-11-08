@@ -183,6 +183,38 @@ class RoleElevationRequest(models.Model):
         return f"Elevation request for {self.target_user.email} in {self.department.name} – {self.get_status_display()}"
 
 
+def verification_delivery_expiry():
+    return timezone.now() + timedelta(days=3)
+
+
+class VerificationEmailDelivery(models.Model):
+    address = models.ForeignKey('account.EmailAddress', null=True, on_delete=models.SET_NULL)
+    original_address_id = models.PositiveBigIntegerField()
+    original_user_id = models.PositiveBigIntegerField()
+    recipient = models.EmailField(max_length=254)
+    session_version = models.PositiveBigIntegerField()
+    signup = models.BooleanField(default=False)
+    status = models.CharField(max_length=12, default='pending', choices=[(s, s) for s in
+        ('pending', 'processing', 'submitted', 'failed', 'cancelled', 'expired')])
+    attempts = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField(default=verification_delivery_expiry)
+    next_attempt_at = models.DateTimeField(default=timezone.now)
+    last_attempt_at = models.DateTimeField(null=True)
+    submitted_at = models.DateTimeField(null=True)
+    claim_id = models.UUIDField(null=True, unique=True)
+    lease_expires_at = models.DateTimeField(null=True)
+    last_error = models.CharField(max_length=100, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=['status', 'next_attempt_at'], name='verify_delivery_due'),
+                   models.Index(fields=['status', 'lease_expires_at'], name='verify_delivery_lease')]
+        constraints = [
+            models.UniqueConstraint(fields=['original_address_id'], condition=models.Q(status__in=['pending', 'processing']), name='verify_one_active'),
+            models.CheckConstraint(condition=(models.Q(status='processing', claim_id__isnull=False, lease_expires_at__isnull=False)
+                | (~models.Q(status='processing') & models.Q(claim_id__isnull=True, lease_expires_at__isnull=True))), name='verify_claim_state')]
+
+
 class InvitationDelivery(models.Model):
     STATUS_CHOICES = [(value, value.title()) for value in
                       ('pending', 'processing', 'submitted', 'failed', 'cancelled', 'expired')]
