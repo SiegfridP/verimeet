@@ -1,0 +1,22 @@
+{% extends "account/login.html" %}
+{% load static %}
+
+{% block extra_head %}
+{{ block.super }}
+<link rel="stylesheet" href="{% static 'css/login.css' %}">
+{% endblock %}
+
+{% block body_class %}vm-auth vm-login{% endblock %}
+
+{% block content %}
+<div class="vm-login-layout">
+  <div class="vm-login-branding">
+    <p class="vm-login-wordmark">VeriMeet</p>
+    <p class="vm-login-slogan">Every meeting matters.</p>
+    <p class="vm-login-description">Document decisions, manage attendance, and verify meeting records—all in one place.</p>
+  </div>
+  <div class="vm-login-card">
+    {{ block.super }}
+  </div>
+</div>
+{% endblock %}

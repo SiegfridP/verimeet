@@ -1,0 +1,66 @@
+/* Public login only; other account pages retain their existing shell. */
+.vm-login .vm-content {
+  width: 100%;
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: clamp(2rem, 7vh, 5rem) 2rem;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.vm-login-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  align-items: center;
+  gap: clamp(2rem, 6vw, 5rem);
+  min-height: calc(100svh - 15rem);
+}
+.vm-login-branding, .vm-login-card { min-width: 0; }
+.vm-login .vm-login-wordmark {
+  margin: 0 0 1rem;
+  color: var(--nav);
+  font-size: clamp(3rem, 5vw, 3.75rem);
+  font-weight: 750;
+  line-height: 1.1;
+  letter-spacing: -.05em;
+}
+.vm-login .vm-login-slogan {
+  margin: 0 0 1rem;
+  color: var(--primary-ink);
+  font-size: clamp(1.35rem, 2.4vw, 1.85rem);
+  font-weight: 600;
+  line-height: 1.35;
+}
+.vm-login .vm-login-description {
+  max-width: 38ch;
+  margin: 0;
+  color: var(--muted);
+  font-size: 1.1rem;
+}
+.vm-login-card {
+  width: 100%;
+  max-width: 440px;
+  justify-self: end;
+  padding: 1.75rem;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px #101c2e0d, 0 2px 6px #101c2e08;
+}
+.vm-login-card h1 { color: var(--nav); margin-top: 0; }
+.vm-login-card h2 { font-size: 1.1rem; }
+.vm-login-card form p { margin: .8rem 0; }
+.vm-login-card form p:has(input[type=checkbox]) { display: flex; align-items: center; gap: .6rem; }
+.vm-login-card input[type=checkbox] { order: -1; }
+.vm-login .vm-login-card form { margin-top: 1.25rem; }
+.vm-login-card button[type=submit] { width: 100%; }
+.vm-login-card ul { padding-left: 1.25rem; }
+.vm-login-card hr { border: 0; border-top: 1px solid var(--border); margin: 1.25rem 0; }
+@media (max-width: 700px) {
+  .vm-login .vm-content { padding: 2rem 1rem; }
+  .vm-login-layout { grid-template-columns: minmax(0, 1fr); gap: 2rem; min-height: 0; }
+  .vm-login-branding { text-align: center; }
+  .vm-login .vm-login-description { margin-inline: auto; }
+  .vm-login-card { justify-self: center; padding: 1.5rem; }
+}
