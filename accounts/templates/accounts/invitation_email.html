@@ -1,0 +1,10 @@
+{% extends "accounts/email/base.html" %}
+{% block content %}
+<p>You are invited to join {{ department.name }} as an Officer.</p>
+<p><a href="{{ acceptance_url }}">Review and accept invitation</a></p>
+<p style="overflow-wrap:anywhere;word-break:break-word;">{{ acceptance_url }}</p>
+<p>This invitation expires seven days after creation, at {{ invitation.expires_at|date:"c" }}.</p>
+<p>Log in or register using the invited email address. You must verify that email address before accepting. A verified secondary address on your account also qualifies.</p>
+<p>Opening the link does not accept the invitation; you must confirm acceptance. If you lose your session, reopen this original link to resume.</p>
+<p>If you did not expect this invitation, you may ignore it.</p>
+{% endblock %}

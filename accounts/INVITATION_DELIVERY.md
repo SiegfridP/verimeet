@@ -32,3 +32,5 @@ Pending/processing deliveries are cancelled before ORM invitation deletion, incl
 replacement and parent cascades. SET_NULL retains their history. Failed, expired and
 submitted history is retained unchanged. Old tokens are never copied into delivery rows.
 Acceptance, authentication and verified-email checks remain independent of delivery state.
+
+Production configuration and scheduling checklist: [EMAIL_DEPLOYMENT.md](EMAIL_DEPLOYMENT.md).

@@ -29,8 +29,8 @@ Run a finite processor regularly:
     python manage.py process_verification_deliveries --base-url https://trusted.example --limit 100
 
 Limit is 1..1000. An explicit trusted HTTP(S) origin is required, with no credentials,
-path, query or fragment. Keep the configured Django Site consistent with that
-origin for existing Allauth message context. HMAC link mode is required; switching
+path, query or fragment. In production it must match APPLICATION_ORIGIN;
+Django Sites is not enabled. See EMAIL_DEPLOYMENT.md for canonical mail links. HMAC link mode is required; switching
 to verification codes or database-backed confirmation keys requires a separately
 reviewed integration. No settings are changed automatically.
 
@@ -78,3 +78,5 @@ Workstream 10 must establish the production origin/Site, mail provider credentia
 timeouts, sender configuration and delivery monitoring. Scheduling this finite
 command is an operational prerequisite, not implemented here. Console and in-memory
 backends do not deliver inbox mail. No public status or retry endpoint is introduced.
+
+Production configuration and scheduling checklist: [EMAIL_DEPLOYMENT.md](EMAIL_DEPLOYMENT.md).

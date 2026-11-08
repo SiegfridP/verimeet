@@ -53,6 +53,8 @@ def retire(pk, now):
 
 
 def validate_configuration(base_url):
+    from core.email_config import worker_origin
+    base_url = worker_origin(base_url)
     parsed = urlsplit(base_url)
     if (parsed.scheme not in ('http', 'https') or not parsed.hostname or parsed.username or parsed.password
             or parsed.query or parsed.fragment or parsed.path not in ('', '/') or any(c.isspace() for c in base_url)):

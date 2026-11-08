@@ -18,6 +18,8 @@ def eligible(now):
 
 
 def validate_configuration(base_url):
+    from core.email_config import worker_origin
+    base_url = worker_origin(base_url)
     parsed = urlsplit(base_url)
     if parsed.scheme not in ('http', 'https') or not parsed.netloc or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in ('', '/'):
         raise ValueError('A trusted HTTP(S) site origin is required.')
@@ -68,9 +70,11 @@ def process_one(pk, base_url):
         return status if finish(pk, owner, status) else None
     if delivery.attempts > maximum:
         return 'failed' if finish(pk, owner, 'failed', last_error='Attempt limit reached.') else None
-    body = render_to_string('accounts/invitation_email.txt', {
+    context = {
         'department': invitation.department, 'invitation': invitation,
-        'acceptance_url': base_url.rstrip('/') + reverse('accept_invitation', args=[invitation.token])})
+        'acceptance_url': base_url.rstrip('/') + reverse('accept_invitation', args=[invitation.token])}
+    body = render_to_string('accounts/invitation_email.txt', context)
+    html = render_to_string('accounts/invitation_email.html', context)
     # Recheck the claim and lifecycle just before network I/O; in-flight mail cannot be recalled.
     current = InvitationDelivery.objects.select_related('invitation__department').filter(
         pk=pk, status='processing', claim_id=owner, lease_expires_at__gt=timezone.now()).first()
@@ -80,8 +84,8 @@ def process_one(pk, base_url):
     if status:
         return status if finish(pk, owner, status) else None
     try:
-        if send_mail('VeriMeet Officer invitation', body, settings.DEFAULT_FROM_EMAIL,
-                     [invitation.email], fail_silently=False) != 1:
+        if send_mail('VeriMeet — Officer invitation', body, settings.DEFAULT_FROM_EMAIL,
+                     [invitation.email], fail_silently=False, html_message=html) != 1:
             raise RuntimeError('Backend did not report submission.')
     except Exception:
         # SMTP may already have accepted it. Retry the same token; never store raw errors.

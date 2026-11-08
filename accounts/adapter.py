@@ -15,6 +15,58 @@ class OnboardingSocialAdapter(DefaultSocialAccountAdapter):
 
 
 class InvitationAccountAdapter(DefaultAccountAdapter):
+    def render_mail(self, template_prefix, email, context, headers=None):
+        from django.conf import settings
+        from django.core.exceptions import ImproperlyConfigured
+        from django.http.request import validate_host
+        from urllib.parse import urlsplit
+        import re
+        import unicodedata
+        from core.email_config import origin
+
+        variables = {
+            'account/email/email_confirmation_signup': 'activate_url',
+            'account/email/email_confirmation': 'activate_url',
+            'account/email/password_reset_key': 'password_reset_url',
+            'account/email/unknown_account': 'signup_url',
+            'account/email/account_already_exists': 'password_reset_url',
+        }
+        name = variables.get(template_prefix)
+        if name is not None:
+            canonical = getattr(settings, 'APPLICATION_ORIGIN', '')
+            if canonical or getattr(settings, 'EMAIL_PRODUCTION', False):
+                canonical = origin(canonical, getattr(settings, 'EMAIL_PRODUCTION', False))
+            try:
+                source = context[name]
+                if (not isinstance(source, str) or not source
+                        or any(c.isspace() or unicodedata.category(c).startswith('C') for c in source)
+                        or '#' in source or "\\" in source
+                        or re.search(r'%(?![0-9a-fA-F]{2})', source)
+                        or re.search(r'%(?:0[0-9a-f]|1[0-9a-f]|7f)', source, re.I)):
+                    raise ValueError
+                parts = urlsplit(source)
+                # Reuse strict authority validation, allowing HTTP source links even
+                # when production rewrites them to canonical HTTPS.
+                origin(parts.scheme + '://' + parts.netloc)
+                if parts.port is not None and not 1 <= parts.port <= 65535:
+                    raise ValueError
+                trusted = [host for host in settings.ALLOWED_HOSTS if host != '*']
+                if canonical:
+                    trusted.append(urlsplit(canonical).hostname)
+                if not validate_host(parts.hostname.lower(), trusted):
+                    raise ValueError
+                if canonical:
+                    # Slice the original suffix to preserve even empty query markers,
+                    # escaping and token bytes; never parse/re-encode the query.
+                    authority = re.match(r'https?://[^/?#]+', source, re.I)
+                    if authority is None:
+                        raise ValueError
+                    context = dict(context)
+                    context[name] = canonical + source[authority.end():]
+            except (KeyError, ValueError, TypeError, ImproperlyConfigured):
+                raise ImproperlyConfigured('Invalid application URL in supported account email.') from None
+        return super().render_mail(template_prefix, email, context, headers=headers)
+
     def send_confirmation_mail(self, request, emailconfirmation, signup):
         from .verification_delivery import enqueue
         enqueue(emailconfirmation.email_address, signup=signup)

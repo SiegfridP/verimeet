@@ -1,0 +1,7 @@
+VeriMeet
+
+Hello,
+
+{% block content %}{% endblock %}
+
+This is an automated notification from VeriMeet.
