@@ -3,6 +3,20 @@ from django.contrib.auth.admin import UserAdmin
 from .models import User, Department, Membership
 from django.db import transaction
 from .audit import record
+from django import forms
+from django.db import models
+from django.contrib.auth.forms import UserChangeForm
+from .signatures import validate_signature_upload
+
+
+class SignatureUserChangeForm(UserChangeForm):
+    # A bounded FileField validates before saving; storage enforces the same
+    # policy even when callers bypass forms or model full_clean().
+    signature_image = forms.FileField(required=False, widget=forms.FileInput,
+                                      validators=[validate_signature_upload])
+
+    class Meta(UserChangeForm.Meta):
+        model = User
 
 @admin.register(Department)
 class DepartmentAdmin(admin.ModelAdmin):
@@ -41,6 +55,9 @@ class DepartmentAdmin(admin.ModelAdmin):
 
 @admin.register(User)
 class CustomUserAdmin(UserAdmin):
+    form = SignatureUserChangeForm
+    # Generic file widgets must never ask private storage for a public URL.
+    formfield_overrides = {models.ImageField: {'widget': forms.FileInput}}
     list_display = ('username', 'email', 'department', 'is_admin')
     list_filter = ('department', 'is_admin')
     fieldsets = UserAdmin.fieldsets + (

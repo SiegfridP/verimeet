@@ -14,6 +14,94 @@ from django.db.models import Count, Exists, OuterRef, Prefetch
 from .dashboard_context import FILTER_CHOICES, department_allowed, workflow_redirect, overview_department
 
 
+def onboarding_destination(request):
+    from .invitations import pending_invitation
+    from allauth.account.utils import has_verified_email
+    from django.urls import reverse
+    invitation = pending_invitation(request)
+    saved = request.session.pop('onboarding_invitation', None)
+    if (isinstance(saved, list) and len(saved) == 2 and saved[1] == request.user.pk
+            and isinstance(saved[0], str) and 0 < len(saved[0]) <= 64):
+        candidate = Invitation.objects.filter(token=saved[0], accepted=False, department__is_active=True).first()
+        if candidate and candidate.is_valid() and has_verified_email(request.user, candidate.email):
+            return reverse('accept_invitation', args=[candidate.token])
+    if (invitation and request.session.get('invite_verification_intent') == [invitation.token, request.user.pk]
+            and has_verified_email(request.user, invitation.email)):
+        return reverse('accept_invitation', args=[invitation.token])
+    return reverse('central_dashboard')
+
+
+@login_required
+@require_http_methods(['GET', 'POST'])
+def onboarding(request):
+    from .forms import OnboardingForm
+    from .signatures import signature_valid
+    if is_global_admin(request.user):
+        return redirect('admin_dashboard')
+    valid = signature_valid(request.user)
+    form = OnboardingForm(request.POST if request.method == 'POST' else None, request.FILES or None,
+                          user=request.user, needs_signature=not valid)
+    if request.method == 'POST':
+        stored = None
+        storage = request.user.signature_image.storage
+        saved = False
+        try:
+            with transaction.atomic():
+                user = User.objects.select_for_update().get(pk=request.user.pk)
+                valid = signature_valid(user)
+                # Requirements may have changed since the initial form was built.
+                # Validate only this fresh form, before consuming the upload.
+                form = OnboardingForm(request.POST, request.FILES or None,
+                                      user=user, needs_signature=not valid)
+                if form.is_valid():
+                    if user.username_confirmation_required or not user.username:
+                        user.username = form.cleaned_data['username']
+                        user.username_confirmation_required = False
+                    if not valid:
+                        upload = form.cleaned_data['signature']
+                        stored = storage.save(upload.name, upload)
+                        user.signature_image = stored
+                        user.signature_validation_hash = ''
+                        user.signature_validated = False
+                    user.save(update_fields=['username', 'username_confirmation_required', 'signature_image',
+                                             'signature_validation_hash', 'signature_validated'])
+                    if not user.username or user.username_confirmation_required or not signature_valid(user):
+                        raise ValueError('Incomplete saved onboarding')
+                    saved = True
+        except Exception:
+            if stored:
+                try:
+                    storage.delete(stored)
+                except OSError:
+                    pass  # An unreferenced private file is safer than losing the form response.
+            request.user.refresh_from_db(fields=['username', 'username_confirmation_required',
+                'signature_image', 'signature_validation_hash', 'signature_validated'])
+            valid = signature_valid(request.user)
+            # Rollback or external file changes may have changed the requirements.
+            # Start a fresh form rather than reusing consumed upload streams.
+            form = OnboardingForm({}, user=request.user, needs_signature=not valid)
+            form.add_error(None, 'Could not save onboarding. Please review the current requirements and retry.')
+        else:
+            if saved:
+                messages.success(request, 'Account onboarding complete. Your signature preview is available on My Dashboard.')
+                return redirect(onboarding_destination(request))
+    return render(request, 'accounts/onboarding.html', {'form': form, 'signature_ready': valid})
+
+
+@login_required
+@require_http_methods(['GET', 'HEAD'])
+def signature_preview(request):
+    from .signatures import validated_signature_data
+    from django.http import HttpResponse, Http404
+    data = validated_signature_data(request.user)
+    if data is None:
+        raise Http404
+    response = HttpResponse(data, content_type='image/png')
+    response['Cache-Control'] = 'private, no-store'
+    response['X-Content-Type-Options'] = 'nosniff'
+    return response
+
+
 def meeting_list_context(request, queryset, officer=False):
     """Filter an already authorized meeting scope; personal data is always user-bound."""
     from meetings.models import Attendance

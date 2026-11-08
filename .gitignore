@@ -28,6 +28,7 @@ db.sqlite3.backup
 
 # Media and User Uploads (Personal signatures, documents)
 media/
+private-signatures/
 media/*
 !media/.gitkeep
 

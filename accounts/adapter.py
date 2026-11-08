@@ -2,6 +2,16 @@ from allauth.account.adapter import DefaultAccountAdapter
 from allauth.account.utils import get_next_redirect_url
 from django.urls import reverse
 from .invitations import pending_invitation, pending_invitation_url
+from allauth.socialaccount.adapter import DefaultSocialAccountAdapter
+
+
+class OnboardingSocialAdapter(DefaultSocialAccountAdapter):
+    def save_user(self, request, sociallogin, form=None):
+        if (sociallogin.account.provider == 'google'
+                and sociallogin.user._state.adding and not sociallogin.is_existing
+                and sociallogin.state.get('process') != 'connect'):
+            sociallogin.user.username_confirmation_required = True
+        return super().save_user(request, sociallogin, form)
 
 
 class InvitationAccountAdapter(DefaultAccountAdapter):

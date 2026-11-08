@@ -3,6 +3,7 @@ from django.contrib.auth.models import AbstractUser
 from django.core.validators import FileExtensionValidator
 from django.db.models.signals import post_save
 from django.dispatch import receiver
+from .signatures import SignatureStorage
 from meetings.crypto import generate_ecdsa_keypair, encrypt_private_key  # Updated to include encryption helper
 
 class Department(models.Model):
@@ -15,12 +16,16 @@ class Department(models.Model):
         return self.name
 
 class User(AbstractUser):
+    username_confirmation_required = models.BooleanField(default=False)
+    signature_validation_hash = models.CharField(max_length=64, blank=True)
+    signature_validated = models.BooleanField(default=False)
     # Multi-tenancy anchor (Nullable for the "Waiting Room" state)
     department = models.ForeignKey(Department, on_delete=models.SET_NULL, null=True, blank=True)
     is_admin = models.BooleanField(default=False)
     
     # Strict PNG requirement for signatures
     signature_image = models.ImageField(
+        storage=SignatureStorage(),
         upload_to='signatures/',
         validators=[FileExtensionValidator(allowed_extensions=['png'])],
         null=True, blank=True,

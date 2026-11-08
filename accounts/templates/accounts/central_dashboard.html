@@ -3,6 +3,7 @@
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>My Dashboard - VeriMeet</title></head>
 <body><main>
 <h1>My Dashboard</h1>
+{% if user.signature_validated %}<details><summary>Your signature preview</summary><img src="{% url 'signature_preview' %}" alt="Your saved signature" style="max-width:100%;max-height:200px;width:auto;height:auto"></details>{% endif %}
 {% include 'accounts/messages.html' %}
 <p>Select a department to view its dashboard.</p>
 <a href="{% url 'create_department' %}">Create Department</a>

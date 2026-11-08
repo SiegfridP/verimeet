@@ -74,6 +74,8 @@ LOGIN_REDIRECT_URL = '/accounts/route/'
 LOGOUT_REDIRECT_URL = '/'
 LOGIN_URL = 'account_login'
 ACCOUNT_ADAPTER = 'accounts.adapter.InvitationAccountAdapter'
+SOCIALACCOUNT_ADAPTER = 'accounts.adapter.OnboardingSocialAdapter'
+PRIVATE_SIGNATURE_ROOT = Path(os.getenv('PRIVATE_SIGNATURE_ROOT', str(BASE_DIR / 'private-signatures')))
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
@@ -84,6 +86,7 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'allauth.account.middleware.AccountMiddleware',
+    'accounts.middleware.OnboardingMiddleware',
 ]
 
 ROOT_URLCONF = 'core.urls'
