@@ -11,7 +11,11 @@ for SQLite, reloads authority and target flags, and commits status, revocation
 version and audit together. Admin role edits use the same locking order. Status
 changes preserve memberships, keys, invitations, retained assets and evidence.
 
-`session_version` increments on deactivation. It participates in Django's session
+`session_version` increments on every successful activation or deactivation.
+Reactivation therefore also revokes version-zero sessions belonging to legacy
+inactive accounts whose deactivation preceded version tracking. No-op requests
+do not increment the version or invalidate sessions of accounts remaining active.
+It participates in Django's session
 authentication hash, including secret-key fallback handling. Version zero keeps
 pre-deployment session compatibility; after revocation, old hashes never match,
 even following reactivation. Password and Google logins use existing backends;

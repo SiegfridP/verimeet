@@ -25,7 +25,7 @@ class AccountStatusTests(TestCase):
         self.assertFalse(change_account_status(self.actor, self.target.pk, False))
         self.assertTrue(change_account_status(self.actor, self.target.pk, True))
         after = User.objects.values().get(pk=self.target.pk)
-        self.assertEqual(after.pop('session_version'), 1)
+        self.assertEqual(after.pop('session_version'), 2)
         before.pop('session_version')
         self.assertEqual(before, after)
         self.assertEqual(Membership.objects.get(user=self.target).role, 'AP')
@@ -41,6 +41,10 @@ class AccountStatusTests(TestCase):
         for target in (self.actor, User.objects.create_user(username='super', is_superuser=True)):
             with self.assertRaises(PermissionDenied):
                 change_account_status(self.actor, target.pk, False)
+            target.refresh_from_db()
+            self.assertTrue(target.is_active)
+            self.assertEqual(target.session_version, 0)
+        self.assertFalse(AuditLog.objects.filter(event_type='user.activation_changed').exists())
         stale = User.objects.get(pk=self.actor.pk)
         User.objects.filter(pk=self.actor.pk).update(is_admin=False)
         with self.assertRaises(PermissionDenied):
@@ -81,6 +85,85 @@ class AccountStatusTests(TestCase):
         self.assertEqual(late.get(reverse('account_settings')).status_code, 302)
         self.assertNotIn('_auth_user_id', late.session)
         self.assertTrue(Client().login(username='target', password='test-password'))
+
+    def test_legacy_version_zero_sessions_stay_revoked_after_reactivation(self):
+        from django.conf import settings
+        from django.db import models
+        clients = [Client(), Client()]
+        for client in clients:
+            self.assertTrue(client.login(username='target', password='test-password'))
+        keys = [client.session.session_key for client in clients]
+        self.assertEqual(self.target.session_version, 0)
+        # Test-only fixture: simulate an older deactivation before migration 0009.
+        # Its sessions and password survive, with the migration's default version.
+        models.QuerySet.update(User.objects.filter(pk=self.target.pk), is_active=False)
+        self.assertFalse(clients[0].get(reverse('account_settings')).wsgi_request.user.is_authenticated)
+        self.assertFalse(Client().login(username='target', password='test-password'))
+        change_account_status(self.actor, self.target.pk, True, False, 0)
+        for key in keys:
+            restored = Client()
+            restored.cookies[settings.SESSION_COOKIE_NAME] = key
+            response = restored.get(reverse('account_settings'))
+            self.assertFalse(response.wsgi_request.user.is_authenticated)
+            self.assertNotIn('_auth_user_id', restored.session)
+        self.target.refresh_from_db()
+        self.assertEqual(self.target.session_version, 1)
+        fresh = Client()
+        self.assertTrue(fresh.login(username='target', password='test-password'))
+        self.assertTrue(fresh.get(reverse('account_settings')).wsgi_request.user.is_authenticated)
+
+    def test_every_transition_increments_but_noops_do_not(self):
+        expected_version = 0
+        previous_active = True
+        for active in (False, False, True, True, False, False, True, True):
+            with self.subTest(active=active, version=expected_version):
+                changed = change_account_status(self.actor, self.target.pk, active,
+                                                previous_active, expected_version)
+                self.assertEqual(changed, active != previous_active)
+                expected_version += int(changed)
+                self.target.refresh_from_db()
+                self.assertEqual(self.target.is_active, active)
+                self.assertEqual(self.target.session_version, expected_version)
+                self.assertEqual(AuditLog.objects.filter(event_type='user.activation_changed').count(), expected_version)
+                previous_active = active
+
+    def test_active_version_zero_noop_keeps_existing_session(self):
+        client = Client()
+        self.assertTrue(client.login(username='target', password='test-password'))
+        self.assertFalse(change_account_status(self.actor, self.target.pk, True, True, 0))
+        response = client.get(reverse('account_settings'))
+        self.assertTrue(response.wsgi_request.user.is_authenticated)
+        self.target.refresh_from_db()
+        self.assertEqual(self.target.session_version, 0)
+        self.assertFalse(AuditLog.objects.filter(event_type='user.activation_changed').exists())
+
+    def test_reactivation_audit_failure_rolls_back_activity_and_version(self):
+        change_account_status(self.actor, self.target.pk, False)
+        with patch('accounts.account_status.record', side_effect=IntegrityError):
+            with self.assertRaises(IntegrityError):
+                change_account_status(self.actor, self.target.pk, True, False, 1)
+        self.target.refresh_from_db()
+        self.assertFalse(self.target.is_active)
+        self.assertEqual(self.target.session_version, 1)
+        self.assertEqual(AuditLog.objects.filter(event_type='user.activation_changed').count(), 1)
+
+    def test_stale_version_after_reactivation_cannot_be_restored_by_ordinary_writes(self):
+        stale = User.objects.get(pk=self.target.pk)
+        change_account_status(self.actor, self.target.pk, False)
+        change_account_status(self.actor, self.target.pk, True)
+        stale.first_name = 'unrelated change'
+        stale.save()
+        stale.save(update_fields=['session_version', 'is_active'])
+        for field in ('session_version', 'is_active'):
+            with self.assertRaises(PermissionDenied):
+                User.objects.filter(pk=stale.pk).update(**{field: getattr(stale, field)})
+            with self.assertRaises(PermissionDenied):
+                User.objects.bulk_update([stale], [field])
+        self.target.refresh_from_db()
+        self.assertTrue(self.target.is_active)
+        self.assertEqual(self.target.session_version, 2)
+        self.assertEqual(self.target.first_name, 'unrelated change')
+        self.assertEqual(AuditLog.objects.filter(event_type='user.activation_changed').count(), 2)
 
     def test_stale_model_save_cannot_restore_revocation_version(self):
         stale = User.objects.get(pk=self.target.pk)

@@ -36,8 +36,9 @@ def change_account_status(actor, target_id, active, expected_active=None, expect
             return False
         previous = target.is_active
         target.is_active = active
-        if not active:
-            target.session_version += 1
+        # Reactivation also revokes legacy sessions whose older deactivation
+        # predated session-version tracking. No-ops return before this point.
+        target.session_version += 1
         models.QuerySet.update(User.objects.filter(pk=target.pk), is_active=target.is_active,
                                session_version=target.session_version)
         record(current_actor, 'user.activation_changed', target,
