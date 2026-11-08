@@ -115,6 +115,9 @@ def _finalize_meeting_internal(request, meeting_id):
             return HttpResponseBadRequest('Meeting department changed. Retry finalization.')
         department = meeting.department
 
+        if not department.is_active:
+            return HttpResponseForbidden('An active department is required.')
+
         # Server-side authorization check: Global Admin or AP of the department.
         if not is_global_admin(request.user) and not has_membership(request.user, department, role='AP'):
             return HttpResponseForbidden("You are not authorized to finalize meetings for this department.")
@@ -925,8 +928,11 @@ def edit_meeting(request, meeting_id):
     Authorized Personnel edits an existing Draft meeting within their authorized department.
     Enforces that finalized or locked meetings cannot be modified.
     """
-    meeting = get_object_or_404(Meeting.objects.select_for_update(), id=meeting_id)
+    meeting = get_object_or_404(Meeting, id=meeting_id)
     department = meeting.department
+
+    if not department.is_active:
+        return HttpResponseForbidden('An active department is required.')
 
     # Server-side authorization check: Global Admin or AP of the department
     if not is_global_admin(request.user) and not has_membership(request.user, department, role='AP'):
@@ -937,6 +943,19 @@ def edit_meeting(request, meeting_id):
         return HttpResponseForbidden("Cannot edit a locked or finalized meeting.")
 
     if request.method == 'POST':
+        from .roster import lock_departments
+        department_id = department.pk
+        lock_departments([department_id])
+        meeting = get_object_or_404(Meeting.objects.select_for_update(), id=meeting_id)
+        if meeting.department_id != department_id:
+            return HttpResponseBadRequest('Meeting department changed. Retry editing.')
+        department = meeting.department
+        if not department.is_active:
+            return HttpResponseForbidden('An active department is required.')
+        if not is_global_admin(request.user) and not has_membership(request.user, department, role='AP'):
+            return HttpResponseForbidden('You are not authorized to edit meetings for this department.')
+        if meeting.status != 'Draft':
+            return HttpResponseForbidden('Cannot edit a locked or finalized meeting.')
         form = MeetingEditForm(request.POST, instance=meeting)
         if form.is_valid():
             updated_meeting = meeting
