@@ -128,29 +128,13 @@ class ParticipantIntegrityTests(TestCase):
                          {self.officer.pk, self.second.pk})
 
 
-class CompletedAssignmentFixtures:
-    """Supply real completed PNG onboarding to older assignment fixtures."""
-    def setUp(self):
-        directory = TemporaryDirectory(); self.addCleanup(directory.cleanup)
-        setting = override_settings(PRIVATE_SIGNATURE_ROOT=directory.name)
-        setting.enable(); self.addCleanup(setting.disable)
-        super().setUp()
-        for user in User.objects.filter(is_admin=False, is_superuser=False):
-            user.signature_image.save('signature.png', ContentFile(png()))
-
-
-class ExistingAssignmentCompatibility(CompletedAssignmentFixtures, existing_tests.MeetingCreationAndAssignmentTests):
+class ExistingAssignmentCompatibility(existing_tests.MeetingCreationAndAssignmentTests):
     pass
 
 
-class ExistingAssignmentAuditCompatibility(CompletedAssignmentFixtures, TestCase):
+class ExistingAssignmentAuditCompatibility(TestCase):
     # Only the assignment-specific contract from the broader audit test class.
     def setUp(self):
-        directory = TemporaryDirectory(); self.addCleanup(directory.cleanup)
-        setting = override_settings(PRIVATE_SIGNATURE_ROOT=directory.name)
-        setting.enable(); self.addCleanup(setting.disable)
         existing_tests.Batch09StructuredAuditTests.setUp(self)
-        for user in User.objects.filter(is_admin=False, is_superuser=False):
-            user.signature_image.save('signature.png', ContentFile(png()))
 
     test_assignment_deltas_and_noop = existing_tests.Batch09StructuredAuditTests.test_assignment_deltas_and_noop

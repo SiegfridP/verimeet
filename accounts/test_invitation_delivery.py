@@ -14,11 +14,14 @@ from .invitation_delivery import claim, finish, process_one
     MAILERS={'default': {'BACKEND': 'django.core.mail.backends.locmem.EmailBackend'}})
 class InvitationDeliveryTests(TransactionTestCase):
     def setUp(self):
+        from .test_fixtures import signature_storage, complete_onboarding
+        signature_storage(self)
         self.department = Department.objects.create(name='Delivery')
         self.ap = User.objects.create_user(username='delivery-ap')
         self.officer = User.objects.create_user(username='delivery-officer')
         self.admin = User.objects.create_user(username='delivery-admin', is_admin=True)
         self.other = User.objects.create_user(username='other-ap')
+        complete_onboarding(self.ap, self.officer, self.other)
         other_dept = Department.objects.create(name='Other delivery')
         Membership.objects.create(user=self.ap, department=self.department, role='AP')
         Membership.objects.create(user=self.officer, department=self.department, role='O')

@@ -12,10 +12,13 @@ from meetings.models import AuditLog
 @override_settings(MAILERS={'default': {'BACKEND': 'django.core.mail.backends.locmem.EmailBackend'}})
 class Batch12Tests(TestCase):
     def setUp(self):
+        from .test_fixtures import signature_storage, complete_onboarding
+        signature_storage(self)
         self.department = Department.objects.create(name='Inviting department')
         self.ap = User.objects.create_user(username='ap')
         Membership.objects.create(user=self.ap, department=self.department, role='AP')
         self.user = User.objects.create_user(username='recipient', password='password')
+        complete_onboarding(self.ap, self.user)
         self.invite = Invitation.objects.create(email='recipient@example.com', department=self.department, inviter=self.ap)
         self.url = reverse('accept_invitation', args=[self.invite.token])
 
@@ -143,11 +146,38 @@ class Batch12Tests(TestCase):
         self.assertEqual(response.url, self.url)
         address = EmailAddress.objects.get(user__username='newrecipient', email=self.invite.email)
         self.assertFalse(address.verified)
+        self.assertFalse(Membership.objects.filter(user=address.user).exists())
+        self.invite.refresh_from_db()
+        self.assertFalse(self.invite.accepted)
         confirmation = reverse('account_confirm_email', args=[EmailConfirmationHMAC(address).key])
         response = self.client.post(confirmation)
         self.assertEqual(response.status_code, 302)
         self.assertEqual(response.url, self.url)
-        self.assertEqual(self.client.post(self.url).status_code, 302)
+
+        # Registration and email verification do not complete onboarding or join.
+        from .signatures import complete
+        from .test_onboarding import png
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        recipient = address.user
+        address.refresh_from_db()
+        self.assertTrue(address.verified)
+        self.assertFalse(complete(recipient))
+        self.assertFalse(Membership.objects.filter(user=recipient).exists())
+        self.assertEqual(self.client.post(self.url).status_code, 403)
+        self.assertRedirects(self.client.get(self.url), reverse('onboarding'))
+        response = self.client.post(reverse('onboarding'), {
+            'signature': SimpleUploadedFile('signature.png', png())})
+        self.assertRedirects(response, self.url)
+        recipient.refresh_from_db()
+        self.assertTrue(complete(recipient))
+        self.invite.refresh_from_db()
+        self.assertFalse(self.invite.accepted)
+        self.assertFalse(Membership.objects.filter(user=recipient).exists())
+        self.assertContains(self.client.get(self.url), 'Accept invitation')
+        self.assertRedirects(self.client.post(self.url), reverse('department_dashboard', args=[self.department.pk]))
+        self.invite.refresh_from_db()
+        self.assertTrue(self.invite.accepted)
+        self.assertEqual(Membership.objects.get(user=recipient, department=self.department).role, 'O')
 
     def test_conditional_consumption_loser(self):
         from django.db.models.query import QuerySet
@@ -172,7 +202,9 @@ class Batch12Tests(TestCase):
         self.assertEqual(finish.call_args.kwargs['redirect_url'], self.url)
 
     def test_unrelated_login_destinations(self):
-        User.objects.create_user(username='other', password='password')
+        from .test_fixtures import complete_onboarding
+        other = User.objects.create_user(username='other', password='password')
+        complete_onboarding(other)
         for username in ('recipient', 'other'):
             for target in (None, '/accounts/waiting-room/'):
                 self.client.logout()

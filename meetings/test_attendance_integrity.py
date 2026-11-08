@@ -12,9 +12,12 @@ from .admin import AttendanceAdmin, AttendanceAdminForm
 
 class AttendanceIntegrityTests(TestCase):
     def setUp(self):
+        from accounts.test_fixtures import signature_storage, complete_onboarding
+        signature_storage(self)
         self.dept = Department.objects.create(name='Integrity')
         self.admin = User.objects.create_superuser(username='root', password='test')
         self.officer = User.objects.create_user(username='officer')
+        complete_onboarding(self.officer)
         Membership.objects.create(user=self.officer, department=self.dept, role='O')
         self.meeting = Meeting.objects.create(department=self.dept, title='Record', status='Finished')
         self.archived = Meeting.objects.create(department=self.dept, title='Archive', status='Archived')

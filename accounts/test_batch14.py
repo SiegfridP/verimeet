@@ -12,7 +12,10 @@ from meetings.models import Meeting, Attendance, VerificationQR, AuditLog
 
 class Batch14Tests(TestCase):
     def setUp(self):
+        from .test_fixtures import signature_storage, complete_onboarding
+        signature_storage(self)
         self.user = User.objects.create_user(username='creator')
+        complete_onboarding(self.user)
         self.admin = User.objects.create_user(username='global', is_admin=True)
         self.dept = Department.objects.create(name='Private', contact_email='private@example.com')
         self.client.force_login(self.user)
@@ -36,10 +39,13 @@ class Batch14Tests(TestCase):
         self.assertFalse(AuditLog.objects.exists())
 
     def test_creation_audit_failure_rolls_back(self):
-        with patch('accounts.views.record', side_effect=RuntimeError):
-            self.client.post(reverse('create_department'), {'name': 'Failed audit', 'contact_email': 'x@example.com'})
+        with patch('accounts.views.record', side_effect=RuntimeError) as record:
+            response = self.client.post(reverse('create_department'), {'name': 'Failed audit', 'contact_email': 'x@example.com'})
+        record.assert_called_once()
+        self.assertContains(response, 'could not be created')
         self.assertFalse(Department.objects.filter(name='Failed audit').exists())
         self.assertFalse(Membership.objects.filter(user=self.user).exists())
+        self.assertFalse(AuditLog.objects.exists())
 
     def test_creation_auth_csrf_duplicate(self):
         self.client.logout()

@@ -126,6 +126,8 @@ class RoutingAndAuthTests(TestCase):
 
 class MultiDepartmentAndRBACTests(TestCase):
     def setUp(self):
+        from .test_fixtures import signature_storage, complete_onboarding
+        signature_storage(self)
         self.client = Client()
         self.dept_a = Department.objects.create(name='Dept Alpha', contact_email='alpha@example.com')
         self.dept_b = Department.objects.create(name='Dept Beta', contact_email='beta@example.com')
@@ -153,6 +155,7 @@ class MultiDepartmentAndRBACTests(TestCase):
             password='password123'
         )
         Membership.objects.create(user=self.regular_officer, department=self.dept_b, role='O')
+        complete_onboarding(self.ap_user_a, self.multi_user, self.regular_officer)
 
     def test_multi_department_membership_roles(self):
         """User can have different roles in different departments."""
@@ -205,6 +208,8 @@ class MultiDepartmentAndRBACTests(TestCase):
 
         # Accept as a new user
         new_user = User.objects.create_user(username='new_officer', password='password123')
+        from .test_fixtures import complete_onboarding
+        complete_onboarding(new_user)
         self.client.force_login(new_user)
         EmailAddress.objects.create(user=new_user, email=inv.email, verified=True)
         r_accept = self.client.post(reverse('accept_invitation', args=[inv.token]))
@@ -244,6 +249,8 @@ class MultiDepartmentAndRBACTests(TestCase):
         from accounts.models import Invitation
         inv = Invitation.objects.create(email='legacy@example.com', department=self.dept_a, inviter=self.ap_user_a, role='S')
         new_user = User.objects.create_user(username='legacy_user', password='password123')
+        from .test_fixtures import complete_onboarding
+        complete_onboarding(new_user)
         self.client.force_login(new_user)
 
         EmailAddress.objects.create(user=new_user, email=inv.email, verified=True)

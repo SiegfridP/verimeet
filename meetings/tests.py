@@ -4,9 +4,11 @@ from django.urls import reverse
 from accounts.models import Department, User, Membership
 from meetings.models import Meeting, Attendance, AuditLog, QRSession, QRUsage
 from meetings.crypto import generate_hmac_qr_token
+from accounts.test_fixtures import signature_storage, complete_onboarding
 
 class MeetingRoutingAndSecurityTests(TestCase):
     def setUp(self):
+        signature_storage(self)
         self.client = Client()
         self.dept = Department.objects.create(name='Engineering', contact_email='eng@example.com')
         # Authorized Personnel for Engineering
@@ -44,6 +46,7 @@ class MeetingRoutingAndSecurityTests(TestCase):
             password='password123'
         )
         Membership.objects.create(user=self.other_user, department=self.other_dept, role='O')
+        complete_onboarding(self.ap_user, self.officer_user, self.unassigned_officer, self.other_user)
 
         self.draft_meeting = Meeting.objects.create(
             department=self.dept,
@@ -294,6 +297,7 @@ class MeetingRoutingAndSecurityTests(TestCase):
 
 class MeetingCreationAndAssignmentTests(TestCase):
     def setUp(self):
+        signature_storage(self)
         self.client = Client()
         self.dept = Department.objects.create(name='Computer Science', contact_email='cs@example.com')
         self.other_dept = Department.objects.create(name='Mechanical Engineering', contact_email='me@example.com')
@@ -319,6 +323,7 @@ class MeetingCreationAndAssignmentTests(TestCase):
         # Officer in Other Dept
         self.officer_other = User.objects.create_user(username='officer_other', password='password123', email='other@example.com')
         Membership.objects.create(user=self.officer_other, department=self.other_dept, role='O')
+        complete_onboarding(self.ap_user, self.ap_other, self.officer1, self.officer2, self.officer_other)
 
     def test_authorized_ap_create_meeting_success(self):
         """Authorized AP can create a valid meeting with assigned participants and audit log."""
@@ -604,6 +609,7 @@ class MeetingCreationAndAssignmentTests(TestCase):
 
 class Batch04DraftEditingReviewFinalizationTests(TestCase):
     def setUp(self):
+        signature_storage(self)
         self.dept = Department.objects.create(name='Physics', contact_email='physics@example.com')
         self.other_dept = Department.objects.create(name='Chemistry', contact_email='chem@example.com')
 
@@ -630,6 +636,7 @@ class Batch04DraftEditingReviewFinalizationTests(TestCase):
             password='password123'
         )
         Membership.objects.create(user=self.officer, department=self.dept, role='O')
+        complete_onboarding(self.ap_user, self.other_ap, self.officer)
 
         self.draft_meeting = Meeting.objects.create(
             department=self.dept,
@@ -1232,6 +1239,7 @@ class Batch05DocumentIntegrityTests(TestCase):
     minutes content, and annotation, and that legacy payload verification is supported."""
 
     def setUp(self):
+        signature_storage(self)
         from meetings.crypto import generate_ecdsa_keypair, encrypt_private_key
         self.dept = Department.objects.create(name='Integrity Dept', contact_email='i@example.com')
         self.other_dept = Department.objects.create(name='Other Integrity Dept', contact_email='oi@example.com')
@@ -1239,6 +1247,7 @@ class Batch05DocumentIntegrityTests(TestCase):
         Membership.objects.create(user=self.ap, department=self.dept, role='AP')
         self.officer = User.objects.create_user(username='integrity_officer', password='pw')
         Membership.objects.create(user=self.officer, department=self.dept, role='O')
+        complete_onboarding(self.ap, self.officer)
 
         # Give the officer a fresh ECDSA key pair so we control it
         priv_pem, pub_pem = generate_ecdsa_keypair()
@@ -1458,6 +1467,7 @@ class Batch05SigningWorkflowTests(TestCase):
     """Integration tests for the sign_meeting view and its cryptographic output."""
 
     def setUp(self):
+        signature_storage(self)
         self.client = Client()
         from meetings.crypto import generate_ecdsa_keypair, encrypt_private_key
 
@@ -1482,6 +1492,7 @@ class Batch05SigningWorkflowTests(TestCase):
 
         self.unassigned = User.objects.create_user(username='unassigned_officer', password='pw')
         Membership.objects.create(user=self.unassigned, department=self.dept, role='O')
+        complete_onboarding(self.ap, self.officer, self.other_officer, self.unassigned)
 
         self.finished_meeting = Meeting.objects.create(
             department=self.dept,
@@ -1717,6 +1728,7 @@ class Batch05VerifySignatureViewTests(TestCase):
     both canonical and legacy backward-compatible verification."""
 
     def setUp(self):
+        signature_storage(self)
         self.client = Client()
         import json
         from meetings.crypto import generate_ecdsa_keypair, encrypt_private_key, sign_document_data
@@ -1741,6 +1753,7 @@ class Batch05VerifySignatureViewTests(TestCase):
 
         self.other_ap = User.objects.create_user(username='other_ap', password='pw')
         Membership.objects.create(user=self.other_ap, department=self.other_dept, role='AP')
+        complete_onboarding(self.ap, self.officer, self.other_ap)
 
         self.meeting = Meeting.objects.create(
             department=self.dept,
@@ -1879,6 +1892,7 @@ class Batch06AttendanceAndAnnotationTests(TestCase):
     """Targeted tests for Batch 06: Attendance records, annotations, and role-based permissions."""
 
     def setUp(self):
+        signature_storage(self)
         from meetings.crypto import generate_ecdsa_keypair, encrypt_private_key
 
         self.dept = Department.objects.create(name='Dept 06', contact_email='dept06@example.com')
@@ -1920,6 +1934,8 @@ class Batch06AttendanceAndAnnotationTests(TestCase):
         # Unassigned Officer in Dept 06
         self.unassigned_officer = User.objects.create_user(username='unassigned_06', password='pw')
         Membership.objects.create(user=self.unassigned_officer, department=self.dept, role='O')
+        complete_onboarding(self.ap, self.other_ap, self.officer1, self.officer2,
+                            self.other_officer, self.unassigned_officer)
 
         # Finished Meeting in Dept 06
         self.meeting = Meeting.objects.create(
@@ -2404,6 +2420,7 @@ class Batch07QRAttendanceAndSigningTests(TestCase):
     """Targeted tests for Batch 07: QR Attendance, QR Signing, token lifecycle, and purpose separation."""
 
     def setUp(self):
+        signature_storage(self)
         from meetings.crypto import generate_ecdsa_keypair, encrypt_private_key
 
         self.dept = Department.objects.create(name='Dept 07', contact_email='dept07@example.com')
@@ -2445,6 +2462,8 @@ class Batch07QRAttendanceAndSigningTests(TestCase):
         # Officer in Other Dept
         self.other_officer = User.objects.create_user(username='other_officer_07', password='pw')
         Membership.objects.create(user=self.other_officer, department=self.other_dept, role='O')
+        complete_onboarding(self.ap, self.other_ap, self.officer1, self.officer2,
+                            self.unassigned_officer, self.other_officer)
 
         # Finished Meeting in Dept 07
         self.meeting = Meeting.objects.create(
@@ -3574,6 +3593,7 @@ class Batch08VerificationQRTests(TestCase):
     """
 
     def setUp(self):
+        signature_storage(self)
         from django.utils import timezone
         from meetings.crypto import (
             generate_ecdsa_keypair,
@@ -3633,6 +3653,8 @@ class Batch08VerificationQRTests(TestCase):
         # Officer from another department
         self.officer_math = User.objects.create_user(username='officer_math', password='password123')
         Membership.objects.create(user=self.officer_math, department=self.other_dept, role='O')
+        complete_onboarding(self.ap_cs, self.ap_math, self.officer1, self.officer2,
+                            self.officer3, self.officer_math)
 
         # Finalized Meeting (Finished)
         self.finished_meeting = Meeting.objects.create(
@@ -4901,11 +4923,13 @@ class Batch09QRCorrectionTests(TestCase):
 
 class Batch10PDFTests(TestCase):
     def setUp(self):
+        signature_storage(self)
         self.dept = Department.objects.create(name='PDF department')
         self.other_dept = Department.objects.create(name='Other PDF department')
         self.admin = User.objects.create_user(username='pdfadmin', is_admin=True)
         self.ap = User.objects.create_user(username='pdfap')
         self.other_ap = User.objects.create_user(username='pdfotherap')
+        complete_onboarding(self.ap, self.other_ap)
         self.officer = User.objects.create_user(username='PRIVATE_USERNAME', email='private@example.com', first_name='Jos\u00e9', last_name='Tan')
         Membership.objects.create(user=self.ap, department=self.dept, role='AP')
         Membership.objects.create(user=self.other_ap, department=self.other_dept, role='AP')
@@ -4917,6 +4941,8 @@ class Batch10PDFTests(TestCase):
 
     def test_permissions_and_methods(self):
         from unittest.mock import patch
+        # Reach PDF authorization; other tests retain the historical signer without a PNG.
+        complete_onboarding(self.officer)
         self.assertEqual(self.client.get(self.url).status_code, 302)
         with patch('meetings.pdf.generate_meeting_pdf', return_value=b'%PDF-test'):
             for user, expected in ((self.admin, 200), (self.ap, 200), (self.other_ap, 403), (self.officer, 403)):
@@ -5089,6 +5115,7 @@ class Batch10PDFTests(TestCase):
                 opener.assert_not_called()
 
     def test_export_links_and_officer_exclusion(self):
+        complete_onboarding(self.officer)
         self.client.force_login(self.ap)
         self.assertContains(self.client.get(reverse('review_meeting', args=[self.meeting.pk])), self.url)
         self.assertContains(self.client.get(reverse('department_dashboard', args=[self.dept.pk])), self.url)
