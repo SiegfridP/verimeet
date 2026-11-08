@@ -63,6 +63,9 @@ class Batch14Tests(TestCase):
         self.assertNotContains(response, self.dept.name)
         invite = Invitation.objects.create(email='x@example.com', department=self.dept, inviter=self.admin)
         session = self.client.session; session['pending_invite_token'] = invite.token; session.save()
+        self.assertNotContains(self.client.get(reverse('central_dashboard')), reverse('accept_invitation', args=[invite.token]))
+        from allauth.account.models import EmailAddress
+        EmailAddress.objects.create(user=self.user, email=invite.email, verified=True)
         self.assertContains(self.client.get(reverse('central_dashboard')), reverse('accept_invitation', args=[invite.token]))
 
     def test_private_endpoints(self):

@@ -580,10 +580,10 @@ def central_dashboard(request):
         department = active_department_for_user(request.user)
         if department:
             entries.append({'department': department, 'role': 'Officer'})
-    from .invitations import pending_invitation_url
+    from .invitations import dashboard_invitations
     return render(request, 'accounts/central_dashboard.html', {
         'department_entries': entries,
-        'pending_invitation_url': pending_invitation_url(request),
+        'pending_invitations': dashboard_invitations(request),
     })
 
 

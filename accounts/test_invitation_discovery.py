@@ -1,0 +1,124 @@
+from datetime import timedelta
+
+from allauth.account.models import EmailAddress
+from django.contrib.auth.models import AnonymousUser
+from django.test import TestCase
+from django.urls import reverse
+from django.utils import timezone
+
+from .invitations import DISCOVERY_LIMIT, recipient_invitations
+from .models import Department, Invitation, Membership, User
+from .test_fixtures import complete_onboarding, signature_storage
+from meetings.models import AuditLog
+
+
+class InvitationDiscoveryTests(TestCase):
+    def setUp(self):
+        signature_storage(self)
+        self.user = User.objects.create_user(username='recipient', email='untrusted@example.com')
+        complete_onboarding(self.user)
+        self.admin = User.objects.create_user(username='admin', is_admin=True)
+        self.department = Department.objects.create(name='Private department')
+        self.url = reverse('central_dashboard')
+        self.client.force_login(self.user)
+
+    def invite(self, email='owned@example.com', **kwargs):
+        return Invitation.objects.create(email=email, department=self.department, inviter=self.admin, **kwargs)
+
+    def verify(self, email='owned@example.com', **kwargs):
+        return EmailAddress.objects.create(user=self.user, email=email, verified=True, **kwargs)
+
+    def test_primary_secondary_case_and_isolation(self):
+        self.verify(primary=True)
+        self.verify('SECONDARY@example.com')
+        EmailAddress.objects.create(user=self.user, email='unverified@example.com', verified=False)
+        EmailAddress.objects.create(user=self.admin, email='other@example.com', verified=True)
+        primary = self.invite('OWNED@EXAMPLE.COM')
+        secondary = self.invite('secondary@EXAMPLE.COM')
+        hidden = [self.invite(email) for email in (
+            'unverified@example.com', 'other@example.com', self.user.email)]
+        response = self.client.get(self.url, {'email': 'other@example.com'})
+        self.assertEqual({i.pk for i in response.context['pending_invitations']}, {primary.pk, secondary.pk})
+        self.assertContains(response, self.department.name)
+        for invitation in hidden:
+            self.assertNotContains(response, reverse('accept_invitation', args=[invitation.token]))
+
+    def test_ineligible_session_links_hidden_without_session_changes(self):
+        self.verify()
+        for state in ('unrelated', 'unverified', 'expired', 'accepted', 'inactive', 'deleted'):
+            invitation = self.invite('other@example.com' if state == 'unrelated' else
+                                     'unverified@example.com' if state == 'unverified' else 'owned@example.com')
+            if state == 'unverified':
+                EmailAddress.objects.create(user=self.user, email=invitation.email, verified=False)
+            if state == 'expired':
+                Invitation.objects.filter(pk=invitation.pk).update(expires_at=timezone.now()-timedelta(seconds=1))
+            if state == 'accepted':
+                Invitation.objects.filter(pk=invitation.pk).update(accepted=True)
+            if state == 'inactive':
+                Department.objects.filter(pk=self.department.pk).update(is_active=False)
+            if state == 'deleted':
+                invitation.delete()
+            session = self.client.session
+            session['pending_invite_token'] = invitation.token
+            session['invite_verification_intent'] = [invitation.token, self.user.pk]
+            session.save()
+            before = dict(self.client.session)
+            with self.subTest(state=state):
+                response = self.client.get(self.url)
+                self.assertNotContains(response, reverse('accept_invitation', args=[invitation.token]))
+                self.assertEqual(dict(self.client.session), before)
+            Department.objects.filter(pk=self.department.pk).update(is_active=True)
+
+    def test_session_discovery_not_duplicated(self):
+        self.verify()
+        invitation = self.invite()
+        session = self.client.session; session['pending_invite_token'] = invitation.token; session.save()
+        response = self.client.get(self.url)
+        self.assertContains(response, reverse('accept_invitation', args=[invitation.token]), count=1)
+
+    def test_deterministic_bound_and_eligible_overflow_continuation(self):
+        self.verify()
+        invitations = [self.invite() for _ in range(DISCOVERY_LIMIT + 5)]
+        Invitation.objects.all().update(created_at=timezone.now())
+        expected = [i.pk for i in reversed(invitations[-DISCOVERY_LIMIT:])]
+        self.assertEqual([i.pk for i in recipient_invitations(self.user)], expected)
+        session = self.client.session; session['pending_invite_token'] = invitations[0].token; session.save()
+        result = self.client.get(self.url).context['pending_invitations']
+        self.assertEqual([i.pk for i in result], expected + [invitations[0].pk])
+        self.assertEqual(len({i.pk for i in result}), DISCOVERY_LIMIT + 1)
+
+    def test_get_no_mutations_and_acceptance_remains_explicit(self):
+        self.verify()
+        invitation = self.invite()
+        before = (list(Invitation.objects.values()), list(Membership.objects.values()),
+                  list(EmailAddress.objects.values()), list(AuditLog.objects.values()))
+        self.client.get(self.url)
+        self.assertEqual(before, (list(Invitation.objects.values()), list(Membership.objects.values()),
+                         list(EmailAddress.objects.values()), list(AuditLog.objects.values())))
+        target = reverse('accept_invitation', args=[invitation.token])
+        self.assertContains(self.client.get(target), 'Accept invitation')
+        self.assertFalse(Membership.objects.filter(user=self.user).exists())
+        self.assertEqual(self.client.post(target).status_code, 302)
+        self.assertTrue(Membership.objects.filter(user=self.user, department=self.department).exists())
+
+    def test_replacement_uses_existing_revocation_semantics(self):
+        self.verify()
+        old = self.invite()
+        self.client.force_login(self.admin)
+        self.assertEqual(self.client.post(reverse('invite_member', args=[self.department.pk]),
+            {'email': old.email, 'role': 'O'}).status_code, 302)
+        self.assertFalse(Invitation.objects.filter(pk=old.pk).exists())
+        replacement = Invitation.objects.get(email=old.email)
+        self.client.force_login(self.user)
+        session = self.client.session; session['pending_invite_token'] = old.token; session.save()
+        response = self.client.get(self.url)
+        self.assertNotContains(response, reverse('accept_invitation', args=[old.token]))
+        self.assertContains(response, reverse('accept_invitation', args=[replacement.token]), count=1)
+        self.assertEqual(self.client.session['pending_invite_token'], old.token)
+
+    def test_anonymous_inactive_and_admin_routing(self):
+        self.assertFalse(recipient_invitations(AnonymousUser()).exists())
+        self.user.is_active = False
+        self.assertFalse(recipient_invitations(self.user).exists())
+        self.client.force_login(self.admin)
+        self.assertRedirects(self.client.get(self.url), reverse('admin_dashboard'))
