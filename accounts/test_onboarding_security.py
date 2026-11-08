@@ -3,6 +3,8 @@ from datetime import timedelta
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 from django.http import HttpResponse
+from django.db import models
+from pathlib import Path
 from django.test import TestCase, RequestFactory, override_settings
 from django.urls import include, path, resolve, reverse
 from django.utils import timezone
@@ -43,8 +45,10 @@ class OnboardingSecurityTests(TestCase):
         from django.core.files.storage import FileSystemStorage
         # Seed an existing unnormalized asset, not a new supported upload.
         name = FileSystemStorage(location=self.directory.name).save('normalized/test.png', ContentFile(data))
-        self.user.signature_image = name
-        self.user.save(update_fields=['signature_image'])
+        # Historical/corrupted-state fixture only: normal replacement must use
+        # the service and retention ledger. These tests exercise stale readers.
+        models.QuerySet.update(User.objects.filter(pk=self.user.pk), signature_image=name)
+        self.user.refresh_from_db()
         return name
 
     def test_generic_storage_urls_are_unavailable_and_admin_widget_is_safe(self):
@@ -116,11 +120,12 @@ class OnboardingSecurityTests(TestCase):
         for updates in ({'signature_validated': False},
                         {'signature_validated': True, 'signature_validation_hash': '0' * 64},
                         {'signature_image': 'normalized/missing.png'}):
-            User.objects.filter(pk=self.user.pk).update(**updates)
+            # Deliberately simulate corrupt or concurrently replaced state.
+            models.QuerySet.update(User.objects.filter(pk=self.user.pk), **updates)
             with patch('accounts.signatures.decode_png') as decode:
                 self.assertFalse(signature_valid(self.user))
                 decode.assert_not_called()
-            User.objects.filter(pk=self.user.pk).update(signature_image=self.user.signature_image.name,
+            models.QuerySet.update(User.objects.filter(pk=self.user.pk), signature_image=self.user.signature_image.name,
                 signature_validated=True, signature_validation_hash=original_hash)
         self.assertTrue(signature_valid(self.user))
 
@@ -141,7 +146,9 @@ class OnboardingSecurityTests(TestCase):
     def test_signature_becomes_invalid_before_transaction_requires_upload(self):
         self.stored(png())
         self.assertTrue(signature_valid(self.user))
-        change = lambda: User.objects.filter(pk=self.user.pk).update(signature_image='normalized/missing.png')
+        # Simulate a disappeared legacy reference, not an authorized replacement.
+        change = lambda: models.QuerySet.update(User.objects.filter(pk=self.user.pk),
+                                                signature_image='normalized/missing.png')
         with self.changed_during_form_construction(change):
             response = self.client.post(reverse('onboarding'))
         self.assertEqual(response.status_code, 200)
@@ -218,7 +225,9 @@ class OnboardingSecurityTests(TestCase):
             with self.user.signature_image.storage.open(name, 'wb') as stream:
                 stream.write(data)
             self.assertFalse(signature_valid(self.user))
-        self.user.signature_image.storage.delete(name)  # Test-owned temporary file only.
+        # Simulate an externally missing file in isolated test storage. The
+        # application storage API intentionally prohibits physical deletion.
+        (Path(self.directory.name) / name).unlink()
         self.assertFalse(signature_valid(self.user))
         with patch.object(self.user.signature_image.storage, 'open', side_effect=RuntimeError('backend unavailable')):
             self.assertFalse(signature_valid(self.user))

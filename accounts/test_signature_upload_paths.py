@@ -32,7 +32,9 @@ class SignatureUploadPathTests(TestCase):
     def upload(self, path, data, name='signature.png'):
         upload = SimpleUploadedFile(name, data)
         if path == 'admin':
-            form = self.admin_form({'username': self.user.username}, {'signature_image': upload}, instance=self.user)
+            state = self.admin_form(instance=self.user).fields['security_state'].initial
+            form = self.admin_form({'username': self.user.username, 'security_state': state},
+                                   {'signature_image': upload}, instance=self.user)
             if not form.is_valid():
                 raise ValidationError(form.errors.as_text())
             form.save()
@@ -98,7 +100,8 @@ class SignatureUploadPathTests(TestCase):
         keys = (self.user.public_key, self.user.private_key)
         self.assertTrue(signature_valid(self.user))
         self.user.save()
-        form = self.admin_form({'username': self.user.username}, instance=self.user)
+        state = self.admin_form(instance=self.user).fields['security_state'].initial
+        form = self.admin_form({'username': self.user.username, 'security_state': state}, instance=self.user)
         self.assertTrue(form.is_valid(), form.errors)
         form.save()
         self.user.refresh_from_db()

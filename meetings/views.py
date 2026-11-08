@@ -36,7 +36,7 @@ from .forms import (
 )
 from accounts.models import Membership, Department, User
 from accounts.dashboard_context import workflow_redirect
-from accounts.views import is_global_admin, has_membership, department_scope
+from accounts.views import is_global_admin, has_membership, department_scope, active_department_for_user
 
 def user_in_department(user, meeting):
     if not user.is_authenticated:
@@ -82,12 +82,11 @@ def officer_dashboard(request):
         except (Department.DoesNotExist, ValueError):
             return HttpResponseForbidden('Department not found')
 
-    # Resolve department context via active Membership or legacy user.department
-    membership = Membership.objects.filter(user=request.user).select_related('department').first()
-    if membership:
-        return redirect('department_dashboard', dept_id=membership.department_id)
-    if request.user.department_id:
-        return redirect('department_dashboard', dept_id=request.user.department_id)
+    if is_global_admin(request.user):
+        return redirect('admin_dashboard')
+    department = active_department_for_user(request.user)
+    if department:
+        return redirect('department_dashboard', dept_id=department.pk)
 
     return redirect('waiting_room')
 

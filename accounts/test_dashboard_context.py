@@ -3,6 +3,9 @@ from html import unescape
 import re
 from urllib.parse import parse_qs, urlsplit
 from django.test import TestCase, RequestFactory
+from django.test import override_settings
+from django.core.files.uploadedfile import SimpleUploadedFile
+from tempfile import TemporaryDirectory
 from django.urls import reverse, resolve
 from accounts.models import User, Department, Membership
 from accounts.dashboard_context import context, destination, workflow_url
@@ -10,6 +13,17 @@ from meetings.models import Meeting, Attendance
 
 
 class DashboardContextTests(TestCase):
+    def setUp(self):
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        storage = override_settings(PRIVATE_SIGNATURE_ROOT=directory.name)
+        storage.enable()
+        self.addCleanup(storage.disable)
+        from accounts.test_onboarding import png
+        # Exercise navigation with completed onboarding, without bypassing it.
+        for user in (self.ap, self.officer):
+            user.signature_image.save('signature.png', SimpleUploadedFile('signature.png', png()))
+
     @classmethod
     def setUpTestData(cls):
         cls.dept = Department.objects.create(name='Context department')
