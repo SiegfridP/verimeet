@@ -4,7 +4,12 @@
 {% if eligible %}
 <form method="post">{% csrf_token %}<button type="submit">Accept invitation</button></form>
 {% elif user.is_authenticated %}
-<p>You must verify the email address this invitation was sent to on this account before accepting.</p>
+{% if own_invitation_address %}
+<p>Verify {{ own_invitation_address.email }} before accepting this invitation. In Email Settings, select this unverified address and choose Re-send Verification.</p>
+<p>Open the confirmation link and submit Confirm. Then return to this invitation; verification does not accept it for you.</p>
+{% else %}
+<p>This invitation does not match an email address associated with your account. In Email Settings, add an address you control and verify it, or sign in to the appropriate account.</p>
+{% endif %}
 <a href="{% url 'account_email' %}">Manage and verify email addresses</a>
 <a href="{% url 'account_logout' %}?next={{ invitation_path|urlencode }}">Switch account</a>
 {% else %}
@@ -12,4 +17,5 @@
 <a href="{% url 'account_signup' %}?next={{ invitation_path|urlencode }}">Register</a>
 {% endif %}
 <p>You can reopen the original invitation link to resume. Nothing is accepted until you submit confirmation.</p>
+<p>Account onboarding and email verification are separate requirements. Completing your username and signature does not verify an email address.</p>
 </body></html>

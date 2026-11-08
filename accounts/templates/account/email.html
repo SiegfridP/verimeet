@@ -1,0 +1,12 @@
+{% extends "account/email.html" %}
+{# APP_DIRS resolves accounts first; Django skips this origin when resolving the same-name parent in Allauth. #}
+{% block content %}
+<section aria-label="Email verification guidance">
+<p>Email verification is optional for unrelated application use. Accepting a department invitation requires a matching verified address; a verified secondary address also works.</p>
+{% for address in emailaddresses %}{% if not address.verified %}
+<p>To verify {{ address.email }}, select it below and choose Re-send Verification. Open the link and submit Confirm. Requests may be limited; wait before trying again. A request does not guarantee inbox delivery.</p>
+{% endif %}{% endfor %}
+<p>Already verified addresses need no further verification. After confirming, reopen your original invitation link or return to <a href="{% url 'central_dashboard' %}">My Dashboard</a> to review eligible invitations. Acceptance remains a separate confirmation.</p>
+</section>
+{{ block.super }}
+{% endblock %}

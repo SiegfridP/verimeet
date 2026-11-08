@@ -1,0 +1,9 @@
+{% extends "account/base_entrance.html" %}
+{% block head_title %}Verify your email - VeriMeet{% endblock %}
+{% block content %}
+<h1>Check your email for a verification link</h1>
+<p>A verification email was requested. This does not guarantee inbox delivery. Check your inbox and spam folder; requests may be limited, so wait before trying again.</p>
+<p>Open the link and submit Confirm. Verification is separate from username/signature onboarding and does not accept an invitation.</p>
+<p>If you are signed out, sign in to the intended account. Reopen the original invitation link after verification, or visit <a href="{% url 'central_dashboard' %}">My Dashboard</a> to review eligible invitations.</p>
+<p>Use <a href="{% url 'account_email' %}">Email Settings</a> to check verification status or request another link.</p>
+{% endblock %}

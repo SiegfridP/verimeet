@@ -6,7 +6,7 @@
 <p>Current username: {{ user.username }}</p>
 <form method="post">{% csrf_token %}{{ form.as_p }}<button type="submit">Save username</button></form>
 <h2>Email addresses</h2>
-<ul>{% for address in email_addresses %}<li>{{ address.email }}{% if address.primary %} — Primary{% endif %} — {% if address.verified %}Verified{% else %}Unverified{% endif %}</li>{% empty %}<li>No account email addresses registered.{% if user.email %} Current account email: {{ user.email }}{% endif %}</li>{% endfor %}</ul>
+<ul>{% for address in email_addresses %}<li>{{ address.email }}{% if address.primary %} — Primary{% endif %} — {% if address.verified %}Verified{% else %}Unverified — <a href="{% url 'account_email' %}">Request verification in Email Settings</a>. A matching verified address is required to accept a department invitation.{% endif %}</li>{% empty %}<li>No account email addresses registered. Add an address you control in Email Settings.</li>{% endfor %}</ul>
 <h2>Account security</h2>
 <a href="{% url 'account_email' %}">Manage email addresses and verification</a>
 {% if has_password %}<a href="{% url 'account_change_password' %}">Change password</a>{% else %}<a href="{% url 'account_set_password' %}">Set a password</a>{% endif %}

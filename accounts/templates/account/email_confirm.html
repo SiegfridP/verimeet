@@ -1,0 +1,17 @@
+{% extends "account/base_entrance.html" %}
+{% block head_title %}Confirm email address - VeriMeet{% endblock %}
+{% block content %}
+<h1>Confirm email address</h1>
+{% if confirmation %}
+{% if can_confirm %}
+{% if user.is_authenticated and confirmation.email_address.user_id == user.pk %}
+<p>Confirm {{ confirmation.email_address.email }} for your account.</p>
+{% else %}<p>Confirm the address associated with this verification link. If you are using a different account, sign in to the intended account to continue your invitation.</p>{% endif %}
+<form method="post" action="{% url 'account_confirm_email' confirmation.key %}">{% csrf_token %}{{ redirect_field }}<button type="submit">Confirm</button></form>
+<p>Verification does not complete onboarding or accept an invitation. When valid same-account invitation intent is preserved, you will return to that invitation. Otherwise reopen the original invitation link after signing in.</p>
+{% else %}<p>This address cannot be confirmed because it is already verified by another account. Use an address you control or sign in to the appropriate account.</p>{% endif %}
+{% else %}
+<p>This confirmation link is invalid, expired, or already used. If the address is already verified, no further verification is needed.</p>
+{% endif %}
+<p>Sign in to the intended account, then use <a href="{% url 'account_email' %}">Email Settings</a> to check its status or request another verification link.</p>
+{% endblock %}

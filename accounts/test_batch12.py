@@ -25,6 +25,66 @@ class Batch12Tests(TestCase):
     def verify(self, primary=False):
         return EmailAddress.objects.create(user=self.user, email=self.invite.email, verified=True, primary=primary)
 
+    def test_verification_guidance_only_displays_own_addresses(self):
+        self.client.force_login(self.user)
+        response = self.client.get(self.url)
+        self.assertContains(response, 'add an address you control')
+        self.assertNotContains(response, self.invite.email)
+        address = EmailAddress.objects.create(user=self.user, email=self.invite.email, verified=False)
+        response = self.client.get(self.url)
+        self.assertContains(response, address.email)
+        self.assertContains(response, 'Re-send Verification')
+        self.assertContains(response, 'onboarding and email verification are separate')
+        self.assertNotIn('invite_verification_intent', self.client.session)
+        self.assertFalse(Membership.objects.filter(user=self.user).exists())
+        address.verified = True; address.save()
+        response = self.client.get(self.url)
+        self.assertContains(response, 'Accept invitation')
+        self.assertNotContains(response, 'Re-send Verification')
+        self.client.logout()
+        self.assertNotContains(self.client.get(self.url), self.invite.email)
+
+    def test_confirmation_guidance_and_success_do_not_disclose_unowned_email(self):
+        from allauth.account.models import EmailConfirmationHMAC
+        address = EmailAddress.objects.create(user=self.user, email=self.invite.email, verified=False)
+        target = reverse('account_confirm_email', args=[EmailConfirmationHMAC(address).key])
+        self.assertNotContains(self.client.get(target), address.email)
+        self.client.force_login(self.ap)
+        self.assertNotContains(self.client.get(target), address.email)
+        self.client.force_login(self.user)
+        self.assertContains(self.client.get(target), address.email)
+        self.client.logout()
+        response = self.client.post(target, follow=True)
+        self.assertContains(response, 'Email address confirmed')
+        self.assertNotContains(response, address.email)
+        address.refresh_from_db(); self.assertTrue(address.verified)
+        self.assertFalse(Membership.objects.filter(user=self.user).exists())
+        self.assertNotIn('invite_verification_intent', self.client.session)
+        self.assertContains(self.client.get(target), 'invalid, expired, or already used')
+
+    def test_invalid_expired_and_conflicting_confirmation_guidance(self):
+        from allauth.account.models import EmailConfirmationHMAC
+        address = EmailAddress.objects.create(user=self.user, email=self.invite.email, verified=False)
+        self.client.force_login(self.user)
+        with patch('django.core.signing.time.time', return_value=1):
+            expired = EmailConfirmationHMAC(address).key
+        for key in ('invalid-key', expired):
+            response = self.client.get(reverse('account_confirm_email', args=[key]))
+            self.assertContains(response, 'invalid, expired, or already used')
+            self.assertContains(response, reverse('account_email'))
+        EmailAddress.objects.create(user=self.ap, email=address.email, verified=True)
+        target = reverse('account_confirm_email', args=[EmailConfirmationHMAC(address).key])
+        self.assertContains(self.client.get(target), 'already verified by another account')
+        self.client.post(target)
+        address.refresh_from_db(); self.assertFalse(address.verified)
+
+    def test_unsafe_login_redirect_is_not_followed(self):
+        response = self.client.post(reverse('account_login'), {
+            'login': 'recipient', 'password': 'password', 'next': 'https://evil.example/steal'})
+        self.assertEqual(response.status_code, 302)
+        self.assertNotIn('evil.example', response.url)
+        self.assertNotIn('invite_verification_intent', self.client.session)
+
     def test_delivery_and_url(self):
         self.client.force_login(self.ap)
         self.assertEqual(self.client.post(reverse('invite_member', args=[self.department.pk]),

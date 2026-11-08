@@ -493,7 +493,11 @@ def accept_invitation(request, token):
         clear_pending_invitation(request)
         messages.success(request, 'Invitation accepted. Your department membership is available.')
         return redirect('department_dashboard', dept_id=invitation.department_id)
+    from allauth.account.models import EmailAddress
+    own_invitation_address = (EmailAddress.objects.filter(user=request.user,
+        email__iexact=invitation.email).first() if request.user.is_authenticated else None)
     return render(request, 'accounts/accept_invitation.html', {'invitation': invitation,
+        'own_invitation_address': own_invitation_address,
         'eligible': eligible, 'invitation_path': reverse('accept_invitation', args=[token])})
 # ---------- Role Elevation Request Views ----------
 class ElevationRequestForm(forms.Form):

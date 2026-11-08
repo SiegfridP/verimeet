@@ -46,6 +46,80 @@ class AccountSettingsTests(TestCase):
         self.client.logout()
         self.assertEqual(self.client.get(self.url).status_code, 302)
 
+    def test_email_guidance_preserves_existing_management_forms(self):
+        from django.core import mail
+        self.user.email = 'unowned-profile@example.com'
+        self.user.save(update_fields=['email'])
+        self.assertNotContains(self.client.get(self.url), self.user.email)
+        verified = EmailAddress.objects.create(user=self.user, email='verified@example.com', verified=True, primary=True)
+        unverified = EmailAddress.objects.create(user=self.user, email='unverified@example.com', verified=False)
+        response = self.client.get(self.url)
+        self.assertContains(response, unverified.email)
+        self.assertContains(response, 'Request verification in Email Settings', count=1)
+        before = len(mail.outbox)
+        response = self.client.get(reverse('account_email'))
+        self.assertContains(response, 'To verify unverified@example.com')
+        self.assertNotContains(response, 'To verify verified@example.com')
+        for action in ('action_send', 'action_add', 'action_remove', 'action_primary'):
+            self.assertContains(response, f'name="{action}"')
+        self.assertContains(response, 'csrfmiddlewaretoken')
+        self.assertEqual(len(mail.outbox), before)
+        self.assertEqual(self.client.get(reverse('account_email_verification_sent')).status_code, 200)
+        self.assertEqual(len(mail.outbox), before)
+
+    def test_email_override_resolves_installed_allauth_parent(self):
+        from pathlib import Path
+        import allauth
+        from django.template import engines
+        engine = engines['django'].engine
+        override = engine.get_template('account/email.html')
+        parent, origin = engine.find_template('account/email.html', skip=[override.origin])
+        self.assertEqual(Path(override.origin.name).resolve(),
+                         Path(__file__).parent / 'templates' / 'account' / 'email.html')
+        self.assertEqual(Path(origin.name).resolve(),
+                         Path(allauth.__file__).parent / 'templates' / 'account' / 'email.html')
+        EmailAddress.objects.create(user=self.user, email='template@example.com', verified=False)
+        response = self.client.get(reverse('account_email'))
+        self.assertContains(response, 'Email verification is optional')
+        self.assertContains(response, 'template@example.com')
+        self.assertContains(response, 'name="email"')
+        self.assertContains(response, 'type="radio"')
+        self.assertContains(response, 'method="post"')
+        self.assertContains(response, f'action="{reverse("account_email")}"')
+        self.assertContains(response, 'csrfmiddlewaretoken')
+        for action in ('action_add', 'action_remove', 'action_primary', 'action_send'):
+            self.assertContains(response, f'name="{action}"')
+        self.assertContains(response, 'allauth.account.forms.manageEmailForm')
+        self.assertContains(response, 'account/js/account.js')
+        self.assertContains(response, 'account/js/onload.js')
+
+    def test_verification_page_titles_use_ascii_hyphens(self):
+        response = self.client.get(reverse('account_confirm_email', args=['invalid-key']))
+        self.assertContains(response, 'Confirm email address - VeriMeet')
+        response = self.client.get(reverse('account_email_verification_sent'))
+        self.assertContains(response, 'Verify your email - VeriMeet')
+
+    @override_settings(MAILERS={'default': {'BACKEND': 'django.core.mail.backends.locmem.EmailBackend'}},
+        CACHES={'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache', 'LOCATION': 'verification-guidance'}})
+    def test_resend_requires_csrf_and_preserves_cooldown_and_ownership(self):
+        from django.core import mail
+        from django.core.cache import cache
+        cache.clear()
+        address = EmailAddress.objects.create(user=self.user, email='resend@example.com', verified=False)
+        other = EmailAddress.objects.create(user=self.admin, email='other@example.com', verified=False)
+        client = Client(enforce_csrf_checks=True); client.force_login(self.user)
+        target = reverse('account_email')
+        client.get(target)
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertEqual(client.post(target, {'email': address.email, 'action_send': ''}).status_code, 403)
+        token = client.cookies['csrftoken'].value
+        client.post(target, {'email': other.email, 'action_send': '', 'csrfmiddlewaretoken': token})
+        self.assertEqual(len(mail.outbox), 0)
+        for attempt in range(2):
+            client.post(target, {'email': address.email, 'action_send': '', 'csrfmiddlewaretoken': token})
+            self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, [address.email])
+
     def test_username_change_and_audit_preserve_other_fields(self):
         before = User.objects.values().get(pk=self.user.pk)
         memberships = list(Membership.objects.values())

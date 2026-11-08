@@ -2,6 +2,7 @@
 <body><main><h1>Complete your account</h1><p>Username: {{ user.username }}</p>
 <p>Upload a PNG signature up to 2 MiB and 4096 × 4096 pixels. VeriMeet automatically formats it to 600 × 200 pixels. Transparency is recommended, but optional.</p>
 <p>This visual signature does not cryptographically sign any document.</p>
+<p>Completing your username and signature does not verify an email address. Invitations require verification of the address they were sent to. After onboarding, use <a href="{% url 'account_settings' %}">Account Settings</a> to manage email verification.</p>
 {% if signature_ready %}<h2>Your signature</h2><img src="{% url 'signature_preview' %}" alt="Your saved signature" style="max-width:100%;max-height:200px;width:auto;height:auto">{% endif %}
 <form method="post" enctype="multipart/form-data">{% csrf_token %}{{ form.as_p }}<button type="submit">Save and continue</button></form>
 <a href="{% url 'account_logout' %}">Log out</a></main></body></html>

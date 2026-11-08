@@ -1,0 +1,1 @@
+Email address confirmed. Verification does not complete account onboarding or accept an invitation. Continue the invitation if returned there, or sign in to the intended account and reopen its original link. Already verified addresses need no further verification.
