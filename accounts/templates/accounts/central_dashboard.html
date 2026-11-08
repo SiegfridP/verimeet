@@ -1,6 +1,16 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>My Dashboard - VeriMeet</title></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>My Dashboard - VeriMeet</title>
+<style>
+.invitation-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1rem; list-style: none; padding: 0; margin: 1rem 0; }
+.invitation-card { min-width: 0; padding: 1.25rem; border: 1px solid #cbd5e1; border-radius: 8px; background: #f8fafc; color: #172338; overflow-wrap: anywhere; }
+.invitation-card h3 { margin: 0; font-size: 1.125rem; line-height: 1.4; }
+.invitation-card p { margin: .75rem 0; line-height: 1.5; }
+.invitation-card__review { display: inline-flex; align-items: center; box-sizing: border-box; min-height: 44px; max-width: 100%; padding: .65rem 1rem; border-radius: 4px; background: #153d57; color: #fff; font: inherit; line-height: 1.5; text-decoration: underline; }
+.invitation-card__review:hover { background: #0d293b; }
+.invitation-card__review:focus { outline: 3px solid #172338; outline-offset: 3px; }
+@media (min-width: 40rem) { .invitation-list { grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr)); } }
+</style></head>
 <body><main>
 {% include 'accounts/account_navigation.html' %}
 <h1>My Dashboard</h1>
@@ -19,8 +29,12 @@
 </section>
 {% if pending_invitations %}
 <section aria-labelledby="invitation-heading"><h2 id="invitation-heading">Pending invitations</h2>
-<ul>{% for invitation in pending_invitations %}
-<li>{{ invitation.department.name }} — <a href="{% url 'accept_invitation' invitation.token %}">Review invitation</a></li>
+<ul class="invitation-list" role="list">{% for invitation in pending_invitations %}
+<li class="invitation-card">
+<h3>{{ invitation.department.name }}</h3>
+<p>Expires <time datetime="{{ invitation.expires_at|date:'c' }}">{{ invitation.expires_at|date:"c" }}</time></p>
+<a class="invitation-card__review" href="{% url 'accept_invitation' invitation.token %}" aria-label="Review invitation to {{ invitation.department.name }}">Review invitation</a>
+</li>
 {% endfor %}</ul></section>
 {% else %}
 <p>To accept an invitation, open the link provided by your department's Authorized Personnel.</p>

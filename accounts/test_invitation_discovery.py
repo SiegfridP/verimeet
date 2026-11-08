@@ -75,6 +75,55 @@ class InvitationDiscoveryTests(TestCase):
         session = self.client.session; session['pending_invite_token'] = invitation.token; session.save()
         response = self.client.get(self.url)
         self.assertContains(response, reverse('accept_invitation', args=[invitation.token]), count=1)
+        self.assertContains(response, '<li class="invitation-card">', count=1)
+
+    def test_cards_have_headings_expiry_and_named_review_links(self):
+        from django.template.defaultfilters import date
+        self.verify()
+        first = self.invite()
+        second_department = Department.objects.create(name='Second department')
+        second = Invitation.objects.create(email=first.email, department=second_department,
+                                           inviter=self.admin)
+        session = self.client.session; session['pending_invite_token'] = first.token; session.save()
+        response = self.client.get(self.url)
+        html = response.content.decode()
+        self.assertContains(response, '<ul class="invitation-list" role="list">', count=1)
+        self.assertContains(response, '<li class="invitation-card">', count=2)
+        for invitation in (first, second):
+            with self.subTest(department=invitation.department.name):
+                self.assertInHTML(f'<h3>{invitation.department.name}</h3>', html)
+                expiry = date(timezone.localtime(invitation.expires_at), 'c')
+                self.assertInHTML(f'<p>Expires <time datetime="{expiry}">{expiry}</time></p>', html)
+                url = reverse('accept_invitation', args=[invitation.token])
+                self.assertContains(response, url, count=1)
+                self.assertInHTML(
+                    f'<a class="invitation-card__review" href="{url}" '
+                    f'aria-label="Review invitation to {invitation.department.name}">Review invitation</a>', html)
+        self.assertNotContains(response, '<form')
+        self.assertNotContains(response, first.email)
+
+    def test_card_department_name_is_escaped_in_heading_and_accessible_name(self):
+        from django.utils.html import escape
+        self.verify()
+        name = '<script>alert("x")</script> & "Team"'
+        self.department.name = name
+        self.department.save()
+        invitation = self.invite()
+        response = self.client.get(self.url)
+        self.assertNotContains(response, name)
+        self.assertNotContains(response, '<script>')
+        self.assertInHTML(f'<h3>{escape(name)}</h3>', response.content.decode())
+        self.assertContains(response, f'aria-label="Review invitation to {escape(name)}"', count=1)
+        self.assertContains(response, reverse('accept_invitation', args=[invitation.token]), count=1)
+
+    def test_card_empty_state_preserves_dashboard_navigation(self):
+        self.verify()
+        response = self.client.get(self.url)
+        self.assertNotContains(response, '<li class="invitation-card">')
+        self.assertNotContains(response, '<h2 id="invitation-heading">')
+        self.assertContains(response, "To accept an invitation, open the link provided by your department's Authorized Personnel.")
+        self.assertContains(response, reverse('create_department'))
+        self.assertContains(response, 'You have no active departments.')
 
     def test_deterministic_bound_and_eligible_overflow_continuation(self):
         self.verify()
