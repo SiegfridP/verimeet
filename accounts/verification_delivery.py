@@ -97,8 +97,12 @@ def render_message(delivery, base_url):
     from allauth.core.context import request_context
     from django.test import RequestFactory
     from django.contrib.sites.shortcuts import get_current_site
+    from core.email_config import worker_origin
+    base_url = worker_origin(base_url)
+    parsed = urlsplit(base_url)
     address = delivery.address
-    request = RequestFactory().get(base_url.rstrip('/') + '/')
+    # RequestFactory does not infer HTTP_HOST or HTTPS from an absolute URL.
+    request = RequestFactory().get('/', secure=parsed.scheme == 'https', HTTP_HOST=parsed.netloc)
     with request_context(request):
         adapter = get_adapter(request)
         confirmation = EmailConfirmationHMAC.create(address)

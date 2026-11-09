@@ -13,6 +13,68 @@ from .verification_delivery import enqueue, claim, finish, process_one, eligible
 from .account_status import change_account_status
 
 
+@override_settings(
+    ALLOWED_HOSTS=['verimeet.onrender.com'],
+    APPLICATION_ORIGIN='https://verimeet.onrender.com',
+    EMAIL_PRODUCTION=True,
+    DEFAULT_FROM_EMAIL='VeriMeet <verification@sender.test>',
+    MAILERS={'default': {'BACKEND': 'django.core.mail.backends.locmem.EmailBackend'}},
+)
+class ProductionVerificationDeliveryTests(TransactionTestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='production-recipient')
+        self.address = EmailAddress.objects.create(user=self.user, email='owner@recipient.test')
+        self.origin = 'https://verimeet.onrender.com'
+
+    def test_render_uses_canonical_request_and_valid_confirmation_links(self):
+        import re
+        from django.contrib.sites.shortcuts import get_current_site
+        from .verification_delivery import render_message
+        row = enqueue(self.address)
+        for signup in (False, True):
+            row.signup = signup
+            with self.subTest(signup=signup), patch(
+                    'django.contrib.sites.shortcuts.get_current_site', wraps=get_current_site) as current_site:
+                message = render_message(row, self.origin)
+                request = current_site.call_args.args[0]
+                self.assertEqual(request.get_host(), 'verimeet.onrender.com')
+                self.assertTrue(request.is_secure())
+                match = re.search(r'https://verimeet\.onrender\.com/accounts/auth/confirm-email/([^/\s]+)/', message.body)
+                self.assertIsNotNone(match)
+                self.assertEqual(EmailConfirmationHMAC.from_key(match.group(1)).email_address.pk, self.address.pk)
+                self.assertIn(match.group(0), message.alternatives[0].content)
+                self.assertNotIn('testserver', message.body)
+                self.assertNotIn('http://verimeet.onrender.com', message.body)
+                self.assertEqual(message.from_email, 'VeriMeet <verification@sender.test>')
+
+    def test_processor_submits_using_configured_backend(self):
+        row = enqueue(self.address, signup=True)
+        self.assertEqual(process_one(row.pk, self.origin), 'submitted')
+        row.refresh_from_db()
+        self.assertEqual(row.status, 'submitted')
+        self.assertEqual(row.attempts, 1)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, [self.address.email])
+        self.assertIn(self.origin + '/accounts/auth/confirm-email/', mail.outbox[0].body)
+
+    def test_invalid_origins_rejected_before_claim_or_render(self):
+        from django.core.exceptions import ImproperlyConfigured
+        from .verification_delivery import render_message
+        row = enqueue(self.address)
+        for origin in ('', 'http://verimeet.onrender.com', 'https://other.test',
+                       'https://user:pass@verimeet.onrender.com', self.origin + '/path',
+                       self.origin + '#fragment', self.origin + '\n'):
+            with self.subTest(origin=origin):
+                with self.assertRaises(ImproperlyConfigured):
+                    process_one(row.pk, origin)
+                with self.assertRaises(ImproperlyConfigured):
+                    render_message(row, origin)
+        row.refresh_from_db()
+        self.assertEqual(row.status, 'pending')
+        self.assertEqual(row.attempts, 0)
+        self.assertEqual(len(mail.outbox), 0)
+
+
 @override_settings(MAILERS={'default': {'BACKEND': 'django.core.mail.backends.locmem.EmailBackend'}})
 class VerificationDeliveryTests(TransactionTestCase):
     def setUp(self):
