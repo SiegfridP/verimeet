@@ -1,4 +1,4 @@
-"""Private R2 adapter. No URLs, deletion, overwrite, or filesystem fallback."""
+"""Private durable evidence. No URLs, deletion, overwrite, or filesystem fallback."""
 import re
 from io import BytesIO
 
@@ -35,6 +35,15 @@ class DurablePrivateMixin:
         data = content.read(2097153)
         if len(data) > 2097152:
             raise ValueError('Private object too large.')
+        if getattr(settings, 'EVIDENCE_BACKEND', 'r2') == 'database':
+            from hashlib import sha256
+            from django.db import transaction
+            from meetings.evidence_objects import PrivateEvidenceObject
+            # A savepoint contains collision errors without poisoning an outer signing transaction.
+            with transaction.atomic(using='default'):
+                PrivateEvidenceObject.objects.using('default').create(
+                    key=self.object_key(name), data=data, content_sha256=sha256(data).hexdigest())
+            return name
         self.client().put_object(Bucket=settings.EVIDENCE_BUCKET, Key=self.object_key(name),
                                  Body=data, ContentType='image/png', IfNoneMatch='*')
         return name
@@ -44,6 +53,14 @@ class DurablePrivateMixin:
             return super()._open(name, mode)
         if mode != 'rb':
             raise PermissionDenied('Read-only private object access.')
+        if getattr(settings, 'EVIDENCE_BACKEND', 'r2') == 'database':
+            from hashlib import sha256
+            from meetings.evidence_objects import PrivateEvidenceObject
+            obj = PrivateEvidenceObject.objects.using('default').get(pk=self.object_key(name))
+            data = bytes(obj.data)
+            if not 0 < len(data) <= 2097152 or sha256(data).hexdigest() != obj.content_sha256:
+                raise ValueError('Private evidence integrity check failed.')
+            return File(BytesIO(data), name=name)
         response = self.client().get_object(Bucket=settings.EVIDENCE_BUCKET, Key=self.object_key(name))
         body = response['Body']
         try:
@@ -57,6 +74,9 @@ class DurablePrivateMixin:
     def exists(self, name):
         if not settings.DURABLE_EVIDENCE:
             return super().exists(name)
+        if getattr(settings, 'EVIDENCE_BACKEND', 'r2') == 'database':
+            from meetings.evidence_objects import PrivateEvidenceObject
+            return PrivateEvidenceObject.objects.using('default').filter(pk=self.object_key(name)).exists()
         from botocore.exceptions import ClientError
         try:
             self.client().head_object(Bucket=settings.EVIDENCE_BUCKET, Key=self.object_key(name))

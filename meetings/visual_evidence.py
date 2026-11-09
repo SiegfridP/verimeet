@@ -1,4 +1,8 @@
-"""Private immutable signing assets. Storage writes cannot roll back with SQL."""
+"""Private immutable signing assets.
+
+PostgreSQL-backed evidence shares the signing transaction and rolls back with it.
+External object-storage and local filesystem writes cannot roll back with SQL.
+"""
 from hashlib import sha256
 from pathlib import Path
 from uuid import uuid4

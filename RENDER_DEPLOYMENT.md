@@ -1,5 +1,56 @@
 # VeriMeet Render deployment
 
+## Fast full-feature Render + Neon setup (database evidence)
+
+Use `EVIDENCE_BACKEND=database` to store private profile PNGs and immutable signing
+snapshots in the same PostgreSQL database as attendance. No R2/B2 account or
+credentials are required in this mode. The existing R2 mode remains available by
+selecting `EVIDENCE_BACKEND=r2`; the R2 instructions below apply only to that mode.
+Do not switch backends on a populated deployment without a separately verified
+byte-preserving import: changing modes does not copy existing evidence.
+
+1. Use a fresh Neon database. Set `DATABASE_URL` to its supplied PostgreSQL URL,
+   retaining `sslmode=require` and any other supplied TLS parameters. Do not copy
+   development records. Select the Neon region nearest the Render service.
+2. Render: Docker runtime, repository root `.`, Dockerfile `./Dockerfile`, Free
+   instance, health path `/healthz/`, no build/start override. The Docker command
+   applies migrations including `meetings.0010_privateevidenceobject` before serving;
+   failure prevents startup. Never run concurrent migration starts.
+3. Set `DJANGO_ENV=production`, `DJANGO_DEBUG=False`,
+   `DJANGO_ALLOWED_HOSTS=<service>.onrender.com`,
+   `APPLICATION_ORIGIN=https://<service>.onrender.com`, `EVIDENCE_BACKEND=database`.
+   Set a securely generated `DJANGO_SECRET_KEY` (50+ characters, 5+ distinct), and
+   a stable Fernet `SIGNING_KEY_ENCRYPTION_KEY`. Back up both outside Render.
+4. Configure real `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and register
+   `https://<service>.onrender.com/accounts/auth/google/login/callback/` with Google.
+5. Set `EMAIL_BACKEND=core.resend_backend.EmailBackend`, `RESEND_API_KEY`,
+   `DEFAULT_FROM_EMAIL` to a verified sender, `EMAIL_FROM_NAME=VeriMeet`,
+   `EMAIL_TIMEOUT=20`. No authentication or email validation is bypassed.
+6. Configure the external runner described below with the same code, database
+   backend selection and secrets. It must execute both finite outbox commands;
+   deploying Gunicorn alone does not deliver queued messages.
+7. Before real use, verify password/Google login, invitation and verification mail,
+   meeting lifecycle, attendance/QR signing, individual verification, PDF exports,
+   audit history and evidence persistence across restart using synthetic records.
+
+Database evidence uses INSERT with a primary-key constraint, never UPSERT or
+HEAD-then-PUT. Duplicate keys fail atomically. Snapshot bytes, signing state and
+audit records share the default database transaction and roll back together.
+Private previews, namespace checks, PNG bounds, snapshot hashes and retention
+guards remain in force. There is no public object URL or local fallback. Ordinary
+model/queryset updates and deletion are blocked. Raw SQL, schema changes and
+database administrators remain trusted boundaries, as with existing audit models.
+Use restricted database credentials and independently protected backups.
+
+Each object is at most 2 MiB; historical snapshots are retained indefinitely, so
+monitor total database size and upgrade before the Neon quota is exhausted.
+PNG bytes may be stored twice (profile and historical snapshot), plus database
+overhead. Back up the database including binary evidence and test restores with
+the preserved encryption keys. Neon replaces Render Postgres in this setup;
+Render's free Postgres expiration does not apply to Neon. Neon has its own quota,
+compute, restore-window and availability limits; verify them in your account.
+No production migrations or external resources were created by this implementation.
+
 This foundation preserves the application workflows. External services are not
 provisioned and scheduling is not operational until configured. Review changes
 and complete the validation below before deploying real evidence.
@@ -18,11 +69,12 @@ python manage.py migrate --noinput && exec gunicorn core.wsgi:application --bind
 ```
 
 Migrations run before Gunicorn; failure prevents startup. Never run two deployment
-starts simultaneously. No migrations were changed. Local development defaults to
+starts simultaneously. The additive evidence-table migration is required for the
+database backend; existing migrations are unchanged. Local development defaults to
 SQLite; do not upload or migrate the local database. Production requires a
 PostgreSQL URL. Existing transaction/locking code and outbox claims are unchanged.
 
-## Manual setup, in order
+## Alternative R2 + Render PostgreSQL setup
 
 1. Create a free Render PostgreSQL database in the same region as the web service.
    Use a fresh database, with no development records. Copy its internal URL into

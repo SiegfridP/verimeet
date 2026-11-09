@@ -192,6 +192,9 @@ STORAGES = {
                               else 'django.contrib.staticfiles.storage.StaticFilesStorage')},
 }
 DURABLE_EVIDENCE = PRODUCTION
+EVIDENCE_BACKEND = os.getenv('EVIDENCE_BACKEND', 'r2')
+if EVIDENCE_BACKEND not in ('r2', 'database'):
+    raise ImproperlyConfigured('EVIDENCE_BACKEND must be r2 or database.')
 EVIDENCE_ENDPOINT = os.getenv('EVIDENCE_ENDPOINT', '')
 EVIDENCE_BUCKET = os.getenv('EVIDENCE_BUCKET', '')
 EVIDENCE_ACCESS_KEY_ID = os.getenv('EVIDENCE_ACCESS_KEY_ID', '')
@@ -207,7 +210,7 @@ if PRODUCTION:
         raise ImproperlyConfigured('Production requires DEBUG false and explicit allowed hosts.')
     if urlsplit(APPLICATION_ORIGIN).hostname not in ALLOWED_HOSTS:
         raise ImproperlyConfigured('Canonical origin host must be allowed.')
-    if not all((EVIDENCE_BUCKET, EVIDENCE_ACCESS_KEY_ID, EVIDENCE_SECRET_ACCESS_KEY)) or not __import__('re').fullmatch(r'https://[a-f0-9]{32}\.r2\.cloudflarestorage\.com', EVIDENCE_ENDPOINT):
+    if EVIDENCE_BACKEND == 'r2' and (not all((EVIDENCE_BUCKET, EVIDENCE_ACCESS_KEY_ID, EVIDENCE_SECRET_ACCESS_KEY)) or not __import__('re').fullmatch(r'https://[a-f0-9]{32}\.r2\.cloudflarestorage\.com', EVIDENCE_ENDPOINT)):
         raise ImproperlyConfigured('Production requires private R2 evidence configuration.')
     try:
         from cryptography.fernet import Fernet

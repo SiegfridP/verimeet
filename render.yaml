@@ -27,13 +27,15 @@ services:
       - key: GOOGLE_CLIENT_SECRET
         sync: false
       - key: EVIDENCE_ENDPOINT
-        sync: false
+        value: ""
       - key: EVIDENCE_BUCKET
-        sync: false
+        value: ""
       - key: EVIDENCE_ACCESS_KEY_ID
-        sync: false
+        value: ""
       - key: EVIDENCE_SECRET_ACCESS_KEY
-        sync: false
+        value: ""
+      - key: EVIDENCE_BACKEND
+        value: database
       - key: RESEND_API_KEY
         sync: false
       - key: DEFAULT_FROM_EMAIL

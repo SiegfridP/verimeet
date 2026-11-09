@@ -1,6 +1,7 @@
 from django.db import models, router, transaction
 from django.core.exceptions import ValidationError
 from accounts.models import Department, User
+from .evidence_objects import PrivateEvidenceObject  # Register private storage model.
 
 class MeetingQuerySet(models.QuerySet):
     def update(self, **kwargs):
