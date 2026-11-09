@@ -1,0 +1,95 @@
+name: Process email outboxes
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One production consumer across scheduled/manual runs and all branches.
+concurrency:
+  group: verimeet-production-email-outboxes
+  cancel-in-progress: false
+
+jobs:
+  deliver:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out trusted default-branch code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up deployment Python
+        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6
+        with:
+          python-version: '3.14'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install pinned application dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Process bounded invitation and verification batches
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+          PYTHONUNBUFFERED: '1'
+          DJANGO_SETTINGS_MODULE: core.settings
+          DJANGO_ENV: production
+          DJANGO_DEBUG: 'False'
+          DJANGO_ALLOWED_HOSTS: verimeet.onrender.com
+          APPLICATION_ORIGIN: https://verimeet.onrender.com
+          EVIDENCE_BACKEND: database
+          EMAIL_BACKEND: django.core.mail.backends.smtp.EmailBackend
+          EMAIL_HOST: smtp.gmail.com
+          EMAIL_PORT: '587'
+          EMAIL_USE_TLS: 'true'
+          EMAIL_USE_SSL: 'false'
+          EMAIL_TIMEOUT: '20'
+          EMAIL_FROM_NAME: VeriMeet
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DJANGO_SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY }}
+          SIGNING_KEY_ENCRYPTION_KEY: ${{ secrets.SIGNING_KEY_ENCRYPTION_KEY }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          EMAIL_HOST_USER: ${{ secrets.GMAIL_ADDRESS }}
+          DEFAULT_FROM_EMAIL: ${{ secrets.GMAIL_ADDRESS }}
+          EMAIL_HOST_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          PGCONNECT_TIMEOUT: '10'
+        shell: bash
+        run: |
+          python - <<'PY'
+          import logging
+          import os
+          import sys
+
+          # Never emit provider exceptions, tokens, recipient addresses or credentials.
+          logging.disable(logging.CRITICAL)
+          required = (
+              'DATABASE_URL', 'DJANGO_SECRET_KEY', 'SIGNING_KEY_ENCRYPTION_KEY',
+              'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'EMAIL_HOST_USER',
+              'EMAIL_HOST_PASSWORD', 'DEFAULT_FROM_EMAIL',
+          )
+          if any(not os.environ.get(name, '').strip() for name in required):
+              sys.exit('Required Actions secrets are missing; see docs/github-email-outboxes.md.')
+          try:
+              import django
+              django.setup()
+          except Exception:
+              sys.exit('Production configuration could not initialize; details suppressed.')
+
+          from django.core.management import call_command
+          failed = False
+          for command in ('process_invitation_deliveries', 'process_verification_deliveries'):
+              print(command, flush=True)
+              try:
+                  call_command(command, base_url=os.environ['APPLICATION_ORIGIN'], limit=5)
+              except Exception:
+                  failed = True
+                  print('Processor stopped due to an operational error; details suppressed.', flush=True)
+          sys.exit(1 if failed else 0)
+          PY
