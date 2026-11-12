@@ -1,9 +1,24 @@
 {% extends "base_app.html" %}
-
-{% block head_title %}Delete department{% endblock %}
+{% block head_title %}Permanently delete Departments{% endblock %}
 {% block content %}
-<h1>Delete {{ department.name }}?</h1><p>This permanently removes eligible department records. Protected meeting and signature evidence prevents deletion.</p>
-{% if error %}<p role="alert">{{ error }}</p>{% endif %}
-<form method="post">{% csrf_token %}<button class="btn-danger" type="submit">Delete department</button></form>
-<a href="{% url 'admin_dashboard' %}">Cancel</a>
+<h1>Permanently delete Departments</h1>
+<p>Selected Departments: <strong>{{ departments|length }}</strong></p>
+{% if error %}<p role="alert">{{ error }} Review the current inventory and confirm again.</p>{% endif %}
+<ul>{% for department in departments %}<li>{{ department.name }} (ID {{ department.pk }})</li>{% endfor %}</ul>
+<p>This irreversibly deletes the listed Departments and their related draft, finished, signed and archived relational records. Verification links will stop working.</p>
+<table><caption>Affected records</caption><thead><tr><th>Record type</th><th>Count</th></tr></thead><tbody>
+{% for label, count in counts.items %}<tr><td>{{ label }}</td><td>{{ count }}</td></tr>{% endfor %}
+</tbody></table>
+<p>User accounts, signing keys, user signatures and audit history remain. Immutable evidence bytes are retained under the existing storage policy, but may become inaccessible through normal application relationships. No storage cleanup is performed.</p>
+<p>Confirmation expires in 10 minutes. Changed records require a new confirmation.</p>
+<form method="post">{% csrf_token %}
+<input type="hidden" name="confirmation" value="{{ confirmation }}">
+<input type="hidden" name="execute_deletion" value="yes">
+{% if admin_action %}<input type="hidden" name="action" value="delete_departments_confirmed">
+{% for pk in target_ids %}<input type="hidden" name="_selected_action" value="{{ pk }}">{% endfor %}{% endif %}
+<p><label>Deletion reason <textarea name="reason" required maxlength="1000"></textarea></label></p>
+<p><label>Type DELETE to confirm <input name="typed" required autocomplete="off" pattern="DELETE"></label></p>
+<button class="btn-danger" type="submit">Permanently delete all listed Departments</button>
+</form>
+<a href="{% if admin_action %}{% url 'admin:accounts_department_changelist' %}{% else %}{% url 'admin_dashboard' %}{% endif %}">Cancel</a>
 {% endblock %}

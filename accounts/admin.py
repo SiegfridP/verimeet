@@ -77,27 +77,43 @@ class DepartmentAdmin(admin.ModelAdmin):
                 record(request.user, 'department.updated' if change else 'department.created',
                        obj, obj, {'changed_fields': sorted(form.changed_data)})
 
-    def delete_model(self, request, obj):
-        from .department_deletion import delete_with_audit
-        delete_with_audit(request.user, obj)
+    actions = ['delete_departments_confirmed']
+
+    def get_actions(self, request):
+        actions = super().get_actions(request)
+        actions.pop('delete_selected', None)
+        return actions
 
     def has_delete_permission(self, request, obj=None):
-        return (request.user.is_admin or request.user.is_superuser) and super().has_delete_permission(request, obj)
+        from .department_deletion import authorized
+        return authorized(request.user) and super().has_delete_permission(request, obj)
+
+    def delete_model(self, request, obj):
+        from django.core.exceptions import PermissionDenied
+        raise PermissionDenied('Use the confirmed Department deletion workflow.')
 
     def delete_queryset(self, request, queryset):
         from django.core.exceptions import PermissionDenied
-        from django.db.models import F
-        from .department_deletion import delete_with_audit
-        if not (request.user.is_admin or request.user.is_superuser):
-            raise PermissionDenied('Global Admin access required')
-        using = queryset.db
-        with transaction.atomic(using=using):
-            departments = list(queryset.order_by('pk'))
-            # Acquire all Department locks before any Meeting/Attendance locks.
-            for department in departments:
-                Department.objects.using(using).filter(pk=department.pk).update(name=F('name'))
-            for department in departments:
-                delete_with_audit(request.user, department, using=using)
+        raise PermissionDenied('Use the confirmed Department deletion workflow.')
+
+    @admin.action(description='Permanently delete selected Departments', permissions=['delete'])
+    def delete_departments_confirmed(self, request, queryset):
+        from django.core.exceptions import PermissionDenied
+        from .views import department_deletion_confirmation
+        if not self.admin_site.has_permission(request) or not self.has_delete_permission(request):
+            raise PermissionDenied
+        return department_deletion_confirmation(request,
+            list(queryset.values_list('pk', flat=True)), queryset.db, admin_action=True)
+
+    def delete_view(self, request, object_id, extra_context=None):
+        from django.core.exceptions import PermissionDenied
+        from django.views.decorators.csrf import csrf_protect
+        from .views import department_deletion_confirmation
+        obj = self.get_object(request, object_id)
+        if obj is None or not self.admin_site.has_permission(request) or not self.has_delete_permission(request, obj):
+            raise PermissionDenied
+        return csrf_protect(department_deletion_confirmation)(
+            request, [obj.pk], obj._state.db, admin_action=True)
 
 
 @admin.register(User)

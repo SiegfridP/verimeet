@@ -11,7 +11,7 @@ from .models import Department, Membership, User, RoleElevationRequest, Invitati
 from meetings.models import Meeting, Attendance, VerificationQR, AuditLog
 
 
-class Batch14Tests(TestCase):
+class Batch14Tests(TransactionTestCase):
     def setUp(self):
         from .test_fixtures import signature_storage, complete_onboarding
         signature_storage(self)
@@ -108,7 +108,8 @@ class Batch14Tests(TestCase):
         self.assertTrue(Department.objects.filter(pk=self.dept.pk).exists())
         csrf = Client(enforce_csrf_checks=True); csrf.force_login(self.admin)
         self.assertEqual(csrf.post(url).status_code, 403)
-        self.assertEqual(self.client.post(url).status_code, 302)
+        token = self.client.get(url).context['confirmation']
+        self.assertEqual(self.client.post(url, {'execute_deletion':'yes', 'confirmation':token, 'typed':'DELETE', 'reason':'Cleanup'}).status_code, 302)
         delivery.refresh_from_db(); self.assertIsNone(delivery.invitation_id)
         self.assertEqual(delivery.status, 'cancelled')
         self.assertIsNone(AuditLog.objects.get(event_type='department.deleted').department_id)
@@ -132,7 +133,7 @@ class Batch14Tests(TestCase):
                 for operation in (lambda: Department.objects.filter(pk=self.dept.pk).delete(),
                                   lambda: admin.site._registry[Department].delete_model(request, self.dept)):
                     with self.assertRaises((PermissionDenied, ProtectedError)), transaction.atomic(): operation()
-                self.assertEqual(self.client.post(reverse('delete_department', args=[self.dept.pk])).status_code, 400)
+                self.assertEqual(self.client.post(reverse('delete_department', args=[self.dept.pk])).status_code, 403)
                 transaction.set_rollback(True)
         VerificationQR.objects.create(attendance=attendance, token_hash='hash', encrypted_token='encrypted')
         with self.assertRaises(PermissionDenied), transaction.atomic(): self.dept.delete()

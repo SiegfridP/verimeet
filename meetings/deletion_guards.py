@@ -8,11 +8,16 @@ from .models import Attendance, Meeting, SigningVisualSnapshot
 
 @receiver(pre_delete, sender=SigningVisualSnapshot)
 def protect_snapshot(sender, instance, **kwargs):
-    raise PermissionDenied('Signing snapshots must be retained.')
+    from accounts.department_deletion import scoped
+    if not scoped(instance, kwargs['using']):
+        raise PermissionDenied('Signing snapshots must be retained.')
 
 
 @receiver(pre_delete, sender=Attendance, dispatch_uid='protect_attendance_evidence')
 def protect_attendance_evidence(sender, instance, using, **kwargs):
+    from accounts.department_deletion import scoped
+    if scoped(instance, using):
+        return
     # Collector sends pre_delete inside its atomic block, before deleting any row.
     # A listener also disables fast deletion for Attendance. Use persisted state:
     # cascade instances may have been collected before a concurrent signing write.
@@ -43,7 +48,9 @@ from .models import HistoricalRoster
 
 @receiver(pre_delete, sender=HistoricalRoster)
 def protect_historical_roster(sender, instance, **kwargs):
-    raise PermissionDenied('Historical rosters must be retained.')
+    from accounts.department_deletion import scoped
+    if not scoped(instance, kwargs['using']):
+        raise PermissionDenied('Historical rosters must be retained.')
 
 
 from accounts.models import Membership

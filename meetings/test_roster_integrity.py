@@ -68,7 +68,7 @@ class RosterIntegrityTests(TestCase):
         self.finalize()
         self.client.force_login(admin)
         response=self.client.post(reverse('delete_department',args=[self.department.pk]))
-        self.assertEqual(response.status_code,400)
+        self.assertEqual(response.status_code,403)
         self.assertTrue(Department.objects.filter(pk=self.department.pk).exists())
         self.assertTrue(HistoricalRoster.objects.filter(meeting=self.meeting).exists())
         self.assertFalse(AuditLog.objects.filter(event_type='department.deleted').exists())

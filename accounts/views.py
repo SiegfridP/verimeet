@@ -288,23 +288,33 @@ def create_department(request):
             return redirect('department_dashboard', dept_id=department.pk)
     return render(request, 'accounts/create_department.html', {'form': form})
 
-@login_required
-@require_http_methods(['GET', 'POST'])
-def delete_department(request, dept_id):
-    if not is_global_admin(request.user):
-        return HttpResponseForbidden('Global Admin access required')
-    department = get_object_or_404(Department, pk=dept_id)
+def department_deletion_confirmation(request, ids, using='default', *, admin_action=False):
+    from .department_deletion import prepare, delete_departments
+    ids = sorted(set(ids))
+    if request.method == 'POST' and not admin_action and request.POST.get('execute_deletion') != 'yes':
+        raise PermissionDenied('Explicit deletion confirmation required.')
     error = None
-    if request.method == 'POST':
+    if request.method == 'POST' and request.POST.get('execute_deletion') == 'yes':
         try:
-            from .department_deletion import delete_with_audit
-            delete_with_audit(request.user, department)
+            delete_departments(request.user, ids, using=using,
+                confirmation=request.POST.get('confirmation', ''),
+                typed=request.POST.get('typed', ''), reason=request.POST.get('reason', ''))
         except PermissionDenied as exc:
             error = str(exc)
         else:
-            return redirect('admin_dashboard')
-    return render(request, 'accounts/delete_department.html', {'department': department, 'error': error},
-                  status=400 if error else 200)
+            return redirect('admin:accounts_department_changelist' if admin_action else 'admin_dashboard')
+    departments, counts, token = prepare(request.user, ids, using)
+    return render(request, 'accounts/delete_department.html', {
+        'departments': departments, 'counts': counts, 'confirmation': token,
+        'target_ids': ids, 'admin_action': admin_action, 'error': error,
+    }, status=400 if error else 200)
+
+
+@login_required
+@require_http_methods(['GET', 'POST'])
+def delete_department(request, dept_id):
+    department = get_object_or_404(Department, pk=dept_id)
+    return department_deletion_confirmation(request, [department.pk], department._state.db)
 
 # Helper decorators
 

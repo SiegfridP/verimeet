@@ -1,3 +1,4 @@
+from django.test import TransactionTestCase
 from accounts.test_fixtures import set_meeting_fixture_state
 import time
 from django.test import TestCase, Client
@@ -4313,7 +4314,7 @@ class Batch08VerificationQRTests(TestCase):
         self.assertEqual(self.att1.signed_at, signed_at)
 
 
-class Batch09StructuredAuditTests(TestCase):
+class Batch09StructuredAuditTests(TransactionTestCase):
     setUp = Batch04DraftEditingReviewFinalizationTests.setUp
 
     def test_retention_and_legacy_defaults(self):
@@ -4332,7 +4333,11 @@ class Batch09StructuredAuditTests(TestCase):
         self.draft_meeting.delete()
         event.refresh_from_db()
         self.assertIsNone(event.meeting_id)
-        safe_department.delete()
+        from accounts.department_deletion import prepare, delete_departments
+        actor = User.objects.create_user(username='retention-deleter', is_admin=True)
+        token = prepare(actor, [safe_department.pk])[2]
+        delete_departments(actor, [safe_department.pk], confirmation=token,
+                           typed='DELETE', reason='Audit retention test')
         event.refresh_from_db()
         self.assertIsNone(event.department_id)
 
