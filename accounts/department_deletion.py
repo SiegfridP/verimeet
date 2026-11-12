@@ -1,10 +1,14 @@
 """Confirmed Department deletion. Immutable evidence bytes are retained."""
+from contextlib import contextmanager
 from contextvars import ContextVar
+from threading import Lock
+from weakref import WeakValueDictionary
 from dataclasses import dataclass
 from hashlib import sha256
 from types import MappingProxyType
 import json
 import uuid
+from django.conf import settings
 from django.core import signing
 from django.core.exceptions import PermissionDenied
 from django.db import transaction, connections, OperationalError
@@ -143,7 +147,7 @@ def prepare(actor, ids, using='default'):
     return departments, counts, token
 
 
-def _delete_departments(actor, ids, *, confirmation, typed, reason, using='default'):
+def _delete_departments(actor, ids, *, confirmation, typed, reason, using='default', session_check=lambda: None):
     if not authorized(actor) or typed != 'DELETE' or not isinstance(reason, str) or not 1 <= len(reason.strip()) <= 1000:
         raise PermissionDenied('Active Global Admin, typed DELETE and a reason are required.')
     try:
@@ -154,6 +158,7 @@ def _delete_departments(actor, ids, *, confirmation, typed, reason, using='defau
     if payload.get('actor') != actor.pk or payload.get('using') != using or payload.get('ids') != ids:
         raise PermissionDenied('Confirmation does not match this operation.')
     with transaction.atomic(using=using, durable=True):
+        session_check()
         # Membership guards span Departments. Lock the complete set in order
         # before taking any child or actor locks to avoid subset inversions.
         for pk in Department.objects.using(using).order_by('pk').values_list('pk', flat=True):
@@ -176,6 +181,7 @@ def _delete_departments(actor, ids, *, confirmation, typed, reason, using='defau
             signing.loads(confirmation, salt=SALT, max_age=600)
         except signing.BadSignature:
             raise PermissionDenied('Confirmation expired while waiting. Review and confirm again.') from None
+        session_check()
         marker = _scope.set(_DeletionScope(current.pk, payload['operation'], using,
                                           MappingProxyType(scope)))
         try:
@@ -191,8 +197,121 @@ def _delete_departments(actor, ids, *, confirmation, typed, reason, using='defau
             SigningVisualSnapshot.objects.using(using).filter(pk__in=scope[SigningVisualSnapshot._meta.label]).delete()
             HistoricalRoster.objects.using(using).filter(pk__in=scope[HistoricalRoster._meta.label]).delete()
             Department.objects.using(using).filter(pk__in=ids).delete()
+            session_check()
         finally:
             _scope.reset(marker)
+
+
+# SQLite compatibility only; production PostgreSQL serializes across workers.
+_local_operations = WeakValueDictionary()
+_local_operations_guard = Lock()
+
+
+@contextmanager
+def _operation_lock(connection, operation):
+    if connection.vendor == 'postgresql':
+        # An administrator must explicitly attest backend-session affinity for
+        # this alias. PID sampling alone cannot detect a transaction pooler that
+        # happens to return the same backend during a short probe.
+        affinity = getattr(settings, 'DEPARTMENT_DELETION_SESSION_AFFINITY', {}).get(connection.alias)
+        host = str(connection.settings_dict.get('HOST', '')).lower()
+        if affinity not in {'direct', 'session'} or '-pooler' in host or 'pgbouncer' in host:
+            raise RuntimeError('Department deletion requires explicitly configured backend-session affinity.')
+        key = int.from_bytes(sha256(json.dumps(
+            ['verimeet.department-delete', connection.alias, operation]).encode()).digest()[:8],
+            byteorder='big', signed=True)
+        raw = None
+        discarded = False
+        cleanup_error = None
+        def discard():
+            nonlocal discarded, cleanup_error
+            if discarded:
+                if cleanup_error is not None:
+                    raise cleanup_error
+                return
+            discarded = True
+            errors = []
+            replacement = connection.connection
+            handles = [raw] if raw is not None else []
+            if replacement is not None and replacement is not raw:
+                handles.append(replacement)
+            # No cursor/ensure_connection calls here. Close the original session
+            # and any replacement even if Django's close() would short-circuit.
+            for handle in handles:
+                try:
+                    handle.close()
+                except Exception as exc:
+                    errors.append(exc)
+            try:
+                connection.close()
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                connection.connection = None
+                connection.run_on_commit = []
+                connection.errors_occurred = True
+                connection.health_check_done = False
+                if connection.in_atomic_block:
+                    connection.closed_in_transaction = True
+                    connection.needs_rollback = True
+            if errors:
+                cleanup_error = (errors[0] if len(errors) == 1 else
+                                 ExceptionGroup('Department deletion connection cleanup failed.', errors))
+                raise cleanup_error
+        def check_handle():
+            if (raw is None or connection.connection is not raw or raw.closed
+                    or raw.info.backend_pid != pid):
+                raise RuntimeError('Department deletion backend session changed.')
+        def check_session():
+            try:
+                check_handle()
+                with connection.cursor() as cursor:
+                    cursor.execute('SELECT pg_backend_pid()')
+                    if cursor.fetchone()[0] != pid:
+                        raise RuntimeError('Department deletion backend session changed.')
+            except Exception:
+                discard()
+                raise
+        try:
+            with connection.cursor() as cursor:
+                raw = connection.connection
+                cursor.execute('SELECT pg_backend_pid(), pg_try_advisory_lock(%s)', [key])
+                pid, acquired = cursor.fetchone()
+                check_handle()
+        except Exception:
+            discard()
+            raise
+        if not acquired:
+            raise PermissionDenied('This deletion confirmation is already being processed. Review again later.')
+        try:
+            yield check_session
+        finally:
+            try:
+                check_handle()
+                with connection.cursor() as cursor:
+                    # CASE prevents unlocking on an unexpected backend.
+                    cursor.execute('SELECT pg_backend_pid(), CASE WHEN pg_backend_pid() = %s '
+                                   'THEN pg_advisory_unlock(%s) ELSE false END', [pid, key])
+                    released_pid, released = cursor.fetchone()
+                    if released_pid != pid or not released:
+                        raise RuntimeError('Department deletion backend session changed.')
+            except Exception:
+                discard()
+                raise
+    elif connection.vendor == 'sqlite':
+        with _local_operations_guard:
+            lock = _local_operations.get((connection.alias, operation))
+            if lock is None:
+                lock = Lock()
+                _local_operations[(connection.alias, operation)] = lock
+        if not lock.acquire(blocking=False):
+            raise PermissionDenied('This deletion confirmation is already being processed. Review again later.')
+        try:
+            yield lambda: None
+        finally:
+            lock.release()
+    else:
+        raise RuntimeError('Unsupported Department deletion database backend.')
 
 
 def delete_departments(actor, ids, *, confirmation, typed, reason, using='default'):
@@ -200,20 +319,27 @@ def delete_departments(actor, ids, *, confirmation, typed, reason, using='defaul
     if connection.in_atomic_block or not connection.get_autocommit():
         raise RuntimeError('Department deletion requires ownership of its transaction.')
     try:
-        return _delete_departments(actor, ids, confirmation=confirmation, typed=typed,
-                                   reason=reason, using=using)
-    except OperationalError as exc:
-        cause = exc.__cause__
-        code = getattr(cause, 'sqlstate', None) or getattr(cause, 'pgcode', None)
-        if code not in {'40P01', '55P03'}:
-            raise
-        # The inner atomic block has exited and rolled back, including audits.
-        # Retain a failure marker so this confirmation cannot be reused.
-        payload = signing.loads(confirmation, salt=SALT)
-        AuditLog.objects.using(using).create(
-            event_type='department.deletion_failed', action='Department deletion lock failure',
-            metadata={'operation_id': payload['operation'], 'actor_id': actor.pk})
-        raise PermissionDenied('Deletion was rolled back because records were busy. Review and confirm again.') from None
+        payload = signing.loads(confirmation, salt=SALT, max_age=600)
+    except signing.BadSignature:
+        raise PermissionDenied('Invalid or expired confirmation. Start again.') from None
+    with _operation_lock(connection, payload['operation']) as session_check:
+        try:
+            return _delete_departments(actor, ids, confirmation=confirmation, typed=typed,
+                                       reason=reason, using=using, session_check=session_check)
+        except OperationalError as exc:
+            cause = exc.__cause__
+            code = getattr(cause, 'sqlstate', None) or getattr(cause, 'pgcode', None)
+            if code not in {'40P01', '55P03'}:
+                raise
+            # The inner atomic block has exited and rolled back, including audits.
+            # Retain a failure marker so this confirmation cannot be reused.
+            payload = signing.loads(confirmation, salt=SALT)
+            session_check()
+            AuditLog.objects.using(using).create(
+                event_type='department.deletion_failed', action='Department deletion lock failure',
+                metadata={'operation_id': payload['operation'], 'actor_id': actor.pk})
+            session_check()
+            raise PermissionDenied('Deletion was rolled back because records were busy. Review and confirm again.') from None
 
 
 def delete_with_audit(actor, department, **kwargs):

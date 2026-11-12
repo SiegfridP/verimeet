@@ -5,7 +5,7 @@ from django.core import signing
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
 from django.db.models.deletion import ProtectedError
-from django.test import TestCase, TransactionTestCase
+from django.test import TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
 from .models import User, Department, Membership
 from .department_deletion import prepare, delete_departments, scoped, SALT
@@ -365,6 +365,192 @@ class DepartmentDeletionTests(TransactionTestCase):
             'action':'delete_departments_confirmed',
             '_selected_action':[self.department.pk, self.other.pk]})
         self.assertContains(response, 'Selected Departments: <strong>2</strong>')
+
+    def test_concurrent_attempt_during_failure_publication(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Event
+        from django.db import OperationalError, connections
+        from django.db.models.query import QuerySet
+        for state in ('40P01', '55P03'):
+            token = self.token()
+            publishing, release = Event(), Event()
+            class DriverFailure(Exception): sqlstate = state
+            error = OperationalError('simulated PostgreSQL lock failure')
+            error.__cause__ = DriverFailure()
+            original_create = QuerySet.create
+            def delayed_create(query, **kwargs):
+                if query.model is AuditLog and kwargs.get('event_type') == 'department.deletion_failed':
+                    publishing.set()
+                    if not release.wait(10): raise AssertionError('publication barrier timed out')
+                return original_create(query, **kwargs)
+            def attempt():
+                try:
+                    with self.assertRaisesMessage(PermissionDenied, 'rolled back'):
+                        delete_departments(self.actor, [self.department.pk], confirmation=token,
+                                           typed='DELETE', reason='Concurrent test')
+                finally:
+                    connections.close_all()
+            with patch('accounts.department_deletion.record', side_effect=error), patch.object(QuerySet, 'create', delayed_create):
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    first = executor.submit(attempt)
+                    try:
+                        self.assertTrue(publishing.wait(10))
+                        # First transaction is rolled back, marker not yet published.
+                        self.assertFalse(AuditLog.objects.filter(event_type='department.deleted').exists())
+                        self.assertTrue(Department.objects.filter(pk=self.department.pk).exists())
+                        with self.assertRaisesMessage(PermissionDenied, 'already being processed'):
+                            delete_departments(self.actor, [self.department.pk], confirmation=token,
+                                               typed='DELETE', reason='Replay')
+                    finally:
+                        release.set()
+                    first.result(timeout=10)
+            # The local operation lock was released, but durable replay state remains.
+            with self.assertRaisesMessage(PermissionDenied, 'already used'):
+                self.execute(confirmation=token)
+            self.assertFalse(AuditLog.objects.filter(event_type='department.deleted').exists())
+
+    def test_operation_lock_cleanup_and_database_isolation(self):
+        from .department_deletion import _operation_lock
+        from django.db import connections
+        for fail in (False, True):
+            try:
+                with _operation_lock(connections['default'], 'test-operation'):
+                    with self.assertRaises(PermissionDenied):
+                        with _operation_lock(connections['default'], 'test-operation'): pass
+                    with _operation_lock(connections['deletion_test'], 'test-operation'): pass
+                    if fail: raise ValueError('body failed')
+            except ValueError: pass
+            with _operation_lock(connections['default'], 'test-operation'): pass
+
+    @override_settings(DEPARTMENT_DELETION_SESSION_AFFINITY={'default':'direct', 'other':'session'})
+    def test_postgresql_session_lock_protocol_and_cleanup(self):
+        from unittest.mock import MagicMock
+        from .department_deletion import _operation_lock
+        def connection(rows, alias='default'):
+            conn = MagicMock(vendor='postgresql', alias=alias, settings_dict={'HOST':'localhost'})
+            conn.connection.closed = False
+            conn.connection.info.backend_pid = 123
+            cursor = conn.cursor.return_value.__enter__.return_value
+            cursor.fetchone.side_effect = rows
+            return conn, cursor
+        for fail in (False, True):
+            conn, cursor = connection([(123, True), (123,), (123, True)])
+            try:
+                with _operation_lock(conn, 'operation') as check:
+                    check()
+                    if fail: raise ValueError('body failed')
+            except ValueError: pass
+            calls = cursor.execute.call_args_list
+            self.assertIn('pg_try_advisory_lock', calls[0].args[0])
+            self.assertIn('CASE WHEN pg_backend_pid()', calls[-1].args[0])
+            self.assertEqual(calls[0].args[1][0], calls[-1].args[1][1])
+            self.assertEqual(calls[-1].args[1][0], 123)
+            conn.close.assert_not_called()
+            conn.connection.close.assert_not_called()
+        conn, cursor = connection([(123, False)])
+        with self.assertRaises(PermissionDenied):
+            with _operation_lock(conn, 'operation'): self.fail('must not execute')
+        self.assertEqual(cursor.execute.call_count, 1)
+        for rows in ([(456, True)], [(123, True), (456, True)], [(123, True), (123, False)]):
+            conn, cursor = connection(rows)
+            raw = conn.connection
+            with self.assertRaises(RuntimeError):
+                with _operation_lock(conn, 'operation'): pass
+            conn.close.assert_called()
+            raw.close.assert_called()
+        for fail_at in ('acquire', 'release'):
+            conn, cursor = connection([(123, True)])
+            cursor.execute.side_effect = [RuntimeError('acquire')] if fail_at == 'acquire' else [None, RuntimeError('release')]
+            with self.assertRaises(RuntimeError):
+                with _operation_lock(conn, 'operation'): pass
+            conn.close.assert_called()
+        for change in ('replaced', 'closed', 'driver_pid', 'server_pid'):
+            conn, cursor = connection([(123, True), (456,)])
+            raw = conn.connection
+            with self.assertRaises(RuntimeError):
+                with _operation_lock(conn, 'operation') as check:
+                    if change == 'replaced': conn.connection = MagicMock()
+                    if change == 'closed': raw.closed = True
+                    if change == 'driver_pid': raw.info.backend_pid = 456
+                    check()
+            raw.close.assert_called()
+            conn.close.assert_called()
+        keys = []
+        for alias in ('default', 'other'):
+            conn, cursor = connection([(123, True), (123, True)], alias)
+            with _operation_lock(conn, 'operation'): pass
+            keys.append(cursor.execute.call_args_list[0].args[1][0])
+        self.assertNotEqual(*keys)
+        for host, alias in (('ep-example-pooler.neon.tech', 'default'), ('localhost', 'undeclared')):
+            conn, cursor = connection([], alias)
+            conn.settings_dict['HOST'] = host
+            with self.assertRaisesMessage(RuntimeError, 'explicitly configured'):
+                with _operation_lock(conn, 'operation'): pass
+            conn.cursor.assert_not_called()
+
+    @override_settings(DEPARTMENT_DELETION_SESSION_AFFINITY={'default':'direct'})
+    def test_cleanup_invalidates_real_django_wrapper_without_reconnecting(self):
+        from unittest.mock import MagicMock
+        from django.db.backends.postgresql.base import DatabaseWrapper
+        from .department_deletion import _operation_lock
+        # Use Django's real close() semantics, including its early-return path.
+        for atomic in (False, True):
+            for already_closed in (False, True):
+                conn = DatabaseWrapper({'HOST':'localhost', 'OPTIONS':{}}, alias='default')
+                conn.vendor = 'postgresql'
+                original, replacement = MagicMock(), MagicMock()
+                original.closed = False
+                original.info.backend_pid = 123
+                conn.connection = original
+                cursor = MagicMock()
+                cursor.__enter__.return_value = cursor
+                cursor.fetchone.return_value = (123, True)
+                with patch.object(conn, 'cursor', return_value=cursor) as get_cursor, patch.object(conn, 'connect') as connect:
+                    with self.assertRaisesMessage(RuntimeError, 'session changed'):
+                        with _operation_lock(conn, 'operation') as check:
+                            conn.connection = replacement
+                            conn.in_atomic_block = atomic
+                            conn.closed_in_transaction = already_closed
+                            check()
+                    original.close.assert_called_once()
+                    replacement.close.assert_called()
+                    self.assertIsNone(conn.connection)
+                    self.assertEqual(conn.run_on_commit, [])
+                    self.assertTrue(conn.errors_occurred)
+                    if atomic:
+                        self.assertTrue(conn.closed_in_transaction)
+                        self.assertTrue(conn.needs_rollback)
+                    self.assertEqual(get_cursor.call_count, 1)
+                    connect.assert_not_called()
+
+    @override_settings(DEPARTMENT_DELETION_SESSION_AFFINITY={'default':'direct'})
+    def test_cleanup_preserves_original_and_replacement_close_errors(self):
+        from unittest.mock import MagicMock
+        from .department_deletion import _operation_lock
+        conn = MagicMock(vendor='postgresql', alias='default', settings_dict={'HOST':'localhost'})
+        conn.in_atomic_block = False
+        original = conn.connection
+        original.closed = False
+        original.info.backend_pid = 123
+        original.close.side_effect = RuntimeError('original session close failed')
+        replacement = MagicMock()
+        replacement.close.side_effect = ValueError('replacement close failed')
+        conn.close.side_effect = OSError('wrapper close failed')
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchone.return_value = (123, True)
+        with self.assertRaises(ExceptionGroup) as caught:
+            with _operation_lock(conn, 'operation') as check:
+                conn.connection = replacement
+                check()
+        self.assertEqual([str(exc) for exc in caught.exception.exceptions], [
+            'original session close failed', 'replacement close failed', 'wrapper close failed'])
+        original.close.assert_called_once()
+        replacement.close.assert_called_once()
+        conn.close.assert_called_once()
+        self.assertIsNone(conn.connection)
+        self.assertEqual(conn.cursor.call_count, 1)
+        conn.connect.assert_not_called()
+        conn.ensure_connection.assert_not_called()
 
 
 class DepartmentDeletionAliasTests(TransactionTestCase):
