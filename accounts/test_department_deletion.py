@@ -747,68 +747,6 @@ class DepartmentDeletionClaimUnitTests(SimpleTestCase):
                 audits.create.assert_called_once()
                 delete.assert_not_called()
 
-    @override_settings(DEPARTMENT_DELETION_SESSION_AFFINITY={'default': 'direct'})
-    def test_failure_diagnostics_report_stage_and_completed_commits(self):
-        from types import SimpleNamespace
-        from unittest.mock import MagicMock
-        from django.db import OperationalError
-        from . import department_deletion as service
-
-        actor = SimpleNamespace(pk=1, is_authenticated=True, is_active=True, is_admin=True)
-        token = signing.dumps({'actor': 1, 'using': 'default', 'ids': [2], 'operation': 'diagnostic'}, salt=SALT)
-
-        class DriverFailure(Exception):
-            sqlstate = '08006'
-
-        for stage, claimed, deleted, logger_fails in (
-            ('advisory_lock_acquisition', False, False, False),
-            ('confirmation_claim', False, False, False),
-            ('deletion_transaction', True, False, False),
-            ('advisory_lock_cleanup', True, True, False),
-            ('deletion_transaction', True, False, True),
-        ):
-            connection = MagicMock(vendor='postgresql', alias='default', in_atomic_block=False,
-                                   settings_dict={'HOST': 'private-host.invalid'})
-            connection.get_autocommit.return_value = True
-            connection.connection.closed = False
-            connection.connection.info.backend_pid = 123
-            cursor = connection.cursor.return_value.__enter__.return_value
-            cursor.fetchone.side_effect = [(123, True), (123,), (123, True)]
-            claim = MagicMock()
-            failure = OperationalError('private database error details')
-            failure.__cause__ = DriverFailure('private driver details')
-            with (
-                self.subTest(stage=stage, logger_fails=logger_fails),
-                patch.object(service, 'connections', {'default': connection}),
-                patch.object(service.transaction, 'atomic', return_value=claim),
-                patch.object(User.objects, 'using') as users,
-                patch.object(AuditLog.objects, 'using') as audits,
-                patch.object(service, '_delete_departments') as delete,
-                patch.object(service.logging.getLogger('gunicorn.error'), 'error') as log,
-            ):
-                users.return_value.filter.return_value.first.return_value = actor
-                audits.return_value.filter.return_value.exists.return_value = False
-                if logger_fails:
-                    log.side_effect = RuntimeError('logging unavailable')
-                if stage == 'advisory_lock_acquisition':
-                    cursor.execute.side_effect = failure
-                elif stage == 'confirmation_claim':
-                    claim.__exit__.side_effect = failure
-                elif stage == 'deletion_transaction':
-                    delete.side_effect = failure
-                else:
-                    cursor.execute.side_effect = [None, None, failure]
-
-                with self.assertRaises(OperationalError) as caught:
-                    delete_departments(actor, [2], confirmation=token, typed='DELETE', reason='Private reason')
-                self.assertIs(caught.exception, failure)
-                log.assert_called_once()
-                self.assertEqual(log.call_args.kwargs, {})
-                message, *args = log.call_args.args
-                self.assertEqual(message % tuple(args),
-                                 f'Department deletion failed stage={stage} exception=OperationalError '
-                                 f'sqlstate=08006 claim_committed={claimed} deletion_committed={deleted}')
-
 
 class DepartmentDeletionTransactionBoundaryTests(TransactionTestCase):
     def setUp(self):

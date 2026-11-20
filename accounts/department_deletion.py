@@ -7,8 +7,6 @@ from dataclasses import dataclass
 from hashlib import sha256
 from types import MappingProxyType
 import json
-import logging
-import re
 import uuid
 from django.conf import settings
 from django.core import signing
@@ -313,68 +311,27 @@ def _operation_lock(connection, operation):
         raise RuntimeError('Unsupported Department deletion database backend.')
 
 
-def _log_deletion_failure(stage, exc, claim_committed, deletion_committed):
-    # Temporary production diagnostic. Logging must never mask the original error.
-    try:
-        sqlstate = '-'
-        for error in (exc.__cause__, exc):
-            code = getattr(error, 'sqlstate', None) or getattr(error, 'pgcode', None)
-            if isinstance(code, str) and re.fullmatch(r'[0-9A-Z]{5}', code):
-                sqlstate = code
-                break
-        logging.getLogger('gunicorn.error').error(
-            'Department deletion failed stage=%s exception=%s sqlstate=%s '
-            'claim_committed=%s deletion_committed=%s',
-            stage, type(exc).__name__, sqlstate, claim_committed, deletion_committed,
-        )
-    except Exception:
-        pass
-
-
 def delete_departments(actor, ids, *, confirmation, typed, reason, using='default'):
-    stage = 'request_validation'
-    claim_committed = deletion_committed = False
-    body_error = None
-    try:
-        connection, ids, payload = _validate_deletion_request(actor, ids, confirmation, typed, reason, using)
-        stage = 'advisory_lock_acquisition'
-        with _operation_lock(connection, payload['operation']) as session_check:
-            try:
-                stage = 'confirmation_claim'
-                _claim_confirmation(actor, payload['operation'], using, session_check)
-                claim_committed = True
-                stage = 'deletion_transaction'
-                try:
-                    result = _delete_departments(actor, ids, confirmation=confirmation, payload=payload,
-                                                 reason=reason, using=using, session_check=session_check)
-                except OperationalError as exc:
-                    cause = exc.__cause__
-                    code = getattr(cause, 'sqlstate', None) or getattr(cause, 'pgcode', None)
-                    if code not in {'40P01', '55P03'}:
-                        raise
-                    # The deletion transaction rolled back. The committed claim
-                    # prevents replay even if recording this outcome fails.
-                    stage = 'failure_audit'
-                    session_check()
-                    AuditLog.objects.using(using).create(
-                        event_type='department.deletion_failed', action='Department deletion lock failure',
-                        metadata={'operation_id': payload['operation'], 'actor_id': actor.pk})
-                    session_check()
-                    raise PermissionDenied('Deletion was rolled back because records were busy. Review and confirm again.') from None
-                deletion_committed = True
-            except Exception as exc:
-                body_error = exc
+    connection, ids, payload = _validate_deletion_request(actor, ids, confirmation, typed, reason, using)
+    operation = payload['operation']
+    with _operation_lock(connection, operation) as session_check:
+        _claim_confirmation(actor, operation, using, session_check)
+        try:
+            return _delete_departments(actor, ids, confirmation=confirmation, payload=payload,
+                                       reason=reason, using=using, session_check=session_check)
+        except OperationalError as exc:
+            cause = exc.__cause__
+            code = getattr(cause, 'sqlstate', None) or getattr(cause, 'pgcode', None)
+            if code not in {'40P01', '55P03'}:
                 raise
-        return result
-    except Exception as exc:
-        expected_errors = (PermissionDenied, DepartmentDeletionUnavailable)
-        if body_error is not None and not isinstance(body_error, expected_errors):
-            _log_deletion_failure(stage, body_error, claim_committed, deletion_committed)
-        if exc is not body_error and not isinstance(exc, expected_errors):
-            if stage not in {'request_validation', 'advisory_lock_acquisition'}:
-                stage = 'advisory_lock_cleanup'
-            _log_deletion_failure(stage, exc, claim_committed, deletion_committed)
-        raise
+            # The deletion transaction rolled back. The committed claim
+            # prevents replay even if recording this outcome fails.
+            session_check()
+            AuditLog.objects.using(using).create(
+                event_type='department.deletion_failed', action='Department deletion lock failure',
+                metadata={'operation_id': operation, 'actor_id': actor.pk})
+            session_check()
+            raise PermissionDenied('Deletion was rolled back because records were busy. Review and confirm again.') from None
 
 
 def _validate_deletion_request(actor, ids, confirmation, typed, reason, using):
