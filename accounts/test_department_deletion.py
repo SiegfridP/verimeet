@@ -1,14 +1,17 @@
 """Confirmed destruction regressions; never uses deployment resources."""
+from contextlib import nullcontext
 from unittest.mock import patch
 from django.contrib import admin
 from django.core import signing
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
 from django.db.models.deletion import ProtectedError
-from django.test import TestCase, TransactionTestCase, override_settings
+from django.test import SimpleTestCase, TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
 from .models import User, Department, Membership
-from .department_deletion import prepare, delete_departments, scoped, SALT
+from .department_deletion import (
+    CLAIM_EVENT, SALT, DepartmentDeletionUnavailable, delete_departments, prepare, scoped,
+)
 from meetings.models import Meeting, Attendance, AuditLog, HistoricalRoster, SigningVisualSnapshot, VerificationQR
 from meetings.evidence_objects import PrivateEvidenceObject
 
@@ -109,11 +112,16 @@ class DepartmentDeletionTests(TransactionTestCase):
         with self.assertRaises(PermissionDenied): self.execute(confirmation=token)
 
     def test_replay(self):
+        retained = Membership.objects.create(user=self.officer, department=self.other)
         token = self.token()
         ids = [self.department.pk]
         self.execute(confirmation=token)
-        with self.assertRaises(PermissionDenied):
+        with self.assertRaisesMessage(PermissionDenied, 'already used'):
             delete_departments(self.actor, ids, confirmation=token, typed='DELETE', reason='Again')
+        events = AuditLog.objects.filter(metadata__operation_id=signing.loads(token, salt=SALT)['operation'])
+        self.assertCountEqual(events.values_list('event_type', flat=True), [CLAIM_EVENT, 'department.deleted'])
+        self.assertTrue(Membership.objects.filter(pk=retained.pk).exists())
+        self.assertEqual(User.objects.filter(pk__in=[self.actor.pk, self.officer.pk]).count(), 2)
 
     def test_audit_failure_bulk_rollback(self):
         ids = [self.department.pk, self.other.pk]
@@ -121,7 +129,9 @@ class DepartmentDeletionTests(TransactionTestCase):
         with patch('accounts.department_deletion.record', side_effect=RuntimeError('audit failed')):
             with self.assertRaises(RuntimeError): self.execute(ids, confirmation=token)
         self.assertEqual(Department.objects.count(), 2)
-        self.assertFalse(AuditLog.objects.exists())
+        self.assertEqual(list(AuditLog.objects.values_list('event_type', flat=True)), [CLAIM_EVENT])
+        with self.assertRaisesMessage(PermissionDenied, 'already used'):
+            self.execute(ids, confirmation=token)
         self.assertFalse(scoped(self.department, 'default'))
 
     def test_descendant_failure_rollback_and_scope_cleanup(self):
@@ -136,7 +146,7 @@ class DepartmentDeletionTests(TransactionTestCase):
         with patch.object(QuerySet, 'delete', fail_second):
             with self.assertRaises(RuntimeError): self.execute(confirmation=token)
         self.assertTrue(SigningVisualSnapshot.objects.exists())
-        self.assertFalse(AuditLog.objects.exists())
+        self.assertEqual(list(AuditLog.objects.values_list('event_type', flat=True)), [CLAIM_EVENT])
         with transaction.atomic():
             with self.assertRaises((PermissionDenied, ProtectedError)): self.department.delete()
 
@@ -208,7 +218,7 @@ class DepartmentDeletionTests(TransactionTestCase):
         with patch('accounts.department_deletion.record', side_effect=fail):
             with self.assertRaises(RuntimeError): self.execute(ids, confirmation=token)
         self.assertEqual(Department.objects.count(), 2)
-        self.assertFalse(AuditLog.objects.exists())
+        self.assertEqual(list(AuditLog.objects.values_list('event_type', flat=True)), [CLAIM_EVENT])
 
     def test_scope_rejects_unrelated_objects(self):
         from . import department_deletion as service
@@ -373,6 +383,7 @@ class DepartmentDeletionTests(TransactionTestCase):
         from django.db.models.query import QuerySet
         for state in ('40P01', '55P03'):
             token = self.token()
+            operation = signing.loads(token, salt=SALT)['operation']
             publishing, release = Event(), Event()
             class DriverFailure(Exception): sqlstate = state
             error = OperationalError('simulated PostgreSQL lock failure')
@@ -396,6 +407,8 @@ class DepartmentDeletionTests(TransactionTestCase):
                     try:
                         self.assertTrue(publishing.wait(10))
                         # First transaction is rolled back, marker not yet published.
+                        self.assertEqual(AuditLog.objects.filter(event_type=CLAIM_EVENT,
+                                         metadata__operation_id=operation).count(), 1)
                         self.assertFalse(AuditLog.objects.filter(event_type='department.deleted').exists())
                         self.assertTrue(Department.objects.filter(pk=self.department.pk).exists())
                         with self.assertRaisesMessage(PermissionDenied, 'already being processed'):
@@ -412,15 +425,42 @@ class DepartmentDeletionTests(TransactionTestCase):
     def test_operation_lock_cleanup_and_database_isolation(self):
         from .department_deletion import _operation_lock
         from django.db import connections
+        owner = connections['default']
+        contender = owner
+        if owner.vendor == 'postgresql':
+            # A same-session advisory lock is reentrant. Use Django's copied
+            # wrapper to open a second session on the same guarded alias.
+            contender = owner.copy()
+            self.addCleanup(contender.close)
+            with owner.cursor() as cursor:
+                cursor.execute('SELECT pg_backend_pid()')
+                owner_pid, = cursor.fetchone()
+            with contender.cursor() as cursor:
+                cursor.execute('SELECT pg_backend_pid()')
+                contender_pid, = cursor.fetchone()
+            self.assertIsNot(owner.connection, contender.connection)
+            self.assertEqual(owner_pid, owner.connection.info.backend_pid)
+            self.assertEqual(contender_pid, contender.connection.info.backend_pid)
+            self.assertNotEqual(owner_pid, contender_pid)
+
         for fail in (False, True):
-            try:
-                with _operation_lock(connections['default'], 'test-operation'):
-                    with self.assertRaises(PermissionDenied):
-                        with _operation_lock(connections['default'], 'test-operation'): pass
-                    with _operation_lock(connections['deletion_test'], 'test-operation'): pass
-                    if fail: raise ValueError('body failed')
-            except ValueError: pass
-            with _operation_lock(connections['default'], 'test-operation'): pass
+            with self.subTest(body_raises=fail):
+                expected = self.assertRaisesMessage(ValueError, 'body failed') if fail else nullcontext()
+                with expected, _operation_lock(owner, 'test-operation') as check_owner:
+                    # Acquisition is nonblocking, with the runner's connect and
+                    # statement timeouts bounding the PostgreSQL calls.
+                    with self.assertRaisesMessage(PermissionDenied, 'already being processed'):
+                        with _operation_lock(contender, 'test-operation'):
+                            self.fail('Contender acquired the operation lock while held')
+                    with _operation_lock(connections['deletion_test'], 'test-operation'):
+                        check_owner()
+                    if fail:
+                        raise ValueError('body failed')
+                with _operation_lock(contender, 'test-operation') as check_contender:
+                    check_contender()
+                if owner.vendor == 'postgresql':
+                    self.assertEqual(owner.connection.info.backend_pid, owner_pid)
+                    self.assertEqual(contender.connection.info.backend_pid, contender_pid)
 
     @override_settings(DEPARTMENT_DELETION_SESSION_AFFINITY={'default':'direct', 'other':'session'})
     def test_postgresql_session_lock_protocol_and_cleanup(self):
@@ -484,7 +524,7 @@ class DepartmentDeletionTests(TransactionTestCase):
         for host, alias in (('ep-example-pooler.neon.tech', 'default'), ('localhost', 'undeclared')):
             conn, cursor = connection([], alias)
             conn.settings_dict['HOST'] = host
-            with self.assertRaisesMessage(RuntimeError, 'explicitly configured'):
+            with self.assertRaisesMessage(DepartmentDeletionUnavailable, 'explicitly configured'):
                 with _operation_lock(conn, 'operation'): pass
             conn.cursor.assert_not_called()
 
@@ -565,12 +605,92 @@ class DepartmentDeletionAliasTests(TransactionTestCase):
         with patch('accounts.department_deletion.record', side_effect=RuntimeError('audit failed')):
             with self.assertRaises(RuntimeError): delete_departments(actor, [department.pk], **args)
         self.assertTrue(Department.objects.using(alias).filter(pk=department.pk).exists())
-        self.assertFalse(AuditLog.objects.using(alias).exists())
+        self.assertEqual(list(AuditLog.objects.using(alias).values_list('event_type', flat=True)), [CLAIM_EVENT])
+        with self.assertRaisesMessage(PermissionDenied, 'already used'):
+            delete_departments(actor, [department.pk], **args)
+        args['confirmation'] = prepare(actor, [department.pk], alias)[2]
         delete_departments(actor, [department.pk], **args)
         event = AuditLog.objects.using(alias).get(event_type='department.deleted')
         self.assertIsNone(event.department_id)
         self.assertFalse(Department.objects.using(alias).exists())
         self.assertFalse(AuditLog.objects.using('default').exists())
+
+
+class DepartmentDeletionClaimUnitTests(SimpleTestCase):
+    @override_settings(DEPARTMENT_DELETION_SESSION_AFFINITY={})
+    def test_postgres_operation_lock_denies_missing_affinity_without_opening_cursor(self):
+        from unittest.mock import Mock
+        from .department_deletion import _operation_lock
+
+        connection = Mock(vendor='postgresql', alias='default', settings_dict={'HOST': 'localhost'})
+        with self.assertRaisesMessage(DepartmentDeletionUnavailable, 'explicitly configured backend-session affinity'):
+            with _operation_lock(connection, 'operation'):
+                self.fail('Unconfigured PostgreSQL session acquired the operation lock')
+        connection.cursor.assert_not_called()
+
+    def test_confirmation_response_for_missing_or_invalid_postgres_affinity(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from django.test import RequestFactory
+        from . import department_deletion as service
+        from .views import department_deletion_confirmation
+
+        connection = Mock(vendor='postgresql', alias='default', settings_dict={'HOST': 'localhost'},
+                          in_atomic_block=False)
+        connection.get_autocommit.return_value = True
+        request = RequestFactory().post('/', {
+            'execute_deletion': 'yes', 'typed': 'DELETE', 'reason': 'Test unavailable',
+            'confirmation': signing.dumps(
+                {'actor': 1, 'using': 'default', 'ids': [2], 'operation': 'unavailable-test'}, salt=SALT),
+        })
+        request.user = SimpleNamespace(pk=1, is_authenticated=True, is_active=True, is_admin=True)
+        for affinity in ({}, {'default': 'transaction'}):
+            with (
+                self.subTest(affinity=affinity),
+                self.settings(DEPARTMENT_DELETION_SESSION_AFFINITY=affinity),
+                patch.object(service, 'connections', {'default': connection}),
+                patch.object(service.transaction, 'atomic') as atomic,
+                patch.object(AuditLog.objects, 'using') as audits,
+                patch.object(service, '_delete_departments') as delete,
+            ):
+                response = department_deletion_confirmation(request, [2])
+                self.assertContains(response, 'Department deletion is currently unavailable.', status_code=503)
+                connection.cursor.assert_not_called()
+                atomic.assert_not_called()
+                audits.assert_not_called()
+                delete.assert_not_called()
+
+    def test_claim_insert_or_commit_failure_prevents_destructive_transaction(self):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+        from django.db import DatabaseError
+        from . import department_deletion as service
+
+        actor = SimpleNamespace(pk=1, is_authenticated=True, is_active=True, is_admin=True)
+        token = signing.dumps({'actor': 1, 'using': 'default', 'ids': [2], 'operation': 'claim-test'}, salt=SALT)
+        connection = MagicMock(in_atomic_block=False)
+        connection.get_autocommit.return_value = True
+        for stage in ('insert', 'commit'):
+            claim_transaction = MagicMock()
+            audits = MagicMock()
+            audits.filter.return_value.exists.return_value = False
+            failing_step = audits.create if stage == 'insert' else claim_transaction.__exit__
+            failing_step.side_effect = DatabaseError('claim persistence failed')
+            with (
+                self.subTest(stage=stage),
+                patch.object(service, 'connections', {'default': connection}),
+                patch.object(service, '_operation_lock', return_value=nullcontext(lambda: None)),
+                patch.object(service.transaction, 'atomic', return_value=claim_transaction) as atomic,
+                patch.object(User.objects, 'using') as users,
+                patch.object(AuditLog.objects, 'using', return_value=audits),
+                patch.object(service, '_delete_departments') as delete,
+            ):
+                users.return_value.filter.return_value.first.return_value = actor
+                with self.assertRaisesMessage(DatabaseError, 'claim persistence failed'):
+                    delete_departments(actor, [2], confirmation=token, typed='DELETE', reason='Test claim')
+                atomic.assert_called_once_with(using='default', durable=True)
+                audits.create.assert_called_once()
+                delete.assert_not_called()
 
 
 class DepartmentDeletionTransactionBoundaryTests(TransactionTestCase):
@@ -600,6 +720,31 @@ class DepartmentDeletionTransactionBoundaryTests(TransactionTestCase):
         self.assertTrue(Department.objects.filter(pk=self.department.pk).exists())
         with self.assertRaisesMessage(PermissionDenied, 'already used'): self.execute()
 
+    def test_confirmation_cannot_be_replayed_when_marker_write_fails(self):
+        from django.db import IntegrityError, OperationalError
+        from django.db.models import QuerySet
+
+        class LockTimeout(Exception):
+            sqlstate = '55P03'
+
+        failure = OperationalError('simulated lock timeout')
+        failure.__cause__ = LockTimeout()
+        original_create = QuerySet.create
+
+        def reject_marker(query, **kwargs):
+            if query.model is AuditLog and kwargs.get('event_type') == 'department.deletion_failed':
+                kwargs['event_type'] = None  # Exercise the database's NOT NULL constraint.
+            return original_create(query, **kwargs)
+
+        with patch('accounts.department_deletion.record', side_effect=failure):
+            with patch.object(QuerySet, 'create', reject_marker), self.assertRaises(IntegrityError):
+                self.execute()
+        self.assertTrue(Department.objects.filter(pk=self.department.pk).exists())
+        self.assertEqual(list(AuditLog.objects.values_list('event_type', flat=True)), [CLAIM_EVENT])
+        with self.assertRaisesMessage(PermissionDenied, 'already used'):
+            self.execute()
+        self.assertTrue(Department.objects.filter(pk=self.department.pk).exists())
+
     def test_enclosing_atomic_rejected_without_failure_marker(self):
         with self.assertRaisesMessage(RuntimeError, 'ownership'):
             with transaction.atomic(): self.execute()
@@ -615,3 +760,538 @@ class DepartmentDeletionTransactionBoundaryTests(TransactionTestCase):
             connection.rollback()
             connection.set_autocommit(True)
         self.assertFalse(AuditLog.objects.exists())
+
+
+class PostgreSQLDepartmentDeletionConcurrencyTests(TransactionTestCase):
+    """Live lock regressions for the guarded disposable runner only."""
+
+    @classmethod
+    def setUpClass(cls):
+        from unittest import SkipTest
+        from django.conf import settings
+        if settings.SETTINGS_MODULE != 'core.postgres_test_settings':
+            raise SkipTest('Requires the guarded disposable PostgreSQL runner')
+        from . import run_postgres_department_tests as runner
+        from django.db import connection
+        runner.validate_wrapper(connection)
+        super().setUpClass()
+
+    def setUp(self):
+        from hashlib import sha256
+        self.actor = User.objects.create_user(username='delete-admin', is_admin=True, public_key='test')
+        self.department = Department.objects.create(name='Target')
+        self.other = Department.objects.create(name='Unrelated')
+        self.officer = User.objects.create_user(username='roster-user', department=self.department, public_key='test')
+        self.membership = Membership.objects.create(user=self.officer, department=self.department)
+        self.evidence = PrivateEvidenceObject.objects.create(
+            key='snapshots/' + 'a' * 32 + '.png', data=b'baseline evidence',
+            content_sha256=sha256(b'baseline evidence').hexdigest())
+        meeting = Meeting.objects.create(department=self.department, title='Existing signed evidence')
+        self.signed = Attendance.objects.create(meeting=meeting, user=self.officer)
+        Attendance.objects.filter(pk=self.signed.pk).update(has_signed=True, cryptographic_signature='existing')
+        self.snapshot = SigningVisualSnapshot.objects.create(
+            attendance=self.signed, storage_identifier='a' * 32, content_sha256=self.evidence.content_sha256,
+            byte_length=len(self.evidence.data), width=1, height=1)
+
+    def sql(self, sql, params=None):
+        from django.db import connection
+        with connection.cursor() as cursor:
+            cursor.execute(sql, params)
+            return cursor.fetchone()[0] if cursor.description else None
+
+    def worker(self, pool, action):
+        from concurrent.futures import Future
+        from django.db import connections
+
+        ready = Future()
+
+        def run():
+            try:
+                self.sql("SET statement_timeout = '20s'")
+                self.sql("SET lock_timeout = '12s'")
+                pid = self.sql('SELECT pg_backend_pid()')
+                self.assertEqual(pid, connections['default'].connection.info.backend_pid)
+                ready.set_result(pid)
+                return action()
+            except BaseException as exc:
+                if not ready.done():
+                    ready.set_exception(exc)
+                raise
+            finally:
+                connections.close_all()
+
+        result = pool.submit(run)
+        return ready.result(timeout=10), result
+
+    def wait(self, event):
+        self.assertTrue(event.wait(10), 'Timed out waiting for transaction checkpoint')
+
+    def blocked_by(self, waiter, blocker):
+        from time import monotonic
+        from threading import Event
+        observer = self.sql('SELECT pg_backend_pid()')
+        self.assertEqual(len({observer, waiter, blocker}), 3)
+        deadline = monotonic() + 4
+        poll = Event()
+        while monotonic() < deadline:
+            if blocker in self.sql('SELECT pg_blocking_pids(%s)', [waiter]):
+                return
+            poll.wait(0.02)
+        self.fail(f'Backend {waiter} did not wait on {blocker}')
+
+    def compete(self, first, second):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Event
+        paused, release = Event(), Event()
+
+        def checkpoint():
+            paused.set()
+            self.wait(release)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            winner_pid, winner = self.worker(pool, lambda: first(checkpoint))
+            try:
+                self.wait(paused)
+                loser_pid, loser = self.worker(pool, second)
+                self.blocked_by(loser_pid, winner_pid)
+            finally:
+                release.set()
+            winner.result(timeout=25)
+            loser.result(timeout=25)
+        self.fresh_session()
+
+    def fresh_session(self):
+        from django.db import connection
+        previous_pid = self.sql('SELECT pg_backend_pid()')
+        connection.close()
+        self.assertNotEqual(self.sql('SELECT pg_backend_pid()'), previous_pid)
+
+    def execute(self, token, ids=None):
+        delete_departments(self.actor, ids or [self.department.pk], confirmation=token,
+                           typed='DELETE', reason='PostgreSQL concurrency regression')
+
+    def confirmed(self, ids=None):
+        return prepare(self.actor, ids or [self.department.pk])[2]
+
+    def pause_deletion(self, token, checkpoint, ids=None):
+        from . import department_deletion as service
+        original = service.inventory
+
+        def inventory(*args, **kwargs):
+            result = original(*args, **kwargs)
+            if kwargs.get('lock') and self.sql('SELECT pg_backend_pid()') == owner_pid:
+                checkpoint()
+            return result
+
+        owner_pid = self.sql('SELECT pg_backend_pid()')
+        with patch.object(service, 'inventory', side_effect=inventory):
+            self.execute(token, ids)
+
+    def assert_preserved(self):
+        from hashlib import sha256
+        self.assertTrue(Department.objects.filter(pk=self.department.pk).exists())
+        self.assertTrue(Membership.objects.filter(pk=self.membership.pk).exists())
+        self.assertTrue(SigningVisualSnapshot.objects.filter(pk=self.snapshot.pk).exists())
+        self.assertEqual(Attendance.objects.get(pk=self.signed.pk).cryptographic_signature, 'existing')
+        evidence = PrivateEvidenceObject.objects.get(pk=self.evidence.pk)
+        self.assertEqual(sha256(evidence.data).hexdigest(), self.evidence.content_sha256)
+        self.assertFalse(AuditLog.objects.filter(event_type__in=['department.deleted', 'membership.removed']).exists())
+        self.assertTrue(Department.objects.filter(pk=self.other.pk).exists())
+
+    def assert_deleted(self):
+        self.assertFalse(Department.objects.filter(pk=self.department.pk).exists())
+        self.assertFalse(Meeting.objects.filter(department_id=self.department.pk).exists())
+        self.assertFalse(Attendance.objects.filter(pk=self.signed.pk).exists())
+        self.assertFalse(Membership.objects.filter(department_id=self.department.pk).exists())
+        self.assertFalse(SigningVisualSnapshot.objects.filter(pk=self.snapshot.pk).exists())
+        evidence = PrivateEvidenceObject.objects.get(pk=self.evidence.pk)
+        self.assertEqual(bytes(evidence.data), bytes(self.evidence.data))
+        self.assertIsNone(User.objects.get(pk=self.officer.pk).department_id)
+        self.assertEqual(AuditLog.objects.filter(event_type='department.deleted').count(), 1)
+        self.assertTrue(Department.objects.filter(pk=self.other.pk).exists())
+
+    def mutation_race(self, mutate, *, deletion_first, rejection=None, message=None):
+        token = self.confirmed()
+        if deletion_first:
+            def rejected_mutation():
+                with self.assertRaisesMessage(rejection, message):
+                    mutate()
+
+            self.compete(lambda pause: self.pause_deletion(token, pause), rejected_mutation)
+            self.assert_deleted()
+        else:
+            def held_mutation(pause):
+                with transaction.atomic():
+                    mutate()
+                    pause()
+
+            def rejected_deletion():
+                with self.assertRaisesMessage(PermissionDenied, message or 'Affected records changed'):
+                    self.execute(token)
+
+            self.compete(held_mutation, rejected_deletion)
+            self.assert_preserved()
+
+    def assert_department_lock_precedes_meeting_lock(self, mutate):
+        from django.db import connection
+
+        locks = []
+
+        def record_locks(execute, sql, params, many, context):
+            if sql.startswith('UPDATE "accounts_department"'):
+                locks.append('department')
+            elif sql.startswith('UPDATE "meetings_meeting"') or (
+                    'FROM "meetings_meeting"' in sql and 'FOR UPDATE' in sql):
+                locks.append('meeting')
+            return execute(sql, params, many, context)
+
+        with connection.execute_wrapper(record_locks):
+            mutate()
+        self.assertEqual(locks[:2], ['department', 'meeting'])
+
+    def test_overlapping_deletes_reject_the_entire_stale_selection(self):
+        first = self.confirmed()
+        overlap = [self.department.pk, self.other.pk]
+        second = self.confirmed(overlap)
+        self.assertNotEqual(signing.loads(first, salt=SALT)['operation'], signing.loads(second, salt=SALT)['operation'])
+
+        def reject_overlap():
+            with self.assertRaisesMessage(PermissionDenied, 'Department selection changed'):
+                self.execute(second, overlap)
+
+        self.compete(lambda pause: self.pause_deletion(first, pause), reject_overlap)
+        self.assert_deleted()
+
+    def test_disjoint_deletes_serialize_on_department_rows(self):
+        disjoint = Department.objects.create(name='Second deletion')
+        second = self.confirmed([disjoint.pk])
+        first = self.confirmed()
+        self.compete(lambda pause: self.pause_deletion(first, pause), lambda: self.execute(second, [disjoint.pk]))
+        self.assertFalse(Department.objects.filter(pk__in=[self.department.pk, disjoint.pk]).exists())
+        self.assertTrue(Department.objects.filter(pk=self.other.pk).exists())
+        self.assertCountEqual(AuditLog.objects.filter(event_type='department.deleted').values_list('target_id', flat=True),
+                              [str(self.department.pk), str(disjoint.pk)])
+        self.assertTrue(PrivateEvidenceObject.objects.filter(pk=self.evidence.pk).exists())
+
+    def post(self, user, data=None):
+        from django.contrib.messages.storage.cookie import CookieStorage
+        from django.test import RequestFactory
+        request = RequestFactory().post('/', data or {})
+        request.user = user
+        request._messages = CookieStorage(request)
+        return request
+
+    def signing_race(self, deletion_first):
+        from hashlib import sha256
+        from time import time
+        from .test_fixtures import complete_onboarding, finalize_meeting_fixture, signature_storage
+        from meetings.crypto import generate_hmac_qr_token
+        from meetings.views import sign_meeting
+        from meetings.visual_evidence import read_snapshot
+        signature_storage(self)
+        signer = User.objects.create_user(username='concurrent-signer', first_name='Concurrent', last_name='Signer')
+        complete_onboarding(signer)
+        Membership.objects.create(user=signer, department=self.department)
+        meeting = Meeting.objects.create(department=self.department, title='Concurrent signature')
+        attendance = Attendance.objects.create(meeting=meeting, user=signer, status='Attended')
+        finalize_meeting_fixture(meeting)
+
+        def sign():
+            timestamp = str(int(time()))
+            request = self.post(signer, {'t': timestamp, 'sig': generate_hmac_qr_token(meeting.pk, timestamp)})
+            self.assertEqual(sign_meeting(request, meeting.pk).status_code, 302)
+
+        if deletion_first:
+            self.mutation_race(sign, deletion_first=True, rejection=PermissionDenied,
+                               message='attendance is read-only')
+        else:
+            self.mutation_race(lambda: self.assert_department_lock_precedes_meeting_lock(sign),
+                               deletion_first=False)
+        events = AuditLog.objects.filter(event_type='signature.created')
+        if deletion_first:
+            self.assertFalse(events.exists())
+            self.assertFalse(SigningVisualSnapshot.objects.filter(attendance_id=attendance.pk).exists())
+            self.assertTrue(User.objects.filter(pk=signer.pk).exists())
+        else:
+            self.assertEqual(events.count(), 1)
+            attendance.refresh_from_db()
+            self.assertTrue(attendance.has_signed)
+            snapshot = SigningVisualSnapshot.objects.get(attendance=attendance)
+            snapshot_bytes = read_snapshot(snapshot.storage_identifier, snapshot.content_sha256,
+                                           snapshot.byte_length, snapshot.width, snapshot.height)
+            self.assertIsNotNone(snapshot_bytes)
+            with signer.signature_image.open('rb') as signature:
+                self.assertEqual(sha256(snapshot_bytes).digest(), sha256(signature.read()).digest())
+
+    def test_signing_commit_invalidates_confirmation(self):
+        self.signing_race(deletion_first=False)
+
+    def test_deletion_winner_prevents_signing(self):
+        self.signing_race(deletion_first=True)
+
+    def lifecycle_race(self, *, archive, deletion_first):
+        from django.core.exceptions import ValidationError
+        from django.http import Http404
+        from .test_fixtures import finalize_meeting_fixture
+        from meetings.views import finalize_meeting
+        meeting = Meeting.objects.create(department=self.department, title='Concurrent lifecycle')
+        if archive:
+            finalize_meeting_fixture(meeting)
+
+        def change_status():
+            if archive:
+                current = Meeting.objects.get(pk=meeting.pk)
+                current.status = 'Archived'
+                current.save(update_fields=['status'])
+            else:
+                self.assertEqual(finalize_meeting(self.post(self.actor), meeting.pk).status_code, 302)
+
+        if archive and deletion_first:
+            token = self.confirmed()
+
+            def rejected_archive():
+                with self.assertRaises(ValidationError) as caught:
+                    change_status()
+                error, = caught.exception.error_dict['department']
+                self.assertEqual(error.code, 'invalid')
+                self.assertEqual(error.params['value'], self.department.pk)
+
+            self.compete(lambda pause: self.pause_deletion(token, pause), rejected_archive)
+            self.assert_deleted()
+            self.assertTrue(User.objects.filter(pk=self.actor.pk).exists())
+        elif archive:
+            self.mutation_race(lambda: self.assert_department_lock_precedes_meeting_lock(change_status),
+                               deletion_first=False)
+        else:
+            self.mutation_race(change_status, deletion_first=deletion_first, rejection=Http404,
+                               message='No Meeting matches' if deletion_first else None)
+        events = AuditLog.objects.filter(event_type='meeting.archived' if archive else 'meeting.finalized')
+        self.assertEqual(events.count(), 0 if deletion_first else 1)
+        if not deletion_first:
+            meeting.refresh_from_db()
+            self.assertEqual(meeting.status, 'Archived' if archive else 'Finished')
+
+    def test_finalization_commit_invalidates_confirmation(self):
+        self.lifecycle_race(archive=False, deletion_first=False)
+
+    def test_deletion_winner_prevents_finalization(self):
+        self.lifecycle_race(archive=False, deletion_first=True)
+
+    def test_archival_commit_invalidates_confirmation(self):
+        self.lifecycle_race(archive=True, deletion_first=False)
+
+    def test_deletion_winner_prevents_archival(self):
+        self.lifecycle_race(archive=True, deletion_first=True)
+
+    def membership_race(self, deletion_first):
+        from .audit import grant_ap
+
+        def promote():
+            with transaction.atomic():
+                grant_ap(self.actor, self.officer, self.department)
+
+        self.mutation_race(promote, deletion_first=deletion_first, rejection=PermissionDenied,
+                           message='Roster relationship scope changed' if deletion_first else None)
+        self.assertEqual(AuditLog.objects.filter(event_type='user.role_changed').count(), 0 if deletion_first else 1)
+        if not deletion_first:
+            self.membership.refresh_from_db()
+            self.assertEqual(self.membership.role, 'AP')
+
+    def test_membership_change_invalidates_confirmation(self):
+        self.membership_race(deletion_first=False)
+
+    def test_deletion_winner_prevents_membership_change(self):
+        self.membership_race(deletion_first=True)
+
+    def reassign_race(self, deletion_first):
+        retained = Membership.objects.create(user=self.officer, department=self.other)
+
+        def reassign():
+            moved = User.objects.get(pk=self.officer.pk)
+            moved.department = self.other
+            moved.save(update_fields=['department'])
+
+        self.mutation_race(reassign, deletion_first=deletion_first, rejection=PermissionDenied,
+                           message='Roster relationship scope changed' if deletion_first else None)
+        self.officer.refresh_from_db()
+        self.assertEqual(self.officer.department_id, None if deletion_first else self.other.pk)
+        self.assertTrue(Membership.objects.filter(pk=retained.pk).exists())
+
+    def test_cross_department_reassignment_invalidates_confirmation(self):
+        self.reassign_race(deletion_first=False)
+
+    def test_deletion_winner_rejects_stale_reassignment(self):
+        self.reassign_race(deletion_first=True)
+
+    def demote(self):
+        User.objects.filter(pk=self.actor.pk).update(is_admin=False)
+
+    def test_actor_demotion_wins_before_deletion_authorization_recheck(self):
+        self.mutation_race(self.demote, deletion_first=False, message='Global Admin privileges changed')
+        self.actor.refresh_from_db()
+        self.assertFalse(self.actor.is_admin)
+
+    def test_authorized_deletion_commits_before_waiting_actor_demotion(self):
+        token = self.confirmed()
+        self.compete(lambda pause: self.pause_deletion(token, pause), self.demote)
+        self.assert_deleted()
+        self.actor.refresh_from_db()
+        self.assertFalse(self.actor.is_admin)
+        with self.assertRaises(PermissionDenied):
+            prepare(self.actor, [self.other.pk])
+
+    def insert_child_with_immediate_fk(self):
+        from django.db.models import QuerySet
+        with transaction.atomic():
+            self.sql('SET CONSTRAINTS ALL IMMEDIATE')
+            # Exercise PostgreSQL's FK independently of Attendance.save()'s guard.
+            QuerySet(model=Attendance, using='default').bulk_create([
+                Attendance(meeting_id=self.signed.meeting_id, user_id=self.actor.pk),
+            ])
+
+    def test_child_insert_before_inventory_invalidates_confirmation(self):
+        self.mutation_race(self.insert_child_with_immediate_fk, deletion_first=False)
+        self.assertTrue(Attendance.objects.filter(meeting_id=self.signed.meeting_id, user=self.actor).exists())
+
+    def test_child_insert_after_inventory_loses_to_parent_deletion(self):
+        from django.db import IntegrityError
+        token = self.confirmed()
+
+        def rejected_insert():
+            with self.assertRaises(IntegrityError) as caught:
+                self.insert_child_with_immediate_fk()
+            self.assertEqual(caught.exception.__cause__.sqlstate, '23503')
+
+        self.compete(lambda pause: self.pause_deletion(token, pause), rejected_insert)
+        self.assert_deleted()
+        self.assertFalse(Attendance.objects.filter(meeting_id=self.signed.meeting_id).exists())
+
+    def late_database_failure(self, sqlstate, *, reject_marker=False):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Event, get_ident
+        from django.db import IntegrityError, OperationalError, connection
+        from django.db.models import QuerySet
+        from .department_deletion import _operation_lock
+
+        token = self.confirmed()
+        operation = signing.loads(token, salt=SALT)['operation']
+        sentinel = User.objects.create_user(username='lock-sentinel', public_key='test')
+        blocker_ready, form_cycle, release_blocker = Event(), Event(), Event()
+        marker_pending, publish = Event(), Event()
+        observed = {}
+        original_delete = QuerySet.delete
+        original_create = QuerySet.create
+
+        def lock_sentinel():
+            User.objects.select_for_update().get(pk=sentinel.pk)
+
+        def blocker():
+            try:
+                with transaction.atomic():
+                    lock_sentinel()
+                    blocker_ready.set()
+                    if sqlstate == '40P01':
+                        self.wait(form_cycle)
+                        Department.objects.select_for_update().get(pk=self.other.pk)
+                    else:
+                        self.wait(release_blocker)
+            except OperationalError as exc:
+                observed['blocker'] = exc.__cause__.sqlstate
+
+        def deletion():
+            worker_thread = get_ident()
+            pid = self.sql('SELECT pg_backend_pid()')
+            raw = connection.connection
+
+            def check_session():
+                self.assertIs(connection.connection, raw)
+                self.assertEqual(self.sql('SELECT pg_backend_pid()'), pid)
+                self.assertEqual(raw.info.backend_pid, pid)
+
+            def fail_after_cascade(query):
+                result = original_delete(query)
+                if get_ident() == worker_thread and query.model is Department:
+                    self.assertFalse(Department.objects.filter(pk=self.department.pk).exists())
+                    self.assertTrue(AuditLog.objects.filter(event_type='department.deleted').exists())
+                    check_session()
+                    try:
+                        lock_sentinel()
+                    except OperationalError as exc:
+                        observed['deletion'] = exc.__cause__.sqlstate
+                        raise
+                return result
+
+            def publish_marker(query, **kwargs):
+                if (get_ident() == worker_thread and query.model is AuditLog
+                        and kwargs.get('event_type') == 'department.deletion_failed'):
+                    self.assertTrue(connection.get_autocommit())
+                    check_session()
+                    marker_pending.set()
+                    self.wait(publish)
+                    if reject_marker:
+                        # Let PostgreSQL reject the real marker INSERT with NOT NULL.
+                        kwargs['event_type'] = None
+                    result = original_create(query, **kwargs)
+                    check_session()
+                    return result
+                return original_create(query, **kwargs)
+
+            self.sql("SET lock_timeout = '5s'" if sqlstate == '55P03' else "SET lock_timeout = '12s'")
+            with patch.object(QuerySet, 'delete', fail_after_cascade), patch.object(QuerySet, 'create', publish_marker):
+                expected = IntegrityError if reject_marker else PermissionDenied
+                with self.assertRaises(expected) as caught:
+                    self.execute(token)
+                if reject_marker:
+                    observed['marker'] = caught.exception.__cause__.sqlstate
+                else:
+                    self.assertIn('rolled back', str(caught.exception))
+                check_session()
+
+        markers = AuditLog.objects.filter(event_type='department.deletion_failed', metadata__operation_id=operation)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            blocker_pid, blocker_result = self.worker(pool, blocker)
+            try:
+                self.wait(blocker_ready)
+                deletion_pid, deletion_result = self.worker(pool, deletion)
+                # Start the second wait only after deletion is already waiting.
+                # This gives its deadlock detector the head start. Assert the
+                # actual victim below instead of treating either victim as a pass.
+                self.blocked_by(deletion_pid, blocker_pid)
+                form_cycle.set()
+                self.wait(marker_pending)
+                self.assertEqual(observed.get('deletion'), sqlstate, observed)
+                self.assert_preserved()
+                self.assertFalse(markers.exists())
+                with self.assertRaisesMessage(PermissionDenied, 'already being processed'):
+                    self.execute(token)
+            finally:
+                publish.set()
+                form_cycle.set()
+                release_blocker.set()
+            deletion_result.result(timeout=25)
+            blocker_result.result(timeout=25)
+
+        self.assertNotIn('blocker', observed)
+        self.fresh_session()
+        self.assert_preserved()
+        with _operation_lock(connection, operation) as check:
+            check()
+        if reject_marker:
+            self.assertEqual(observed.get('marker'), '23502')
+            self.assertFalse(markers.exists())
+        else:
+            self.assertEqual(markers.count(), 1)
+        self.assertEqual(AuditLog.objects.filter(event_type=CLAIM_EVENT,
+                         metadata__operation_id=operation).count(), 1)
+        with self.assertRaisesMessage(PermissionDenied, 'already used'):
+            self.execute(token)
+        self.assert_preserved()
+
+    def test_real_lock_timeout_rolls_back_and_consumes_confirmation(self):
+        self.late_database_failure('55P03')
+
+    def test_real_deadlock_selects_deletion_victim_and_consumes_confirmation(self):
+        self.late_database_failure('40P01')
+
+    def test_failed_marker_insert_cannot_make_confirmation_reusable(self):
+        self.late_database_failure('55P03', reject_marker=True)

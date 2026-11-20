@@ -184,6 +184,13 @@ if database_url:
 elif PRODUCTION:
     raise ImproperlyConfigured('Production requires DATABASE_URL.')
 
+# Explicit attestation for the default PostgreSQL alias. The deletion service
+# also rejects known pooler hosts and verifies session identity during use.
+DEPARTMENT_DELETION_SESSION_AFFINITY = {}
+department_deletion_affinity = os.getenv('DEPARTMENT_DELETION_SESSION_AFFINITY', '')
+if database_url and department_deletion_affinity in {'direct', 'session'}:
+    DEPARTMENT_DELETION_SESSION_AFFINITY = {'default': department_deletion_affinity}
+
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 STORAGES = {
     'default': {'BACKEND': 'django.core.files.storage.FileSystemStorage'},

@@ -75,16 +75,19 @@ class Meeting(models.Model):
             from .roster import lock_departments, capture_roster
             initial = type(self).objects.using(using).filter(pk=self.pk).values('status', 'department_id').first() if self.pk else None
             finalizing = self.status in ('Finished', 'Archived') and (initial is None or initial['status'] == 'Draft')
+            archiving = self.status == 'Archived' and initial is not None and initial['status'] == 'Finished'
             guarded_departments = {self.department_id} | ({initial['department_id']} if initial else set())
-            if finalizing:
+            if finalizing or archiving:
                 lock_departments(guarded_departments, using)
             previous = None
             if self.pk:
                 previous = type(self).objects.using(using).select_for_update().filter(
                     pk=self.pk
                 ).values('status', 'department_id').first()
-                if finalizing and previous and previous['department_id'] not in guarded_departments:
-                    raise ValidationError('Meeting department changed. Retry finalization.')
+                if (finalizing or archiving) and previous and previous['department_id'] not in guarded_departments:
+                    if finalizing:
+                        raise ValidationError('Meeting department changed. Retry finalization.')
+                    raise ValidationError('Meeting department changed. Retry archival.')
                 self.full_clean()
             super().save(*args, **kwargs)
             update_fields = kwargs.get('update_fields')

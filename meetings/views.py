@@ -656,13 +656,17 @@ def sign_meeting(request, meeting_id):
 
         # Atomically persist the signature and audit record only if still unsigned and eligible.
         # This conditional update guarantees that concurrent requests or revoked attendance status cannot succeed.
+        from .roster import lock_departments
+        department_id = meeting.department_id
         with transaction.atomic():
+            lock_departments([department_id])
             lock_mutable_meetings([meeting.pk])
             from django.db.models import F
             User.objects.filter(pk=request.user.pk).update(username=F('username'))
             signer = User.objects.select_for_update().get(pk=request.user.pk)
             meeting.refresh_from_db()
-            if not signer.is_active or not user_in_department(signer, meeting) or meeting.status != 'Finished':
+            if (meeting.department_id != department_id or not signer.is_active
+                    or not user_in_department(signer, meeting) or meeting.status != 'Finished'):
                 return HttpResponseForbidden('Signing is no longer available.')
             if qr_session:
                 # Acquire authorization after the Meeting guard and before Attendance.

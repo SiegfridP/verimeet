@@ -22,6 +22,11 @@ from meetings.models import (Meeting, Attendance, VerificationQR, SigningVisualS
 
 _scope = ContextVar('department_deletion_scope', default=None)
 SALT = 'department-destruction-v1'
+CLAIM_EVENT = 'department.deletion_claimed'
+
+
+class DepartmentDeletionUnavailable(RuntimeError):
+    """The database configuration cannot safely execute Department deletion."""
 
 
 @dataclass(frozen=True)
@@ -147,16 +152,7 @@ def prepare(actor, ids, using='default'):
     return departments, counts, token
 
 
-def _delete_departments(actor, ids, *, confirmation, typed, reason, using='default', session_check=lambda: None):
-    if not authorized(actor) or typed != 'DELETE' or not isinstance(reason, str) or not 1 <= len(reason.strip()) <= 1000:
-        raise PermissionDenied('Active Global Admin, typed DELETE and a reason are required.')
-    try:
-        payload = signing.loads(confirmation, salt=SALT, max_age=600)
-    except signing.BadSignature:
-        raise PermissionDenied('Invalid or expired confirmation. Start again.') from None
-    ids = sorted(set(ids))
-    if payload.get('actor') != actor.pk or payload.get('using') != using or payload.get('ids') != ids:
-        raise PermissionDenied('Confirmation does not match this operation.')
+def _delete_departments(actor, ids, *, confirmation, payload, reason, using, session_check):
     with transaction.atomic(using=using, durable=True):
         session_check()
         # Membership guards span Departments. Lock the complete set in order
@@ -170,9 +166,6 @@ def _delete_departments(actor, ids, *, confirmation, typed, reason, using='defau
         current = User.objects.using(using).select_for_update().filter(pk=actor.pk).first()
         if not authorized(current):
             raise PermissionDenied('Global Admin privileges changed.')
-        if AuditLog.objects.using(using).filter(event_type__in=('department.deleted', 'department.deletion_failed'),
-                metadata__operation_id=payload['operation']).exists():
-            raise PermissionDenied('Confirmation already used.')
         list(Attendance.objects.using(using).filter(meeting__department_id__in=ids).order_by('pk').select_for_update())
         departments, counts, revision, scope = inventory(ids, using, lock=True)
         if revision != payload['revision']:
@@ -216,7 +209,8 @@ def _operation_lock(connection, operation):
         affinity = getattr(settings, 'DEPARTMENT_DELETION_SESSION_AFFINITY', {}).get(connection.alias)
         host = str(connection.settings_dict.get('HOST', '')).lower()
         if affinity not in {'direct', 'session'} or '-pooler' in host or 'pgbouncer' in host:
-            raise RuntimeError('Department deletion requires explicitly configured backend-session affinity.')
+            raise DepartmentDeletionUnavailable(
+                'Department deletion requires explicitly configured backend-session affinity.')
         key = int.from_bytes(sha256(json.dumps(
             ['verimeet.department-delete', connection.alias, operation]).encode()).digest()[:8],
             byteorder='big', signed=True)
@@ -318,13 +312,31 @@ def delete_departments(actor, ids, *, confirmation, typed, reason, using='defaul
     connection = connections[using]
     if connection.in_atomic_block or not connection.get_autocommit():
         raise RuntimeError('Department deletion requires ownership of its transaction.')
+    if not authorized(actor) or typed != 'DELETE' or not isinstance(reason, str) or not 1 <= len(reason.strip()) <= 1000:
+        raise PermissionDenied('Active Global Admin, typed DELETE and a reason are required.')
     try:
         payload = signing.loads(confirmation, salt=SALT, max_age=600)
     except signing.BadSignature:
         raise PermissionDenied('Invalid or expired confirmation. Start again.') from None
-    with _operation_lock(connection, payload['operation']) as session_check:
+    ids = sorted(set(ids))
+    if payload.get('actor') != actor.pk or payload.get('using') != using or payload.get('ids') != ids:
+        raise PermissionDenied('Confirmation does not match this operation.')
+    operation = payload['operation']
+    with _operation_lock(connection, operation) as session_check:
+        # Commit consumption before any deletion writes. Keep the claim free of
+        # foreign keys so it does not depend on the rows the operation may remove.
+        with transaction.atomic(using=using, durable=True):
+            session_check()
+            if not authorized(User.objects.using(using).filter(pk=actor.pk).first()):
+                raise PermissionDenied('Global Admin privileges changed.')
+            audits = AuditLog.objects.using(using)
+            if audits.filter(event_type__in=(CLAIM_EVENT, 'department.deleted', 'department.deletion_failed'),
+                             metadata__operation_id=operation).exists():
+                raise PermissionDenied('Confirmation already used.')
+            audits.create(event_type=CLAIM_EVENT, action='Department deletion confirmation claimed',
+                          metadata={'operation_id': operation, 'actor_id': actor.pk})
         try:
-            return _delete_departments(actor, ids, confirmation=confirmation, typed=typed,
+            return _delete_departments(actor, ids, confirmation=confirmation, payload=payload,
                                        reason=reason, using=using, session_check=session_check)
         except OperationalError as exc:
             cause = exc.__cause__
@@ -332,12 +344,12 @@ def delete_departments(actor, ids, *, confirmation, typed, reason, using='defaul
             if code not in {'40P01', '55P03'}:
                 raise
             # The inner atomic block has exited and rolled back, including audits.
-            # Retain a failure marker so this confirmation cannot be reused.
-            payload = signing.loads(confirmation, salt=SALT)
+            # Record the outcome separately. The committed claim prevents replay
+            # even if writing this marker fails.
             session_check()
             AuditLog.objects.using(using).create(
                 event_type='department.deletion_failed', action='Department deletion lock failure',
-                metadata={'operation_id': payload['operation'], 'actor_id': actor.pk})
+                metadata={'operation_id': operation, 'actor_id': actor.pk})
             session_check()
             raise PermissionDenied('Deletion was rolled back because records were busy. Review and confirm again.') from None
 

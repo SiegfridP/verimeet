@@ -1,6 +1,6 @@
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib.auth.decorators import login_required, user_passes_test
-from django.http import HttpResponseForbidden, HttpResponseBadRequest
+from django.http import HttpResponse, HttpResponseForbidden, HttpResponseBadRequest
 from .models import Department, Membership, Invitation, RoleElevationRequest, User
 from django import forms
 from django.utils import timezone
@@ -289,7 +289,7 @@ def create_department(request):
     return render(request, 'accounts/create_department.html', {'form': form})
 
 def department_deletion_confirmation(request, ids, using='default', *, admin_action=False):
-    from .department_deletion import prepare, delete_departments
+    from .department_deletion import DepartmentDeletionUnavailable, delete_departments, prepare
     ids = sorted(set(ids))
     if request.method == 'POST' and not admin_action and request.POST.get('execute_deletion') != 'yes':
         raise PermissionDenied('Explicit deletion confirmation required.')
@@ -299,6 +299,11 @@ def department_deletion_confirmation(request, ids, using='default', *, admin_act
             delete_departments(request.user, ids, using=using,
                 confirmation=request.POST.get('confirmation', ''),
                 typed=request.POST.get('typed', ''), reason=request.POST.get('reason', ''))
+        except DepartmentDeletionUnavailable:
+            return HttpResponse(
+                'Department deletion is currently unavailable. Contact your site administrator.',
+                status=503, content_type='text/plain; charset=utf-8',
+            )
         except PermissionDenied as exc:
             error = str(exc)
         else:

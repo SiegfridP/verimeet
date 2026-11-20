@@ -73,6 +73,17 @@ class DatabaseConfigurationTests(SimpleTestCase):
         self.assertEqual(db['ENGINE'], 'django.db.backends.postgresql')
         self.assertTrue(db['CONN_HEALTH_CHECKS'])
 
+    def test_postgres_department_deletion_requires_explicit_session_affinity(self):
+        url = 'postgresql://test:test@localhost/test'
+        setting = 'DEPARTMENT_DELETION_SESSION_AFFINITY'
+        self.assertEqual(self.settings_for(DATABASE_URL=url)[setting], {})
+        for value, expected in (('direct', {'default': 'direct'}), ('session', {'default': 'session'}),
+                                ('transaction', {}), ('invalid', {})):
+            with self.subTest(value=value):
+                config = self.settings_for(DATABASE_URL=url, DEPARTMENT_DELETION_SESSION_AFFINITY=value)
+                self.assertEqual(config[setting], expected)
+        self.assertEqual(self.settings_for(DEPARTMENT_DELETION_SESSION_AFFINITY='direct')[setting], {})
+
     def test_invalid_url_rejected(self):
         from django.core.exceptions import ImproperlyConfigured
         with self.assertRaises(ImproperlyConfigured):
