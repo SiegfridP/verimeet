@@ -462,6 +462,8 @@ class DepartmentDeletionTests(TransactionTestCase):
                     self.assertEqual(owner.connection.info.backend_pid, owner_pid)
                     self.assertEqual(contender.connection.info.backend_pid, contender_pid)
 
+
+class DepartmentDeletionOperationLockUnitTests(SimpleTestCase):
     @override_settings(DEPARTMENT_DELETION_SESSION_AFFINITY={'default':'direct', 'other':'session'})
     def test_postgresql_session_lock_protocol_and_cleanup(self):
         from unittest.mock import MagicMock
@@ -469,7 +471,7 @@ class DepartmentDeletionTests(TransactionTestCase):
         def connection(rows, alias='default'):
             conn = MagicMock(vendor='postgresql', alias=alias, settings_dict={'HOST':'localhost'})
             conn.connection.closed = False
-            conn.connection.info.backend_pid = 123
+            conn.connection.info.backend_pid = 456
             cursor = conn.cursor.return_value.__enter__.return_value
             cursor.fetchone.side_effect = rows
             return conn, cursor
@@ -491,7 +493,7 @@ class DepartmentDeletionTests(TransactionTestCase):
         with self.assertRaises(PermissionDenied):
             with _operation_lock(conn, 'operation'): self.fail('must not execute')
         self.assertEqual(cursor.execute.call_count, 1)
-        for rows in ([(456, True)], [(123, True), (456, True)], [(123, True), (123, False)]):
+        for rows in ([(123, True), (456, False)], [(123, True), (123, False)]):
             conn, cursor = connection(rows)
             raw = conn.connection
             with self.assertRaises(RuntimeError):
@@ -504,17 +506,17 @@ class DepartmentDeletionTests(TransactionTestCase):
             with self.assertRaises(RuntimeError):
                 with _operation_lock(conn, 'operation'): pass
             conn.close.assert_called()
-        for change in ('replaced', 'closed', 'driver_pid', 'server_pid'):
-            conn, cursor = connection([(123, True), (456,)])
+        for change in ('replaced', 'closed', 'server_pid'):
+            conn, cursor = connection([(123, True), (456 if change == 'server_pid' else 123,)])
             raw = conn.connection
             with self.assertRaises(RuntimeError):
                 with _operation_lock(conn, 'operation') as check:
                     if change == 'replaced': conn.connection = MagicMock()
                     if change == 'closed': raw.closed = True
-                    if change == 'driver_pid': raw.info.backend_pid = 456
                     check()
             raw.close.assert_called()
             conn.close.assert_called()
+            self.assertEqual(cursor.execute.call_count, 2 if change == 'server_pid' else 1)
         keys = []
         for alias in ('default', 'other'):
             conn, cursor = connection([(123, True), (123, True)], alias)
@@ -527,6 +529,59 @@ class DepartmentDeletionTests(TransactionTestCase):
             with self.assertRaisesMessage(DepartmentDeletionUnavailable, 'explicitly configured'):
                 with _operation_lock(conn, 'operation'): pass
             conn.cursor.assert_not_called()
+
+    @override_settings(DEPARTMENT_DELETION_SESSION_AFFINITY={'default': 'direct'})
+    def test_different_driver_pid_with_stable_sql_pid_across_commit(self):
+        from unittest.mock import MagicMock
+        from .department_deletion import _operation_lock
+
+        conn = MagicMock(vendor='postgresql', alias='default', settings_dict={'HOST': 'localhost'},
+                         in_atomic_block=False, closed_in_transaction=False, atomic_blocks=[], savepoint_ids=[])
+        conn.get_autocommit.return_value = True
+        raw = conn.connection
+        raw.closed = False
+        raw.info.backend_pid = 456
+        cursor = conn.cursor.return_value.__enter__.return_value
+        cursor.fetchone.side_effect = [(123, True), (123,), (123,), (123, True)]
+        with patch('django.db.transaction.get_connection', return_value=conn):
+            with _operation_lock(conn, 'operation') as check:
+                with transaction.atomic():
+                    check()
+                    conn.commit.assert_not_called()
+                check()
+        conn.commit.assert_called_once()
+        self.assertIs(conn.connection, raw)
+        self.assertEqual(cursor.execute.call_count, 4)
+        self.assertEqual(cursor.execute.call_args.args[1][0], 123)
+        raw.close.assert_not_called()
+
+    @override_settings(DEPARTMENT_DELETION_SESSION_AFFINITY={'default': 'direct'})
+    def test_cursor_creation_replacing_driver_handle_fails_before_sql(self):
+        from unittest.mock import MagicMock
+        from .department_deletion import _operation_lock
+
+        for stage in ('session_check', 'unlock'):
+            with self.subTest(stage=stage):
+                conn = MagicMock(vendor='postgresql', alias='default', settings_dict={'HOST': 'localhost'})
+                raw, replacement = conn.connection, MagicMock()
+                raw.closed = False
+                cursor_context = conn.cursor.return_value
+                cursor = cursor_context.__enter__.return_value
+                cursor.fetchone.return_value = (123, True)
+
+                def replace_connection():
+                    conn.connection = replacement
+                    return cursor_context
+
+                with self.assertRaisesMessage(RuntimeError, 'session changed'):
+                    with _operation_lock(conn, 'operation') as check:
+                        conn.cursor.side_effect = replace_connection
+                        if stage == 'session_check':
+                            check()
+                cursor.execute.assert_called_once()
+                raw.close.assert_called_once()
+                replacement.close.assert_called_once()
+                self.assertIsNone(conn.connection)
 
     @override_settings(DEPARTMENT_DELETION_SESSION_AFFINITY={'default':'direct'})
     def test_cleanup_invalidates_real_django_wrapper_without_reconnecting(self):

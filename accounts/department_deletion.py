@@ -255,13 +255,15 @@ def _operation_lock(connection, operation):
                                  ExceptionGroup('Department deletion connection cleanup failed.', errors))
                 raise cleanup_error
         def check_handle():
-            if (raw is None or connection.connection is not raw or raw.closed
-                    or raw.info.backend_pid != pid):
+            # Proxies can supply a driver-visible cancellation PID that
+            # differs from the SQL backend PID used to verify lock ownership.
+            if raw is None or connection.connection is not raw or raw.closed:
                 raise RuntimeError('Department deletion backend session changed.')
         def check_session():
             try:
                 check_handle()
                 with connection.cursor() as cursor:
+                    check_handle()
                     cursor.execute('SELECT pg_backend_pid()')
                     if cursor.fetchone()[0] != pid:
                         raise RuntimeError('Department deletion backend session changed.')
@@ -285,6 +287,7 @@ def _operation_lock(connection, operation):
             try:
                 check_handle()
                 with connection.cursor() as cursor:
+                    check_handle()
                     # CASE prevents unlocking on an unexpected backend.
                     cursor.execute('SELECT pg_backend_pid(), CASE WHEN pg_backend_pid() = %s '
                                    'THEN pg_advisory_unlock(%s) ELSE false END', [pid, key])
