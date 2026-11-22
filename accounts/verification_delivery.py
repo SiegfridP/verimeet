@@ -5,7 +5,8 @@ from uuid import uuid4
 from django.db import connection, transaction
 from django.db.models import Q, F
 from django.utils import timezone
-from .models import User, VerificationEmailDelivery as Delivery
+from .models import VerificationEmailDelivery as Delivery
+from .signature_guards import _lock_user_row
 
 ACTIVE = ('pending', 'processing')
 
@@ -17,7 +18,7 @@ def cancel(query):
 def enqueue(address, signup=False):
     from allauth.account.models import EmailAddress
     with transaction.atomic():
-        User.objects.filter(pk=address.user_id).update(username=F('username'))
+        _lock_user_row(address.user_id)
         current = EmailAddress.objects.select_for_update().select_related('user').filter(pk=address.pk).first()
         if not current or current.verified or not current.user.is_active:
             return None

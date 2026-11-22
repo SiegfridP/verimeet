@@ -4,7 +4,7 @@ from django.conf import settings
 from django.core import signing
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import models, transaction
-from django.db.models import F
+from .signature_guards import _lock_user_row
 from django.utils import timezone
 from .models import User, RetainedSignature
 from .signatures import complete, validated_signature_data
@@ -24,7 +24,7 @@ def _recover_onboarding_signature(user, upload):
         raise ValidationError('Retention must be at least 90 days.')
     expected = (user.signature_image.name, user.signature_validation_hash, user.signature_validated)
     with transaction.atomic():
-        User.objects.filter(pk=user.pk).update(username=F('username'))
+        _lock_user_row(user.pk)
         current = User.objects.select_for_update().get(pk=user.pk)
         from .views import is_global_admin
         if not current.is_active or is_global_admin(current):
@@ -70,7 +70,7 @@ def replace_signature(owner, upload, expected_version):
         raise ValidationError('Signature retention must be at least 90 days.')
     with transaction.atomic():
         # No-op write serializes SQLite too, before reading replacement state.
-        User.objects.filter(pk=owner.pk).update(username=F('username'))
+        _lock_user_row(owner.pk)
         user = User.objects.select_for_update().get(pk=owner.pk)
         if not user.is_active or is_global_admin(user) or not complete(user):
             raise PermissionDenied('Complete onboarding before replacing a signature.')

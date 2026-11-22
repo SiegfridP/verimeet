@@ -1,6 +1,7 @@
 {% extends "base_app.html" %}
 {% load dashboard_navigation %}
 {% block head_title %}Review Minutes – {{ meeting.title }} – VeriMeet{% endblock %}
+{% load pht_display %}
 {% block content %}
 <header class="vm-page-header">
     <h1>Review Meeting Minutes</h1>
@@ -43,11 +44,11 @@
         </div>
         <div class="meta-item">
           <span class="meta-label">Created At</span>
-          <span class="meta-value">{{ meeting.created_at|date:"M d, Y H:i" }}</span>
+          <span class="meta-value">{{ meeting.created_at|pht_datetime }}</span>
         </div>
         <div class="meta-item">
           <span class="meta-label">Last Updated</span>
-          <span class="meta-value">{{ meeting.updated_at|date:"M d, Y H:i" }}</span>
+          <span class="meta-value">{{ meeting.updated_at|pht_datetime }}</span>
         </div>
       </div>
     </div>
@@ -84,7 +85,7 @@
 
                 {% if att.has_signed %}
                   <span class="participant-status status-signed">
-                    Signed {{ att.signed_at|date:"M d, H:i" }}
+                    Signed {{ att.signed_at|pht_datetime }}
                   </span>
                 {% else %}
                   <span class="participant-status status-pending">

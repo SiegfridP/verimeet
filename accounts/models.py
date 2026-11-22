@@ -58,8 +58,9 @@ class User(AbstractUser):
 
     def save(self, *args, **kwargs):
         from django.db import transaction
-        from meetings.roster import lock_profile_names
+        from meetings.roster import _UserScope, lock_profile_names
         fields = kwargs.get('update_fields')
+        profile_scope = kwargs.pop('_profile_scope', None)
         using = kwargs.get('using') or self._state.db or 'default'
         if self._state.adding:
             # A supplied primary key does not make this an existing instance.
@@ -71,7 +72,16 @@ class User(AbstractUser):
                     lock_departments([self.department_id], using)
                     return self._save_with_signature_guard(*args, **kwargs)
             return self._save_with_signature_guard(*args, **kwargs)
-        names = {'first_name', 'last_name', 'department', 'department_id'}
+        names = {'username', 'first_name', 'last_name', 'department', 'department_id'}
+        if profile_scope is not None:
+            from django.core.exceptions import PermissionDenied
+            if (not isinstance(profile_scope, _UserScope) or profile_scope.user is not self
+                    or profile_scope.using != using
+                    or not transaction.get_connection(using).in_atomic_block
+                    or fields is None or names.intersection(fields) - {'username'}):
+                raise PermissionDenied('Invalid scoped username write.')
+            profile_scope.validate()
+            return self._save_with_signature_guard(*args, **kwargs)
         if self.pk and (fields is None or names.intersection(fields)):
             users = type(self).objects.using(using).filter(pk=self.pk)
             with transaction.atomic(using=using):
@@ -86,12 +96,13 @@ class User(AbstractUser):
     def _save_with_signature_guard(self, *args, **kwargs):
         from django.core.exceptions import PermissionDenied
         from django.db import transaction
-        from django.db.models import F
+        from .signature_guards import _lock_user_row
         fields = kwargs.get('update_fields')
         if self.pk and (fields is None or 'signature_image' in fields):
-            with transaction.atomic():
-                type(self).objects.filter(pk=self.pk).update(username=F('username'))
-                old = type(self).objects.filter(pk=self.pk).values_list('signature_image', flat=True).first()
+            using = kwargs.get('using') or self._state.db or 'default'
+            with transaction.atomic(using=using):
+                _lock_user_row(self.pk, using)
+                old = type(self).objects.using(using).filter(pk=self.pk).values_list('signature_image', flat=True).first()
                 if old and (self.signature_image.name != old or not self.signature_image._committed):
                     raise PermissionDenied('Use the owner signature replacement service.')
                 return super().save(*args, **kwargs)

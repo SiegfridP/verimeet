@@ -1,4 +1,5 @@
 from django.contrib import admin
+from core.display_time import format_pht_datetime
 from .models import Meeting, Attendance, AuditLog
 from django.db import transaction
 from django.core.exceptions import PermissionDenied
@@ -24,9 +25,17 @@ class AttendanceAdminForm(forms.ModelForm):
         return data
 
 class MeetingAdmin(admin.ModelAdmin):
-    list_display = ('title', 'department', 'status', 'created_at', 'updated_at')
+    list_display = ('title', 'department', 'status', 'created_at_pht', 'updated_at_pht')
     list_filter = ('status', 'department')
     search_fields = ('title', 'minutes_content')
+
+    @admin.display(description='Created at', ordering='created_at')
+    def created_at_pht(self, obj):
+        return format_pht_datetime(obj.created_at)
+
+    @admin.display(description='Updated at', ordering='updated_at')
+    def updated_at_pht(self, obj):
+        return format_pht_datetime(obj.updated_at)
 
     def save_model(self, request, obj, form, change):
         with transaction.atomic():
@@ -49,8 +58,8 @@ class MeetingAdmin(admin.ModelAdmin):
 
     def get_readonly_fields(self, request, obj=None):
         if obj and obj.status in ('Finished', 'Archived'):
-            return ['title', 'minutes_content', 'department', 'status', 'created_at', 'updated_at']
-        return ['status', 'created_at', 'updated_at']
+            return ['title', 'minutes_content', 'department', 'status', 'created_at_pht', 'updated_at_pht']
+        return ['status', 'created_at_pht', 'updated_at_pht']
 
 admin.site.register(Meeting, MeetingAdmin)
 @admin.register(Attendance)
@@ -153,9 +162,14 @@ class AttendanceAdmin(admin.ModelAdmin):
 
 @admin.register(AuditLog)
 class AuditLogAdmin(admin.ModelAdmin):
-    list_display = ('timestamp', 'event_type', 'user', 'meeting', 'department')
+    list_display = ('timestamp_pht', 'event_type', 'user', 'meeting', 'department')
+    readonly_fields = ('timestamp_pht',)
     list_filter = ('event_type', 'department')
     actions = None
+
+    @admin.display(description='Timestamp', ordering='timestamp')
+    def timestamp_pht(self, obj):
+        return format_pht_datetime(obj.timestamp)
 
     def get_queryset(self, request):
         queryset = super().get_queryset(request)

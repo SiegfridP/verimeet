@@ -29,7 +29,8 @@ class RosterTests(TestCase):
 
     def test_internal_participant_name_priority(self):
         for first, last, username, expected in (
-            ('  First ', ' Last ', 'handle', 'First Last'),
+            ('  First ', ' Last ', ' handle ', 'handle'),
+            ('  First ', ' Last ', ' ', 'First Last'),
             ('', '', 'handle', 'handle'),
             ('First', '', 'handle', 'handle'),
             ('', 'Last', 'handle', 'handle'),
@@ -80,10 +81,10 @@ class RosterTests(TestCase):
         Membership.objects.create(user=joined,department=self.department)
         Attendance.objects.filter(pk=self.attendance.pk).update(status='Late',has_signed=True)
         result=capture_read_document(self.meeting.pk)
-        self.assertEqual(result['attendees'][0]['name'],'First Member')
+        self.assertEqual(result['attendees'][0]['name'],'PRIVATE_USER')
         self.assertEqual(result['attendees'][0]['status'],'Late')
         self.assertEqual(result['attendees'][0]['signing'],'Signed')
-        self.assertIn({'name':'Absent Member'},result['absent'])
+        self.assertIn({'name':'absent'},result['absent'])
         self.meeting.status='Archived';self.meeting.save()
         snapshot.refresh_from_db(); self.assertEqual(snapshot.entries,original)
         self.assertEqual(HistoricalRoster.objects.count(),1)
@@ -111,22 +112,22 @@ class RosterTests(TestCase):
         Attendance.objects.filter(pk=self.attendance.pk).update(status='Attended')
         with self.assertRaises(PermissionDenied), transaction.atomic():
             self.member.delete()
-        self.assertEqual(capture_read_document(self.meeting.pk)['attendees'][0]['name'],'First Member')
+        self.assertEqual(capture_read_document(self.meeting.pk)['attendees'][0]['name'],'PRIVATE_USER')
 
     def test_browser_pdf_and_inactive_authorization(self):
         complete_onboarding(self.member)
         self.finalize()
         self.client.force_login(self.member)
         response=self.client.get(reverse('review_meeting',args=[self.meeting.pk]))
-        for value in ('First Member','Absent Member','Absent','Not eligible'):
+        for value in ('PRIVATE_USER','absent','Absent','Not eligible'):
             self.assertContains(response,value)
-        self.assertNotContains(response,'PRIVATE_USER')
+        self.assertNotContains(response,'First Member')
         self.member.is_active=False
         self.assertFalse(officer_can_read(self.member,self.meeting))
         for officer in (True,False):
             document=capture_document(self.meeting.pk,officer_read_only=officer)
-            self.assertEqual(document['attendees'][0]['name'],'First Member')
-            self.assertEqual(document['absent'],[{'name':'Absent Member'}])
+            self.assertEqual(document['attendees'][0]['name'],'PRIVATE_USER')
+            self.assertEqual(document['absent'],[{'name':'absent'}])
             self.assertTrue(generate_meeting_pdf(document).startswith(b'%PDF-'))
 
     def test_admin_structural_change_and_legacy_fallback(self):
@@ -145,6 +146,7 @@ class RosterTests(TestCase):
             cursor.execute('DELETE FROM meetings_historicalroster WHERE meeting_id = %s',[self.meeting.pk])
         result=capture_read_document(self.meeting.pk)
         self.assertFalse(result['historical_roster_available'])
+        self.assertEqual(result['attendees'][0]['name'], self.member.username)
         self.assertEqual(result['absent'],[])
         self.assertFalse(HistoricalRoster.objects.exists())
         from django.template.loader import render_to_string
@@ -153,6 +155,7 @@ class RosterTests(TestCase):
             html = render_to_string('pdf/final_minutes.html', {'document': document})
             self.assertIn('Historical department roster unavailable for this legacy meeting.', html)
             self.assertNotIn('Unassigned Department Members', html)
+            self.assertEqual(document['attendees'][0]['name'], self.member.username)
 
     def test_pdf_extracted_historical_absent_after_membership_and_name_changes(self):
         import shutil, subprocess
@@ -179,10 +182,10 @@ class RosterTests(TestCase):
             self.assertIn('Attended', content)
             if not officer:
                 self.assertIn('Unsigned', content)
-            self.assertIn('Absent Member',content)
-            self.assertIn('First Member',content)
+            self.assertIn('absent',content)
+            self.assertIn('PRIVATE_USER',content)
             self.assertNotIn('Changed',content)
-            self.assertNotIn('PRIVATE_USER',content)
+            self.assertNotIn('First Member',content)
         self.attendance.refresh_from_db()
         self.assertEqual(self.attendance.status, 'Absent')
 
@@ -197,7 +200,7 @@ class RosterTests(TestCase):
         self.client.force_login(User.objects.create_superuser(username='timezone-admin'))
         self.assertContains(
             self.client.get(reverse('review_meeting', args=[self.meeting.pk])),
-            'Nov 16, 2026 08:57',
+            '11/16/26, 8:57 AM PHT',
         )
         for officer in (True, False):
             document = capture_document(self.meeting.pk, officer_read_only=officer)
@@ -205,8 +208,9 @@ class RosterTests(TestCase):
             document['updated_at'] = datetime.fromisoformat('2026-11-16T16:01:00+00:00')
             with timezone.override('UTC'):
                 html = render_to_string('pdf/final_minutes.html', {'document': document})
-            self.assertIn('November 16, 2026, 8:57 AM PHT', html)
-            self.assertIn('November 17, 2026, 12:01 AM PHT', html)
+            self.assertIn('11/16/26, 8:57 AM PHT', html)
+            self.assertIn('11/17/26, 12:01 AM PHT', html)
+            self.assertIn(f'content="{document["generated_at"].isoformat()}"', html)
             if not officer:
                 self.assertIn('No signing timestamp', html)
 
@@ -255,7 +259,10 @@ class SQLiteRosterContentionTests(TransactionTestCase):
         operations=(lambda: Membership.objects.create(user=joining,department=department),
                     lambda: Membership.objects.filter(pk=membership.pk).delete(),
                     lambda: User.objects.filter(pk=user.pk).update(first_name='Changed'),
+                    lambda: User.objects.filter(pk=user.pk).update(username='changed'),
+                    lambda: user.save(update_fields=['username']),
                     lambda: Attendance.objects.create(meeting=meeting,user=user))
+        user.username = 'changed'
         with transaction.atomic():
             lock_departments([department.pk])
             for operation in operations:
@@ -269,5 +276,5 @@ class SQLiteRosterContentionTests(TransactionTestCase):
                 self.assertEqual(errors,['contention'])
             meeting.status='Finished';meeting.save()
         entry=meeting.historical_roster.entries[0]
-        self.assertEqual(entry['name'],'Original Member')
+        self.assertEqual(entry['name'],'concurrent')
         self.assertFalse(entry['assigned'])

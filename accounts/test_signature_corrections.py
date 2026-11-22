@@ -104,7 +104,7 @@ class SignatureCorrectionTests(TestCase):
         self.assertEqual(RetainedSignature.objects.get().storage_identifier, 'normalized/missing.png')
 
     def test_initial_onboarding_save_still_persists_signature_fields(self):
-        initial = User.objects.create_user(username='initial-fields')
+        initial = User.objects.create_user(username='initial-fields', username_confirmation_required=True)
         self.client.force_login(initial)
         original_save = User.save
         saved_fields = []
@@ -114,11 +114,14 @@ class SignatureCorrectionTests(TestCase):
             return original_save(instance, *args, **kwargs)
 
         with patch.object(User, 'save', save):
-            response = self.client.post(reverse('onboarding'), {'signature': self.upload()})
+            response = self.client.post(reverse('onboarding'), {
+                'signature': self.upload(), 'username': 'confirmed-initial'})
         self.assertRedirects(response, reverse('central_dashboard'))
         self.assertEqual(saved_fields, [{'username', 'username_confirmation_required',
             'signature_image', 'signature_validation_hash', 'signature_validated'}])
         initial.refresh_from_db()
+        self.assertEqual(initial.username, 'confirmed-initial')
+        self.assertFalse(initial.username_confirmation_required)
         self.assertTrue(signature_valid(initial))
         self.assertFalse(RetainedSignature.objects.exists())
 

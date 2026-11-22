@@ -1,6 +1,7 @@
 {% extends "base_app.html" %}
 {% load dashboard_navigation %}
 {% block head_title %}Document History{% endblock %}
+{% load pht_display %}
 {% block content %}
 <header class="vm-page-header"><div><p class="vm-eyebrow">Activity &amp; evidence</p><h1>Document History</h1></div></header>
 <p>{{ meeting.title }} — {{ meeting.department.name }}</p><nav><a href="{% dashboard_url 'review_meeting' meeting.pk %}">Review meeting</a> <a href="{% dashboard_url 'department_dashboard' meeting.department_id %}">Department Dashboard</a></nav>
@@ -10,7 +11,7 @@
 {% for event in page_obj %}
 <tr><td>{{ event.action }}</td><td>{{ event.event_type }}</td>
 <td>{% if event.user_id %}User #{{ event.user_id }}{% else %}System / unavailable{% endif %}</td>
-<td>{{ event.timestamp|date:"c" }}</td><td>{{ event.target_type }} #{{ event.target_id }}</td>
+<td>{{ event.timestamp|pht_datetime }}</td><td>{{ event.target_type }} #{{ event.target_id }}</td>
 <td><dl>{% for key, value in event.display_metadata.items %}<dt>{{ key }}</dt><dd>{{ value }}</dd>{% endfor %}</dl></td></tr>
 {% empty %}<tr><td colspan="6">No document history recorded.</td></tr>{% endfor %}
 </tbody></table>

@@ -1,4 +1,4 @@
-{% load tz %}<!doctype html>
+{% load pht_display %}<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>{{ document.metadata_title|default:"Meeting minutes" }}</title>
 <meta name="generator" content="VeriMeet">
 <meta name="description" content="Finalized meeting minutes">
@@ -18,13 +18,13 @@ th, td { text-align: left; vertical-align: top; padding: 7pt; border-bottom: 1px
 th { background: #edf4f6; }
 tr { break-inside: avoid; }
 .note { font-size: 9pt; color: #475569; }
-</style></head><body>{% timezone "Asia/Manila" %}
+</style></head><body>
 <h1>{{ document.title }}</h1>
 <div class="meta"><strong>{{ document.department_name }}</strong> · {{ document.status }}
 <p>
-Record created: {{ document.created_at|date:"F j, Y, g:i A" }} PHT<br>
-Record last updated: {{ document.updated_at|date:"F j, Y, g:i A" }} PHT<br>
-Export generated: {{ document.generated_at|date:"F j, Y, g:i A" }} PHT</p></div>
+Record created: {{ document.created_at|pht_datetime }}<br>
+Record last updated: {{ document.updated_at|pht_datetime }}<br>
+Export generated: {{ document.generated_at|pht_datetime }}</p></div>
 <p class="note">No separate meeting date is recorded. Creation and update timestamps are not a finalization date.</p>
 <h2>Finalized minutes</h2>
 <div class="text">{{ document.minutes_content }}</div>
@@ -33,7 +33,7 @@ Export generated: {{ document.generated_at|date:"F j, Y, g:i A" }} PHT</p></div>
 <table><thead><tr><th style="width:25%">Participant / attendance</th><th style="width:30%">Verification / signing time</th><th>Annotation</th></tr></thead><tbody>
 {% for attendee in document.attendees %}
 <tr><td>{{ attendee.name }}<br>{% if attendee.status == "Absent" %}Not attended{% else %}{{ attendee.status }}{% endif %}</td>
-<td><span{% if attendee.verification == 'Invalid signature' %} class="invalid"{% endif %}>{{ attendee.verification }}</span><br>{% if attendee.signed_at %}{{ attendee.signed_at|date:"F j, Y, g:i A" }} PHT{% else %}No signing timestamp{% endif %}
+<td><span{% if attendee.verification == 'Invalid signature' %} class="invalid"{% endif %}>{{ attendee.verification }}</span><br>{% if attendee.signed_at %}{{ attendee.signed_at|pht_datetime }}{% else %}No signing timestamp{% endif %}
 {% if not document.historical_roster_available and attendee.signer_name %}<br>Historical signing-time name: {{ attendee.signer_name }}{% endif %}
 {% if attendee.signed %}<br>{% if attendee.image_url %}<img class="signature" src="{{ attendee.image_url }}" alt="Historical visual signature">{% else %}Visual signature unavailable{% endif %}{% endif %}</td>
 <td class="text">{{ attendee.annotation|default:"No annotation" }}</td></tr>
@@ -42,4 +42,4 @@ Export generated: {{ document.generated_at|date:"F j, Y, g:i A" }} PHT</p></div>
 <p class="note">Verification applies to stored document data, not these PDF bytes. This PDF is not cryptographically signed. Legacy signatures do not bind the meeting identifier, department identifier or title. Attendance status, display names, timestamps and visual images are contextual evidence, not signed payload fields. Images are captured at signing; current profile images are never substituted.</p>
 {% endif %}
 {% if document.historical_roster_available %}<h2>Unassigned Department Members</h2><p class="note">Department members who were not assigned to this meeting when it was finalized. This section is separate from recorded attendance status.</p><ul>{% for person in document.absent %}<li>{{ person.name }}</li>{% empty %}<li>No unassigned department members.</li>{% endfor %}</ul>{% else %}<p>Historical department roster unavailable for this legacy meeting.</p>{% endif %}
-{% endtimezone %}</body></html>
+</body></html>

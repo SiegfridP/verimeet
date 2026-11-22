@@ -1,6 +1,8 @@
 {% extends "base_app.html" %}
 {% load dashboard_navigation %}
 {% block head_title %}Attendance Management – {{ meeting.title }} – VeriMeet{% endblock %}
+{% load participant_display %}
+{% load pht_display %}
 {% block content %}
 <header class="vm-page-header">
     <h1>Meeting Attendance & Participants</h1>
@@ -45,7 +47,7 @@
             {% for att in attendees %}
               <tr>
                 <td>
-                  <strong>{{ att.user.username }}</strong>
+                  <strong>{{ att.user|participant_display }}</strong>
                   {% if att.user.email %}
                     <div>{{ att.user.email }}</div>
                   {% endif %}
@@ -61,14 +63,14 @@
                 </td>
                 <td>
                   {% if att.status_updated_at %}
-                    {{ att.status_updated_at|date:"M d, H:i" }}
+                    {{ att.status_updated_at|pht_datetime }}
                   {% else %}
                     <em>Initial default</em>
                   {% endif %}
                 </td>
                 <td>
                   {% if att.has_signed %}
-                    <span class="badge-status status-signed">Signed {{ att.signed_at|date:"M d, H:i" }}</span>
+                    <span class="badge-status status-signed">Signed {{ att.signed_at|pht_datetime }}</span>
                     {% if att.annotation %}
                       <div class="annotation-box">
                         <strong>Annotation:</strong> {{ att.annotation }}
@@ -81,7 +83,7 @@
                 <td>
                   {% if meeting.status != 'Archived' %}<form method="post" action="{% dashboard_url 'update_attendance_status' meeting.id att.id %}" class="update-form">
                     {% csrf_token %}{% dashboard_field %}
-                    <select name="status" aria-label="Attendance status for {{ att.user.username }}">
+                    <select name="status" aria-label="Attendance status for {{ att.user|participant_display }}">
                       {% for val, label in status_choices %}
                         <option value="{{ val }}" {% if att.status == val %}selected{% endif %}>{{ label }}</option>
                       {% endfor %}

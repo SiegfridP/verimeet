@@ -1,11 +1,11 @@
 {% extends "accounts/email/base.txt" %}
-{% load email_presentation %}
+{% load email_presentation pht_display %}
 {% block content %}{% autoescape off %}You are invited to join {{ department.name|email_text_label }} as an Officer.
 
 Review and accept your invitation:
 {{ acceptance_url }}
 
-This invitation expires seven days after creation, at {{ invitation.expires_at|date:"c" }}.
+This invitation expires seven days after creation, at {{ invitation.expires_at|pht_datetime }}.
 Log in or register using the invited email address. You must verify that email
 address before accepting. A verified secondary address on your account also qualifies.
 Opening the link does not accept the invitation; you must confirm acceptance.

@@ -65,7 +65,8 @@ class VisualEvidenceTests(TestCase):
         self.assertEqual(read_snapshot(snapshot.storage_identifier, snapshot.content_sha256,
             snapshot.byte_length, snapshot.width, snapshot.height), original)
         document = capture_document(self.meeting.pk)
-        self.assertEqual(document['attendees'][0]['name'], 'Original Signer')
+        self.assertEqual(document['attendees'][0]['name'], 'private')
+        self.assertEqual(snapshot.signer_name, 'Original Signer')
         self.assertEqual(document['attendees'][0]['verification'], 'Valid canonical ECDSA signature')
         self.assertEqual(list(document['resources'].values()), [original])
         self.assertEqual(self.sign().status_code, 403)
@@ -76,14 +77,17 @@ class VisualEvidenceTests(TestCase):
         old = list(capture_document(self.meeting.pk)['resources'].values())[0]
         self.user.refresh_from_db()
         replace_signature(self.user, SimpleUploadedFile('b.png', png(color=(255, 0, 0, 255))), version(self.user))
-        User.objects.filter(pk=self.user.pk).update(first_name='New')
+        User.objects.filter(pk=self.user.pk).update(first_name='New', username='renamed')
         second = Meeting.objects.create(department=self.dept, title='Second')
         Attendance.objects.create(meeting=second, user=self.user, status='Late')
         finalize_meeting_fixture(second)
         self.assertEqual(self.sign(second).status_code, 302)
         self.meeting.status = 'Archived'; self.meeting.save()
         first_document = capture_document(self.meeting.pk)
-        self.assertEqual(first_document['attendees'][0]['name'], 'Original Signer')
+        self.assertEqual(first_document['attendees'][0]['name'], 'private')
+        self.assertEqual(first_document['attendees'][0]['signer_name'], 'Original Signer')
+        self.assertEqual(first_document['attendees'][0]['verification'], 'Valid canonical ECDSA signature')
+        self.assertEqual(capture_document(second.pk)['attendees'][0]['name'], 'renamed')
         self.assertEqual(list(first_document['resources'].values()), [old])
         self.assertNotEqual(list(capture_document(second.pk)['resources'].values()), [old])
 
@@ -176,9 +180,9 @@ class VisualConcurrencyTests(TransactionTestCase):
 
     def test_legacy_never_uses_profile(self):
         Attendance.objects.filter(pk=self.att.pk).update(has_signed=True, cryptographic_signature='historical')
-        User.objects.filter(pk=self.user.pk).update(first_name='Later')
+        User.objects.filter(pk=self.user.pk).update(first_name='Later', username='renamed')
         attendee = capture_document(self.meeting.pk)['attendees'][0]
-        self.assertEqual(attendee['name'], 'Original Signer')
+        self.assertEqual(attendee['name'], 'private')
         self.assertIsNone(attendee['image_url'])
 
     def test_admin_without_png_cannot_sign(self):
@@ -253,7 +257,9 @@ class VisualConcurrencyTests(TransactionTestCase):
         metadata = HTML(string=html).render().metadata
         self.assertEqual(metadata.title, 'Final')
         self.assertEqual(metadata.generator, 'VeriMeet')
-        self.assertNotIn('private', html)
+        self.assertIn('<td>private<br>', html)
+        snapshot = SigningVisualSnapshot.objects.get(attendance=self.att)
+        self.assertNotIn(snapshot.storage_identifier, html)
         self.assertNotIn('token=', html)
         seen = []
         class RecordingResources(dict):
@@ -289,7 +295,7 @@ class VisualConcurrencyTests(TransactionTestCase):
         change_account_status(admin, self.user.pk, False)
         change_account_status(admin, self.user.pk, True)
         document = capture_document(self.meeting.pk)
-        self.assertEqual([a['name'] for a in document['attendees']], ['Original Signer', 'second'])
+        self.assertEqual([a['name'] for a in document['attendees']], ['private', 'second'])
         self.assertEqual(SigningVisualSnapshot.objects.get(attendance__user=other).signer_name, 'Second')
         self.assertEqual(len(document['resources']), 2)
 

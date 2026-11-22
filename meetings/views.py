@@ -10,6 +10,7 @@ from django.contrib.auth.decorators import login_required
 from django.http import HttpResponseForbidden, HttpResponse, HttpResponseBadRequest, HttpResponseNotAllowed
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
+from core.display_time import format_pht_datetime
 from django.contrib import messages
 from django.db import transaction, IntegrityError
 from django.core.paginator import Paginator
@@ -662,8 +663,8 @@ def sign_meeting(request, meeting_id):
         with transaction.atomic():
             lock_departments([department_id])
             lock_mutable_meetings([meeting.pk])
-            from django.db.models import F
-            User.objects.filter(pk=request.user.pk).update(username=F('username'))
+            from accounts.signature_guards import _lock_user_row
+            _lock_user_row(request.user.pk)
             signer = User.objects.select_for_update().get(pk=request.user.pk)
             meeting.refresh_from_db()
             if (meeting.department_id != department_id or not signer.is_active
@@ -1555,7 +1556,7 @@ def document_history(request, meeting_id):
                 except ValueError:
                     continue
                 if parsed is not None and timezone.is_aware(parsed):
-                    metadata[key] = timezone.localtime(parsed).isoformat()
+                    metadata[key] = format_pht_datetime(parsed)
         event.display_metadata = metadata
     return render(request, 'meetings/document_history.html', {'meeting': meeting, 'page_obj': page})
 

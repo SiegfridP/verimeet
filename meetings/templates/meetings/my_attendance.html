@@ -1,6 +1,8 @@
 {% extends "base_app.html" %}
 {% load dashboard_navigation %}
 {% block head_title %}My Attendance – {{ meeting.title }} – VeriMeet{% endblock %}
+{% load participant_display %}
+{% load pht_display %}
 {% block content %}
 <header class="vm-page-header">
     <h1>Personal Attendance Record</h1>
@@ -14,7 +16,7 @@
 
       <div class="meta-row">
         <span class="meta-label">Officer</span>
-        <span class="meta-val">{{ attendance.user.username }}</span>
+        <span class="meta-val">{{ attendance.user|participant_display }}</span>
       </div>
 
       <div class="meta-row">
@@ -34,7 +36,7 @@
         <span class="meta-label">Status Recorded At</span>
         <span class="meta-val">
           {% if attendance.status_updated_at %}
-            {{ attendance.status_updated_at|date:"M d, Y H:i" }}
+            {{ attendance.status_updated_at|pht_datetime }}
           {% else %}
             <em>Assigned default</em>
           {% endif %}
@@ -45,7 +47,7 @@
         <span class="meta-label">Digital Signature</span>
         <span class="meta-val">
           {% if attendance.has_signed %}
-            <span>Signed at {{ attendance.signed_at|date:"M d, Y H:i" }}</span>
+            <span>Signed at {{ attendance.signed_at|pht_datetime }}</span>
           {% else %}
             <span>Not yet signed</span>
           {% endif %}

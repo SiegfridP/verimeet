@@ -24,18 +24,24 @@ def account_settings(request):
     from django.db import IntegrityError, OperationalError, connection
     form = UsernameSettingsForm(request.POST if request.method == 'POST' else None, user=request.user)
     if request.method == 'POST':
-        saved = False
+        from meetings.roster import ProfileScopeChanged, run_profile_write
+
+        def save_username(user, scope):
+            nonlocal form
+            form = UsernameSettingsForm(request.POST, user=user)
+            if not form.is_valid():
+                return False
+            username = form.cleaned_data['username']
+            if username != user.username:
+                user.username = username
+                user.save(update_fields=['username'], _profile_scope=scope)
+                record(user, 'user.username_changed', user)
+            return True
+
         try:
-            with transaction.atomic():
-                user = User.objects.select_for_update().get(pk=request.user.pk)
-                form = UsernameSettingsForm(request.POST, user=user)
-                if form.is_valid():
-                    username = form.cleaned_data['username']
-                    if username != user.username:
-                        user.username = username
-                        user.save(update_fields=['username'])
-                        record(user, 'user.username_changed', user)
-                    saved = True
+            saved = run_profile_write(request.user.pk, save_username)
+        except ProfileScopeChanged:
+            form.add_error(None, 'The account could not be saved right now. Please retry.')
         except IntegrityError:
             form.add_error('username', 'This username is no longer available. Please choose another.')
         except OperationalError as error:
@@ -130,41 +136,39 @@ def onboarding(request):
     form = OnboardingForm(request.POST if request.method == 'POST' else None, request.FILES or None,
                           user=request.user, needs_signature=not valid)
     if request.method == 'POST':
-        stored = None
-        storage = request.user.signature_image.storage
-        saved = False
+        from meetings.roster import run_profile_write
+
+        def save_onboarding(user, scope):
+            nonlocal form, valid
+            valid = signature_valid(user)
+            form = OnboardingForm(request.POST, request.FILES or None,
+                                  user=user, needs_signature=not valid)
+            if not form.is_valid():
+                return False
+
+            onboarding_fields = []
+            if user.username_confirmation_required or not user.username:
+                user.username = form.cleaned_data['username']
+                user.username_confirmation_required = False
+                onboarding_fields.extend(['username', 'username_confirmation_required'])
+            if not valid:
+                upload = form.cleaned_data['signature']
+                if user.signature_image:
+                    from .signature_replacement import _recover_onboarding_signature
+                    _recover_onboarding_signature(user, upload)
+                    user.refresh_from_db(fields=['signature_image', 'signature_validation_hash', 'signature_validated'])
+                else:
+                    user.signature_image = user.signature_image.storage.save(upload.name, upload)
+                    user.signature_validation_hash = ''
+                    user.signature_validated = False
+                    onboarding_fields.extend(['signature_image', 'signature_validation_hash', 'signature_validated'])
+            user.save(update_fields=onboarding_fields, _profile_scope=scope)
+            if not user.username or user.username_confirmation_required or not signature_valid(user):
+                raise ValueError('Incomplete saved onboarding')
+            return True
+
         try:
-            with transaction.atomic():
-                user = User.objects.select_for_update().get(pk=request.user.pk)
-                valid = signature_valid(user)
-                # Requirements may have changed since the initial form was built.
-                # Validate only this fresh form, before consuming the upload.
-                form = OnboardingForm(request.POST, request.FILES or None,
-                                      user=user, needs_signature=not valid)
-                if form.is_valid():
-                    # Recovery already persists signature state atomically. This
-                    # later save is only for non-signature onboarding changes.
-                    onboarding_fields = ['username', 'username_confirmation_required']
-                    if user.username_confirmation_required or not user.username:
-                        user.username = form.cleaned_data['username']
-                        user.username_confirmation_required = False
-                    if not valid:
-                        upload = form.cleaned_data['signature']
-                        if user.signature_image:
-                            from .signature_replacement import _recover_onboarding_signature
-                            stored = _recover_onboarding_signature(user, upload)
-                            user.refresh_from_db(fields=['signature_image', 'signature_validation_hash', 'signature_validated'])
-                        else:
-                            stored = storage.save(upload.name, upload)
-                            user.signature_image = stored
-                            user.signature_validation_hash = ''
-                            user.signature_validated = False
-                            # Initial storage writes have not persisted a User reference yet.
-                            onboarding_fields.extend(['signature_image', 'signature_validation_hash', 'signature_validated'])
-                    user.save(update_fields=onboarding_fields)
-                    if not user.username or user.username_confirmation_required or not signature_valid(user):
-                        raise ValueError('Incomplete saved onboarding')
-                    saved = True
+            saved = run_profile_write(request.user.pk, save_onboarding)
         except Exception:
             # Failed new uploads remain private orphans; physical deletion is disabled.
             request.user.refresh_from_db(fields=['username', 'username_confirmation_required',

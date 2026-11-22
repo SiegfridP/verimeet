@@ -1,6 +1,7 @@
 {% extends "base_app.html" %}
 {% load dashboard_navigation %}
 {% block head_title %}{{ purpose_display }} QR Code â€“ {{ meeting.title }} â€“ VeriMeet{% endblock %}
+{% load pht_display %}
 {% block content %}
 <header class="vm-page-header">
     <div>
@@ -55,11 +56,11 @@
         </div>
         <div class="meta-item">
           <div class="meta-label">Created At</div>
-          <div class="meta-value">{{ qr_session.created_at|date:"Y-m-d H:i:s" }}</div>
+          <div class="meta-value">{{ qr_session.created_at|pht_datetime }}</div>
         </div>
         <div class="meta-item">
           <div class="meta-label">Expires At</div>
-          <div class="meta-value">{{ qr_session.expires_at|date:"Y-m-d H:i:s" }}</div>
+          <div class="meta-value">{{ qr_session.expires_at|pht_datetime }}</div>
         </div>
         <div class="meta-item">
           <div class="meta-label">Unique Scans</div>

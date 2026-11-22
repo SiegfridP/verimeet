@@ -2,6 +2,7 @@ from django import forms
 from django.db import models
 from django.contrib.auth import get_user_model
 from .models import Meeting, Attendance
+from .reading import participant_name
 from accounts.models import Membership, Department
 
 User = get_user_model()
@@ -26,7 +27,8 @@ def participant_choices(department, meeting=None):
 
 
 def participant_label(user):
-    label = f"{user.username} ({user.email})" if user.email else user.username
+    name = participant_name(user.first_name, user.last_name, user.username)
+    label = f"{name} ({user.email})" if user.email else name
     if not user.is_active:
         return label + ' - Inactive, already assigned; deselect to remove'
     return label + (' - Already assigned' if user.existing_assignment else '')

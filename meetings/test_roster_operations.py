@@ -2,9 +2,10 @@ from unittest.mock import patch
 from django.test import TransactionTestCase
 from django.db import transaction, connection
 from django.core.exceptions import PermissionDenied
+from django.db.models import F, Value
 from django.db.models.query import QuerySet
 from accounts.models import User, Department, Membership
-from .models import Meeting, HistoricalRoster
+from .models import Attendance, Meeting, HistoricalRoster
 from .roster import lock_departments, lock_user_scope
 
 
@@ -44,6 +45,51 @@ class RosterOperationTests(TransactionTestCase):
         self.assertEqual(seen,['Changed'])
         self.user.refresh_from_db();self.assertEqual(self.user.first_name,'Original')
 
+    def test_username_updates_guard_literals_and_resolve_original_expressions(self):
+        from . import roster
+
+        meeting = Meeting.objects.create(department=self.department, title='Frozen', status='Finished')
+        users = User.objects.filter(pk=self.user.pk)
+        with patch.object(roster, 'lock_profile_names', wraps=roster.lock_profile_names) as guard:
+            for query, value, expected in (
+                (users, 'literal', 'literal'),
+                (users, F('first_name'), 'Original'),
+                (users.annotate(candidate=Value('candidate')), F('candidate'), 'candidate'),
+                (users.values('pk').annotate(username=Value('shadowed')), F('username'), 'shadowed'),
+                (users, F('username'), 'shadowed'),
+            ):
+                self.assertEqual(query.update(username=value), 1)
+                self.user.refresh_from_db()
+                self.assertEqual(self.user.username, expected)
+            self.assertEqual(guard.call_count, 5)
+        self.assertEqual(meeting.historical_roster.entries[0]['name'], 'operation-user')
+
+    def test_annotations_cannot_replace_frozen_primary_keys_or_signature_checks(self):
+        other = User.objects.create_user(username='other')
+        users = User.objects.filter(pk=self.user.pk).values('username').annotate(pk=Value(other.pk))
+        self.assertEqual(users.update(username='right-account'), 1)
+        self.user.refresh_from_db()
+        other.refresh_from_db()
+        self.assertEqual(self.user.username, 'right-account')
+        self.assertEqual(other.username, 'other')
+
+        forged = 'normalized/forged.png'
+        users = users.annotate(signature_image=Value(forged))
+        with self.assertRaises(PermissionDenied):
+            users.update(username='blocked', signature_image=forged)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.username, 'right-account')
+        self.assertFalse(self.user.signature_image)
+
+    def test_internal_user_lock_does_not_enter_profile_guard(self):
+        from accounts.signature_guards import _lock_user_row
+
+        with transaction.atomic(), patch('meetings.roster.lock_profile_names') as guard:
+            _lock_user_row(self.user.pk)
+        guard.assert_not_called()
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.username, 'operation-user')
+
     def test_mutable_filter_does_not_expand_frozen_targets(self):
         other=User.objects.create_user(username='other',first_name='Other')
         original=lock_user_scope
@@ -69,6 +115,89 @@ class RosterOperationTests(TransactionTestCase):
             with self.assertRaises(PermissionDenied):
                 User.objects.filter(pk=self.user.pk).update(first_name='Must not persist')
         self.user.refresh_from_db();self.assertEqual(self.user.first_name,'Original')
+
+    def test_scoped_username_write_retries_expansion_before_saving(self):
+        from . import roster
+
+        expanded = Department.objects.create(name='Expanded')
+        original = roster.user_department_scope
+        expanded_scope = False
+        attempts = []
+
+        def department_scope(ids, using='default'):
+            return original(ids, using) | ({expanded.pk} if expanded_scope else set())
+
+        def rename(user, scope):
+            nonlocal expanded_scope
+            attempts.append(scope.departments)
+            expanded_scope = True
+            user.username = 'retried'
+            user.save(update_fields=['username'], _profile_scope=scope)
+
+        with patch.object(roster, 'user_department_scope', side_effect=department_scope), \
+                patch.object(roster, 'lock_departments', wraps=roster.lock_departments) as locks:
+            roster.run_profile_write(self.user.pk, rename)
+        self.assertEqual(attempts, [{self.department.pk}, {self.department.pk, expanded.pk}])
+        self.assertEqual([call.args[0] for call in locks.call_args_list], attempts)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.username, 'retried')
+
+    def test_profile_scope_retries_are_bounded(self):
+        from . import roster
+
+        attempts = []
+
+        def change(user, scope):
+            attempts.append(user.pk)
+            raise roster.ProfileScopeChanged('Scope changed')
+
+        with self.assertRaises(roster.ProfileScopeChanged):
+            roster.run_profile_write(self.user.pk, change)
+        self.assertEqual(attempts, [self.user.pk, self.user.pk])
+
+    def test_postgres_assignment_expansion_and_finalization_precede_retry(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from django.db import connections
+        from . import roster
+
+        if connection.vendor != 'postgresql':
+            self.skipTest('Requires PostgreSQL row locks')
+        original_department = Department.objects.create(name='Later lock')
+        Membership.objects.filter(user=self.user).delete()
+        Membership.objects.create(user=self.user, department=original_department)
+        meeting = Meeting.objects.create(department=self.department, title='Concurrent finalization')
+        established_scopes = []
+
+        def finalize():
+            try:
+                Attendance.objects.create(meeting=meeting, user=self.user)
+                meeting.status = 'Finished'
+                meeting.save()
+            finally:
+                connections.close_all()
+
+        validate = roster._UserScope.validate
+
+        def interleave(scope):
+            validate(scope)
+            if scope.user is None:
+                established_scopes.append(scope.departments)
+                if len(established_scopes) == 1:
+                    with ThreadPoolExecutor(max_workers=1) as pool:
+                        pool.submit(finalize).result(timeout=15)
+
+        def rename(user, scope):
+            user.username = 'after-finalization'
+            user.save(update_fields=['username'], _profile_scope=scope)
+
+        with patch.object(roster._UserScope, 'validate', interleave):
+            roster.run_profile_write(self.user.pk, rename)
+        self.assertEqual(established_scopes, [
+            {original_department.pk}, {original_department.pk, self.department.pk},
+        ])
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.username, 'after-finalization')
+        self.assertEqual(meeting.historical_roster.entries[0]['name'], 'operation-user')
 
     def test_membership_removal_guards_legacy_department(self):
         legacy=Department.objects.create(name='Legacy')

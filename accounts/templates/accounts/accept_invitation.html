@@ -1,9 +1,10 @@
 {% extends "base_app.html" %}
 
 {% block head_title %}VeriMeet invitation{% endblock %}
+{% load pht_display %}
 {% block content %}
 <h1>Officer invitation</h1><p>Join {{ invitation.department.name }} as an Officer.</p>
-<p>Expires {{ invitation.expires_at|date:"c" }}. Authentication does not extend this deadline.</p>
+<p>Expires {{ invitation.expires_at|pht_datetime }}. Authentication does not extend this deadline.</p>
 {% if eligible %}
 <form method="post">{% csrf_token %}<button type="submit">Accept invitation</button></form>
 {% elif user.is_authenticated %}

@@ -73,11 +73,11 @@ class OfficerReadingTests(TestCase):
         self.client.force_login(self.unassigned)
         before=(list(Meeting.objects.values()),list(Attendance.objects.values()),AuditLog.objects.count(),QRSession.objects.count())
         response=self.client.get(self.url('review_meeting'))
-        for value in ('Approved document','Agenda item one','Full finalized minutes','Alice Reader','PRIVATE_FALLBACK','Export PDF'):
+        for value in ('Approved document','Agenda item one','Full finalized minutes','PRIVATE_USERNAME','PRIVATE_FALLBACK','Export PDF'):
             self.assertContains(response,value)
-        for value in ('PRIVATE_USERNAME',self.assigned.email,'Manage Attendance','Document History','Pending Signature','btn-finalize-meeting','Generate Signing QR'):
+        for value in ('Alice Reader',self.assigned.email,'Manage Attendance','Document History','Pending Signature','btn-finalize-meeting','Generate Signing QR'):
             self.assertNotContains(response,value)
-        self.assertEqual([row['name'] for row in response.context['attendees']],['Alice Reader','PRIVATE_FALLBACK'])
+        self.assertEqual([row['name'] for row in response.context['attendees']],['PRIVATE_USERNAME','PRIVATE_FALLBACK'])
         self.assertIsInstance(response.context['meeting'],dict)
         with patch('meetings.pdf.generate_meeting_pdf',return_value=b'%PDF-test'):
             response=self.client.get(self.url('export_meeting_pdf'))
@@ -109,7 +109,7 @@ class OfficerReadingTests(TestCase):
         for officer in (True,False):
             document=capture_document(self.meeting.pk,officer_read_only=officer)
             if officer:
-                self.assertEqual([row['name'] for row in document['attendees']],['Alice Reader','PRIVATE_FALLBACK'])
+                self.assertEqual([row['name'] for row in document['attendees']],['PRIVATE_USERNAME','PRIVATE_FALLBACK'])
                 self.assertEqual(document['resources'],{})
             pdf=generate_meeting_pdf(document)
             with TemporaryDirectory() as directory:
@@ -121,14 +121,14 @@ class OfficerReadingTests(TestCase):
             for value in ('Approved document','Agenda item one','Full finalized minutes'):
                 self.assertIn(value,text)
             if officer:
-                for value in ('Alice Reader','PRIVATE_FALLBACK'): self.assertIn(value,text)
-                for value in ('PRIVATE_USERNAME',self.assigned.email,'Unsigned','Invalid signature','Attendance and signatures','Annotation','signing timestamp'):
+                for value in ('PRIVATE_USERNAME','PRIVATE_FALLBACK'): self.assertIn(value,text)
+                for value in ('Alice Reader',self.assigned.email,'Unsigned','Invalid signature','Attendance and signatures','Annotation','signing timestamp'):
                     self.assertNotIn(value,text)
             else:
                 for value in ('Attendance and signatures','Late','Invalid signature','PRIVATE_ANNOTATION',
                               'PRIVATE_FALLBACK'):
                     self.assertIn(value,text)
-                self.assertRegex(text, r'November 16, 2026, 8:57 AM(?:[^\n]*\n)?\s+PHT')
+                self.assertRegex(text, r'11/16/26, 8:57 AM(?:[^\n]*\n)?\s+PHT')
 
     def test_frozen_fallback_is_consistent_for_all_internal_readers(self):
         User.objects.filter(pk=self.unnamed.pk).update(username='changed-fallback')

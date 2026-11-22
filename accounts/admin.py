@@ -1,4 +1,5 @@
 from django.contrib import admin
+from core.display_time import format_pht_datetime
 from django.contrib.auth.admin import UserAdmin
 from .models import User, Department, Membership
 from django.db import transaction
@@ -67,8 +68,12 @@ class SignatureUserChangeForm(UserChangeForm):
 
 @admin.register(Department)
 class DepartmentAdmin(admin.ModelAdmin):
-    list_display = ('name', 'contact_email', 'is_active', 'created_at')
+    list_display = ('name', 'contact_email', 'is_active', 'created_at_pht')
     search_fields = ('name',)
+
+    @admin.display(description='Created at', ordering='created_at')
+    def created_at_pht(self, obj):
+        return format_pht_datetime(obj.created_at)
 
     def save_model(self, request, obj, form, change):
         with transaction.atomic():

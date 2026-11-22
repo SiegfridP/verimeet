@@ -14,7 +14,7 @@ def officer_can_read(user, meeting):
 
 def participant_name(first, last, username):
     first, last = ' '.join((first or '').split()), ' '.join((last or '').split())
-    return f'{first} {last}' if first and last else (username or '').strip() or 'Name not provided'
+    return (username or '').strip() or (f'{first} {last}' if first and last else 'Name not provided')
 
 
 def capture_read_document(meeting_id):

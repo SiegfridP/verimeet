@@ -1,6 +1,7 @@
 """Finalization roster. Department -> Meeting -> Attendance lock order."""
 from django.core.exceptions import ValidationError, PermissionDenied
 from django.db.models import F, Q, Exists, OuterRef
+from django.db.models.expressions import Col
 from accounts.models import Department, User, Membership
 
 
@@ -33,20 +34,56 @@ def user_membership_state(ids, using='default'):
     )
 
 
+class ProfileScopeChanged(PermissionDenied):
+    pass
+
+
+class _UserScope:
+    def __init__(self, ids, using, extra_departments=()):
+        self.ids = tuple(sorted(set(ids)))
+        self.using = using
+        self.before = user_membership_state(self.ids, using)
+        self.departments = user_department_scope(self.ids, using) | set(extra_departments)
+        self.user = None
+        lock_departments(self.departments, using)
+        self.validate()
+
+    def validate(self):
+        if (user_membership_state(self.ids, self.using) != self.before
+                or not user_department_scope(self.ids, self.using).issubset(self.departments)):
+            raise ProfileScopeChanged('Roster relationship scope changed. Retry the entire operation.')
+
+
 def lock_user_scope(ids, using='default', extra_departments=()):
-    ids = tuple(sorted(set(ids)))
-    before = user_membership_state(ids, using)
-    departments = user_department_scope(ids, using) | set(extra_departments)
-    lock_departments(departments, using)
-    if user_membership_state(ids, using) != before or not user_department_scope(ids, using).issubset(departments):
-        raise PermissionDenied('Roster relationship scope changed. Retry the entire operation.')
-    return ids
+    return _UserScope(ids, using, extra_departments).ids
+
+
+def run_profile_write(user_id, operation):
+    """Retry a changed scope only after the failed attempt releases its locks."""
+    from django.db import transaction
+
+    for attempt in range(2):
+        try:
+            with transaction.atomic():
+                scope = _UserScope([user_id], 'default')
+                user = User.objects.select_for_update().get(pk=user_id)
+                scope.user = user
+                try:
+                    scope.validate()
+                    return operation(user, scope)
+                finally:
+                    scope.user = None
+        except ProfileScopeChanged:
+            if attempt == 1:
+                raise
 
 
 def lock_profile_names(users, using='default', extra_departments=()):
     # Evaluate a mutable caller filter exactly once. All subsequent reads/writes
     # use these IDs, never a reevaluation of the original filter.
-    ids = tuple(sorted(set(users.values_list('pk', flat=True))))
+    targets = users.all()
+    pk_column = Col(targets.query.get_initial_alias(), User._meta.pk)
+    ids = tuple(sorted(set(targets.values_list(pk_column, flat=True))))
     lock_user_scope(ids, using, extra_departments)
     frozen = User.objects.using(using).filter(pk__in=ids)
     persisted = list(frozen.values('pk', 'first_name', 'last_name', 'department_id'))

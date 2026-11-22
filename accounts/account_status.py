@@ -1,7 +1,7 @@
 """Global status policy shared by application and Django Admin."""
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import transaction, models
-from django.db.models import F
+from .signature_guards import _lock_user_row
 from .models import User
 from .audit import record
 
@@ -9,7 +9,7 @@ from .audit import record
 def lock_accounts(ids):
     # Same order for status and Admin privilege edits; SQLite needs a write guard.
     for pk in sorted(set(ids)):
-        User.objects.filter(pk=pk).update(username=F('username'))
+        _lock_user_row(pk)
 
 
 def active_admin(user):

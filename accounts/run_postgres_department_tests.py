@@ -14,7 +14,8 @@ EXPECTED = {'ENGINE':'django.db.backends.postgresql', 'HOST':'127.0.0.1',
             'PORT':'5432', 'NAME':TARGET, 'USER':'verimeet_test_user1'}
 ALLOWED = ('accounts.test_department_deletion', 'accounts.test_batch14',
            'meetings.test_attendance_integrity', 'meetings.test_roster_integrity',
-           'meetings.test_visual_evidence', 'meetings.tests.Batch09StructuredAuditTests',
+           'meetings.test_visual_evidence', 'meetings.test_roster_operations',
+           'meetings.tests.Batch09StructuredAuditTests',
            'meetings.tests.Batch09MeetingAdminAuditTests',
            'meetings.tests.Batch09AuditCorrectionAdminTests')
 

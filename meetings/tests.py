@@ -8,6 +8,7 @@ from django.urls import reverse
 from accounts.models import Department, User, Membership
 from meetings.models import Meeting, Attendance, AuditLog, QRSession, QRUsage
 from meetings.crypto import generate_hmac_qr_token
+from core.display_time import format_pht_datetime
 from accounts.test_fixtures import signature_storage, complete_onboarding
 
 class MeetingRoutingAndSecurityTests(TestCase):
@@ -2816,7 +2817,7 @@ class Batch07QRAttendanceAndSigningTests(TestCase):
         self.assertIsNotNone(self.att1.status_updated_at)
 
         # QRUsage recorded
-        self.assertContains(r, timezone.localtime(self.att1.status_updated_at).strftime('%Y-%m-%d %H:%M:%S'))
+        self.assertContains(r, format_pht_datetime(self.att1.status_updated_at))
         self.assertTrue(QRUsage.objects.filter(qr_session=session, user=self.officer1).exists())
 
         # AuditLog recorded without sensitive secrets
@@ -3868,14 +3869,15 @@ class Batch08VerificationQRTests(TestCase):
         resp = self.client.post(reverse('my_signature_verification_qr', args=[self.finished_meeting.id]))
         self.assertEqual(resp.status_code, 302)
 
+        User.objects.filter(pk=self.officer1.pk).update(first_name='Google', last_name='Profile')
         # Follow redirect to display page
         resp_get = self.client.get(resp.url)
         self.assertEqual(resp_get.status_code, 200)
+        self.assertContains(resp_get, f'<span class="meta-value">{self.officer1.username}</span>', html=True)
         self.assertIn('qr_image_b64', resp_get.context)
         self.assertIsNotNone(resp_get.context['qr_image_b64'])
         self.assertEqual(VerificationQR.objects.filter(attendance=self.att1).count(), 1)
-        from django.utils import timezone
-        self.assertContains(resp_get, timezone.localtime(self.att1.signed_at).strftime('%b %d, %Y %H:%M:%S'))
+        self.assertContains(resp_get, format_pht_datetime(self.att1.signed_at))
 
     def test_02_unsigned_officer_cannot_generate_qr(self):
         """2. An unsigned Officer cannot generate a verification QR (403 Forbidden)."""
@@ -4124,8 +4126,7 @@ class Batch08VerificationQRTests(TestCase):
         self.assertTrue(resp.context['sig_result']['valid'])
         self.assertTrue(resp.context['sig_result']['meeting_bound'])
         self.assertFalse(resp.context['sig_result']['is_legacy'])
-        from django.utils import timezone
-        self.assertContains(resp, timezone.localtime(self.att1.signed_at).strftime('%b %d, %Y %H:%M:%S'))
+        self.assertContains(resp, format_pht_datetime(self.att1.signed_at))
 
         content = resp.content.decode('utf-8')
         self.assertIn('Verified (Canonical)', content)
@@ -4454,11 +4455,14 @@ class Batch09StructuredAuditTests(TransactionTestCase):
         )
         self.client.force_login(self.ap_user)
         response = self.client.get(reverse('document_history', args=[self.draft_meeting.pk]))
-        self.assertContains(response, '2026-11-17T00:01:00+08:00')
+        self.assertContains(response, '11/17/26, 12:01 AM PHT')
         self.assertContains(response, '2026-11-16T16:02:00')
         self.assertContains(response, stored)
         event.refresh_from_db()
         self.assertEqual(event.metadata['signed_at'], stored)
+        malformed = '2026-11-33T16:02:00+00:00'
+        AuditLog.objects.filter(pk=event.pk).update(metadata={'expires_at': malformed})
+        self.assertContains(self.client.get(reverse('document_history', args=[self.draft_meeting.pk])), malformed)
 
     def test_audit_admin_is_readonly(self):
         from django.contrib import admin
