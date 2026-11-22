@@ -7,7 +7,7 @@ from django.db.models.deletion import ProtectedError
 from accounts.models import User, Department, Membership
 from accounts.test_fixtures import signature_storage, complete_onboarding
 from .models import Meeting, Attendance, HistoricalRoster
-from .reading import capture_read_document, officer_can_read
+from .reading import capture_read_document, officer_can_read, participant_name
 from .pdf import capture_document, generate_meeting_pdf
 
 
@@ -26,6 +26,34 @@ class RosterTests(TestCase):
         self.meeting.status='Finished'
         self.meeting.save()
         return self.meeting.historical_roster
+
+    def test_internal_participant_name_priority(self):
+        for first, last, username, expected in (
+            ('  First ', ' Last ', 'handle', 'First Last'),
+            ('', '', 'handle', 'handle'),
+            ('First', '', 'handle', 'handle'),
+            ('', 'Last', 'handle', 'handle'),
+            ('  ', '', ' ', 'Name not provided'),
+        ):
+            with self.subTest(first=first, last=last, username=username):
+                self.assertEqual(participant_name(first, last, username), expected)
+
+    def test_existing_roster_placeholder_survives_profile_changes(self):
+        complete_onboarding(self.member)
+        with patch('meetings.reading.participant_name', return_value='Name not provided'):
+            snapshot = self.finalize()
+        User.objects.filter(pk=self.member.pk).update(username='new-handle')
+        url = reverse('review_meeting', args=[self.meeting.pk])
+        for reader, officer in ((self.member, True),
+                                (User.objects.create_superuser(username='roster-admin'), False)):
+            self.client.force_login(reader)
+            response = self.client.get(url)
+            self.assertContains(response, 'Name not provided')
+            self.assertNotContains(response, '<span class="participant-name">new-handle</span>')
+            document = capture_document(self.meeting.pk, officer_read_only=officer)
+            self.assertEqual(document['attendees'][0]['name'], 'Name not provided')
+        snapshot.refresh_from_db()
+        self.assertEqual(snapshot.entries[0]['name'], 'Name not provided')
 
     def test_population_and_live_status_separation(self):
         inactive = User.objects.create_user(username='inactive',is_active=False)
@@ -119,14 +147,24 @@ class RosterTests(TestCase):
         self.assertFalse(result['historical_roster_available'])
         self.assertEqual(result['absent'],[])
         self.assertFalse(HistoricalRoster.objects.exists())
+        from django.template.loader import render_to_string
+        for officer in (True, False):
+            document = capture_document(self.meeting.pk, officer_read_only=officer)
+            html = render_to_string('pdf/final_minutes.html', {'document': document})
+            self.assertIn('Historical department roster unavailable for this legacy meeting.', html)
+            self.assertNotIn('Unassigned Department Members', html)
 
     def test_pdf_extracted_historical_absent_after_membership_and_name_changes(self):
         import shutil, subprocess
         from tempfile import TemporaryDirectory
         from pathlib import Path
+        attended = User.objects.create_user(username='present', first_name='Present', last_name='Member')
+        Membership.objects.create(user=attended, department=self.department, role='O')
+        Attendance.objects.create(meeting=self.meeting, user=attended, status='Attended')
         self.finalize()
         self.absent.first_name='Changed';self.absent.save()
         Membership.objects.filter(user=self.absent).delete()
+        self.absent.delete()
         extractor=shutil.which('pdftotext') or 'C:/Program Files/Git/ucrt64/bin/pdftotext.exe'
         for officer in (True,False):
             with TemporaryDirectory() as directory:
@@ -135,11 +173,42 @@ class RosterTests(TestCase):
                 result=subprocess.run([extractor,'-layout','-enc','UTF-8',str(pdf),str(text)],capture_output=True,timeout=60)
                 self.assertEqual(result.returncode,0)
                 content=text.read_text(encoding='utf-8')
-            self.assertIn('Department members not assigned when this meeting was finalized; this is not the recorded Absent attendance status.', ' '.join(content.split()))
+            self.assertIn('Department members who were not assigned to this meeting when it was finalized. This section is separate from recorded attendance status.', ' '.join(content.split()))
+            self.assertIn('Unassigned Department Members', content)
+            self.assertIn('Not attended', content)
+            self.assertIn('Attended', content)
+            if not officer:
+                self.assertIn('Unsigned', content)
             self.assertIn('Absent Member',content)
             self.assertIn('First Member',content)
             self.assertNotIn('Changed',content)
             self.assertNotIn('PRIVATE_USER',content)
+        self.attendance.refresh_from_db()
+        self.assertEqual(self.attendance.status, 'Absent')
+
+    def test_pdf_formats_manila_time_for_both_reader_variants(self):
+        from datetime import datetime
+        from django.template.loader import render_to_string
+        from django.utils import timezone
+
+        instant = datetime.fromisoformat('2026-11-16T00:57:23.468089+00:00')
+        self.finalize()
+        Meeting.objects.filter(pk=self.meeting.pk).update(created_at=instant)
+        self.client.force_login(User.objects.create_superuser(username='timezone-admin'))
+        self.assertContains(
+            self.client.get(reverse('review_meeting', args=[self.meeting.pk])),
+            'Nov 16, 2026 08:57',
+        )
+        for officer in (True, False):
+            document = capture_document(self.meeting.pk, officer_read_only=officer)
+            self.assertEqual(document['created_at'], instant)
+            document['updated_at'] = datetime.fromisoformat('2026-11-16T16:01:00+00:00')
+            with timezone.override('UTC'):
+                html = render_to_string('pdf/final_minutes.html', {'document': document})
+            self.assertIn('November 16, 2026, 8:57 AM PHT', html)
+            self.assertIn('November 17, 2026, 12:01 AM PHT', html)
+            if not officer:
+                self.assertIn('No signing timestamp', html)
 
     def test_signing_after_finalization_retains_roster(self):
         import time

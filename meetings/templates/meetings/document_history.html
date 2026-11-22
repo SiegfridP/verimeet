@@ -11,7 +11,7 @@
 <tr><td>{{ event.action }}</td><td>{{ event.event_type }}</td>
 <td>{% if event.user_id %}User #{{ event.user_id }}{% else %}System / unavailable{% endif %}</td>
 <td>{{ event.timestamp|date:"c" }}</td><td>{{ event.target_type }} #{{ event.target_id }}</td>
-<td><dl>{% for key, value in event.safe_metadata.items %}<dt>{{ key }}</dt><dd>{{ value }}</dd>{% endfor %}</dl></td></tr>
+<td><dl>{% for key, value in event.display_metadata.items %}<dt>{{ key }}</dt><dd>{{ value }}</dd>{% endfor %}</dl></td></tr>
 {% empty %}<tr><td colspan="6">No document history recorded.</td></tr>{% endfor %}
 </tbody></table>
 <nav aria-label="History pages">

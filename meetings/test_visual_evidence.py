@@ -1,6 +1,8 @@
 from hashlib import sha256
 import time
 from unittest.mock import patch
+from django.template.loader import render_to_string
+from django.test import SimpleTestCase
 from django.test import TestCase
 from django.test import TransactionTestCase
 from django.urls import reverse
@@ -15,6 +17,23 @@ from .models import Meeting, Attendance, SigningVisualSnapshot, AuditLog, QRUsag
 from .crypto import generate_hmac_qr_token
 from .pdf import capture_document, generate_meeting_pdf
 from .visual_evidence import SnapshotStorage, read_snapshot
+
+
+class LegacyPDFSigningNameTests(SimpleTestCase):
+    def test_historical_signing_name_is_labeled_even_if_it_matches(self):
+        for participant_name in ('Original Signer', 'Current Signer'):
+            with self.subTest(participant_name=participant_name):
+                attendee = {'name': participant_name, 'signer_name': 'Original Signer', 'signed': True}
+                document = {'attendees': [attendee], 'historical_roster_available': False}
+                html = render_to_string('pdf/final_minutes.html', {'document': document})
+                self.assertIn(f'<td>{participant_name}<br>', html)
+                self.assertIn('Historical signing-time name: Original Signer', html)
+
+                document['officer_read_only'] = True
+                html = render_to_string('pdf/final_minutes.html', {'document': document})
+                self.assertNotIn('Historical signing-time name:', html)
+                if participant_name != attendee['signer_name']:
+                    self.assertNotIn(attendee['signer_name'], html)
 
 
 class VisualEvidenceTests(TestCase):
@@ -223,7 +242,7 @@ class VisualConcurrencyTests(TransactionTestCase):
         self.sign()
         User.objects.filter(pk=self.user.pk).update(first_name='Later')
         self.assertEqual(SigningVisualSnapshot.objects.get(attendance=self.att).signer_name, 'Name unavailable')
-        self.assertEqual(capture_document(self.meeting.pk)['attendees'][0]['name'], 'Name not provided')
+        self.assertEqual(capture_document(self.meeting.pk)['attendees'][0]['name'], self.user.username)
 
     def test_real_renderer_uses_only_export_bytes(self):
         self.sign()
@@ -270,7 +289,7 @@ class VisualConcurrencyTests(TransactionTestCase):
         change_account_status(admin, self.user.pk, False)
         change_account_status(admin, self.user.pk, True)
         document = capture_document(self.meeting.pk)
-        self.assertEqual([a['name'] for a in document['attendees']], ['Original Signer', 'Name not provided'])
+        self.assertEqual([a['name'] for a in document['attendees']], ['Original Signer', 'second'])
         self.assertEqual(SigningVisualSnapshot.objects.get(attendance__user=other).signer_name, 'Second')
         self.assertEqual(len(document['resources']), 2)
 

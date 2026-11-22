@@ -12,16 +12,16 @@ def officer_can_read(user, meeting):
                  or (user.department_id == meeting.department_id and not Membership.objects.filter(user=user).exists())))
 
 
-def participant_name(first, last):
+def participant_name(first, last, username):
     first, last = ' '.join((first or '').split()), ' '.join((last or '').split())
-    return f'{first} {last}' if first and last else 'Name not provided'
+    return f'{first} {last}' if first and last else (username or '').strip() or 'Name not provided'
 
 
 def capture_read_document(meeting_id):
-    # Do not fetch signing evidence, identifiers, emails or username fallbacks.
+    # Project only the profile fields used for legacy participant labels.
     fields = ('id', 'title', 'department_id', 'department__name', 'status',
               'minutes_content', 'created_at', 'updated_at', 'attendees__id',
-              'attendees__user__first_name', 'attendees__user__last_name')
+              'attendees__user__first_name', 'attendees__user__last_name', 'attendees__user__username')
     rows = list(Meeting.objects.filter(pk=meeting_id).values(*fields).order_by('attendees__id'))
     if not rows:
         raise Meeting.DoesNotExist
@@ -32,7 +32,8 @@ def capture_read_document(meeting_id):
               'minutes_content', 'created_at', 'updated_at')}
     result['department_name'] = first['department__name']
     result['attendees'] = [{'name': participant_name(row['attendees__user__first_name'],
-                           row['attendees__user__last_name'])} for row in rows if row['attendees__id'] is not None]
+                           row['attendees__user__last_name'], row['attendees__user__username'])}
+                           for row in rows if row['attendees__id'] is not None]
     from .roster import roster_groups
     groups = roster_groups(meeting_id, first['status'])
     if groups is not None:

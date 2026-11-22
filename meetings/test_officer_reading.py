@@ -1,3 +1,4 @@
+from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -5,7 +6,6 @@ import shutil
 import subprocess
 from django.test import TestCase
 from django.urls import reverse
-from django.utils import timezone
 from accounts.models import User, Department, Membership
 from accounts.test_fixtures import signature_storage, complete_onboarding
 from .models import Meeting, Attendance, AuditLog, QRSession
@@ -30,7 +30,8 @@ class OfficerReadingTests(TestCase):
         self.meeting = Meeting.objects.create(department=self.dept, title='Approved document',
             minutes_content='Agenda item one\nFull finalized minutes', status='Draft')
         self.att = Attendance.objects.create(meeting=self.meeting,user=self.assigned,status='Late',
-            has_signed=True, signed_at=timezone.now(), annotation='PRIVATE_ANNOTATION', cryptographic_signature='PRIVATE_CRYPTO')
+            has_signed=True, signed_at=datetime.fromisoformat('2026-11-16T00:57:23.468089+00:00'),
+            annotation='PRIVATE_ANNOTATION', cryptographic_signature='PRIVATE_CRYPTO')
         self.unnamed = User.objects.create_user(username='PRIVATE_FALLBACK')
         Attendance.objects.create(meeting=self.meeting,user=self.unnamed)
         self.meeting.status='Finished'
@@ -72,11 +73,11 @@ class OfficerReadingTests(TestCase):
         self.client.force_login(self.unassigned)
         before=(list(Meeting.objects.values()),list(Attendance.objects.values()),AuditLog.objects.count(),QRSession.objects.count())
         response=self.client.get(self.url('review_meeting'))
-        for value in ('Approved document','Agenda item one','Full finalized minutes','Alice Reader','Name not provided','Export PDF'):
+        for value in ('Approved document','Agenda item one','Full finalized minutes','Alice Reader','PRIVATE_FALLBACK','Export PDF'):
             self.assertContains(response,value)
-        for value in ('PRIVATE_',self.assigned.email,'Manage Attendance','Document History','Pending Signature','btn-finalize-meeting','Generate Signing QR'):
+        for value in ('PRIVATE_USERNAME',self.assigned.email,'Manage Attendance','Document History','Pending Signature','btn-finalize-meeting','Generate Signing QR'):
             self.assertNotContains(response,value)
-        self.assertEqual([row['name'] for row in response.context['attendees']],['Alice Reader','Name not provided'])
+        self.assertEqual([row['name'] for row in response.context['attendees']],['Alice Reader','PRIVATE_FALLBACK'])
         self.assertIsInstance(response.context['meeting'],dict)
         with patch('meetings.pdf.generate_meeting_pdf',return_value=b'%PDF-test'):
             response=self.client.get(self.url('export_meeting_pdf'))
@@ -108,7 +109,7 @@ class OfficerReadingTests(TestCase):
         for officer in (True,False):
             document=capture_document(self.meeting.pk,officer_read_only=officer)
             if officer:
-                self.assertEqual([row['name'] for row in document['attendees']],['Alice Reader','Name not provided'])
+                self.assertEqual([row['name'] for row in document['attendees']],['Alice Reader','PRIVATE_FALLBACK'])
                 self.assertEqual(document['resources'],{})
             pdf=generate_meeting_pdf(document)
             with TemporaryDirectory() as directory:
@@ -120,12 +121,22 @@ class OfficerReadingTests(TestCase):
             for value in ('Approved document','Agenda item one','Full finalized minutes'):
                 self.assertIn(value,text)
             if officer:
-                for value in ('Alice Reader','Name not provided'): self.assertIn(value,text)
-                for value in ('PRIVATE_',self.assigned.email,'Unsigned','Invalid signature','Attendance and signatures','Annotation','signing timestamp'):
+                for value in ('Alice Reader','PRIVATE_FALLBACK'): self.assertIn(value,text)
+                for value in ('PRIVATE_USERNAME',self.assigned.email,'Unsigned','Invalid signature','Attendance and signatures','Annotation','signing timestamp'):
                     self.assertNotIn(value,text)
             else:
-                for value in ('Attendance and signatures','Late','Invalid signature','PRIVATE_ANNOTATION'):
+                for value in ('Attendance and signatures','Late','Invalid signature','PRIVATE_ANNOTATION',
+                              'PRIVATE_FALLBACK'):
                     self.assertIn(value,text)
+                self.assertRegex(text, r'November 16, 2026, 8:57 AM(?:[^\n]*\n)?\s+PHT')
+
+    def test_frozen_fallback_is_consistent_for_all_internal_readers(self):
+        User.objects.filter(pk=self.unnamed.pk).update(username='changed-fallback')
+        for reader in (self.admin, self.ap, self.unassigned):
+            self.client.force_login(reader)
+            response = self.client.get(self.url('review_meeting'))
+            self.assertContains(response, 'PRIVATE_FALLBACK')
+            self.assertNotContains(response, 'changed-fallback')
 
     def test_mutation_and_history_guards_stay_closed(self):
         self.client.force_login(self.unassigned)

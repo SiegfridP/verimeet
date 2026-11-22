@@ -69,7 +69,7 @@
           {% for att in attendees %}
             <li class="participant-item">
               <div>
-                <span class="participant-name">{% if historical_roster_available %}{{ att.historical_name }}{% else %}{{ att.user.username }}{% endif %}</span>
+                <span class="participant-name">{{ att.display_name }}</span>
                 {% if att.user.email %}
                   <span class="participant-email">({{ att.user.email }})</span>
                 {% endif %}

@@ -3,6 +3,7 @@ from django.template.loader import render_to_string
 from django.utils import timezone
 from .crypto import verify_attendance_signature
 from .models import Meeting
+from .reading import participant_name
 
 TEMPLATE_VERSION = '2'
 MAX_IMAGE_PIXELS = 12_000_000
@@ -23,7 +24,7 @@ def capture_document(meeting_id, *, officer_read_only=False):
         'id', 'title', 'department_id', 'department__name', 'status',
         'minutes_content', 'created_at', 'updated_at',
         'attendees__id', 'attendees__user_id', 'attendees__user__first_name',
-        'attendees__user__last_name', 'attendees__user__public_key',
+        'attendees__user__last_name', 'attendees__user__username', 'attendees__user__public_key',
         'attendees__status', 'attendees__has_signed', 'attendees__signed_at',
         'attendees__annotation', 'attendees__cryptographic_signature',
         'attendees__visual_snapshot__storage_identifier', 'attendees__visual_snapshot__content_sha256',
@@ -58,7 +59,8 @@ def capture_document(meeting_id, *, officer_read_only=False):
             label = ('Valid canonical ECDSA signature' if result['format'] == 'canonical'
                      else 'Valid legacy ECDSA signature' if result['format'] == 'legacy'
                      else 'Invalid signature') if result['valid'] else 'Invalid signature'
-        name = row['attendees__visual_snapshot__signer_name'] if signed else ' '.join(filter(None, [row['attendees__user__first_name'], row['attendees__user__last_name']]))
+        name = participant_name(row['attendees__user__first_name'], row['attendees__user__last_name'],
+                                row['attendees__user__username'])
         image_url = None
         width = row['attendees__visual_snapshot__width'] or 0
         height = row['attendees__visual_snapshot__height'] or 0
@@ -75,7 +77,8 @@ def capture_document(meeting_id, *, officer_read_only=False):
                 total_bytes += len(data)
                 total_pixels += pixels
         document['attendees'].append({
-            'name': name or 'Name unavailable',
+            'name': name,
+            'signer_name': row['attendees__visual_snapshot__signer_name'] if signed else None,
             'image_url': image_url, 'signed': signed,
             'status': row['attendees__status'], 'verification': label,
             'signed_at': row['attendees__signed_at'],

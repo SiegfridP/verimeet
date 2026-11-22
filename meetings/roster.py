@@ -83,7 +83,7 @@ def capture_roster(meeting, using='default'):
         role = memberships.get(user.pk)
         legacy = user.department_id == meeting.department_id and not user.any_membership
         member = user.is_active and (role is not None or legacy)
-        entries.append(dict(user_id=user.pk, name=participant_name(user.first_name,user.last_name),
+        entries.append(dict(user_id=user.pk, name=participant_name(user.first_name, user.last_name, user.username),
                             role=role or ('O' if legacy else None), assigned=user.pk in assignments, member=bool(member)))
     snapshot = HistoricalRoster(meeting=meeting, entries=entries)
     snapshot._capture_authorized = True

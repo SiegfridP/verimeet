@@ -9,6 +9,7 @@ from django.urls import reverse
 from django.contrib.auth.decorators import login_required
 from django.http import HttpResponseForbidden, HttpResponse, HttpResponseBadRequest, HttpResponseNotAllowed
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from django.contrib import messages
 from django.db import transaction, IntegrityError
 from django.core.paginator import Paginator
@@ -1025,17 +1026,23 @@ def review_meeting(request, meeting_id):
     from .roster import roster_groups
     groups = roster_groups(meeting.pk, meeting.status)
     context.update(absent=groups[1] if groups else [], historical_roster_available=groups is not None)
-    if can_manage and groups:
-        names = {entry['user_id']: entry['name'] for entry in meeting.historical_roster.entries if entry['assigned']}
+    if can_manage:
         context['attendees'] = list(context['attendees'])
-        for attendee in context['attendees']:
-            attendee.historical_name = names.get(attendee.user_id, 'Name not provided')
-        from types import SimpleNamespace
-        existing = {attendee.user_id for attendee in context['attendees']}
-        for user_id, name in names.items():
-            if user_id not in existing:
-                context['attendees'].append(SimpleNamespace(user_id=user_id, historical_name=name, user=None, status='Record unavailable', has_signed=False))
-        context['attendees'].sort(key=lambda attendee: attendee.user_id)
+        if groups:
+            names = {entry['user_id']: entry['name'] for entry in meeting.historical_roster.entries if entry['assigned']}
+            for attendee in context['attendees']:
+                attendee.display_name = names.get(attendee.user_id, 'Name not provided')
+            from types import SimpleNamespace
+            existing = {attendee.user_id for attendee in context['attendees']}
+            for user_id, name in names.items():
+                if user_id not in existing:
+                    context['attendees'].append(SimpleNamespace(user_id=user_id, display_name=name, user=None, status='Record unavailable', has_signed=False))
+            context['attendees'].sort(key=lambda attendee: attendee.user_id)
+        else:
+            from .reading import participant_name
+            for attendee in context['attendees']:
+                user = attendee.user
+                attendee.display_name = participant_name(user.first_name, user.last_name, user.username)
     context.update(can_manage_meeting=can_manage, officer_read_only=not can_manage,
                    can_export_meeting_pdf=context['meeting'].status in ('Finished', 'Archived') if can_manage else True)
     return render(request, 'meetings/review_meeting.html', context)
@@ -1538,6 +1545,18 @@ def document_history(request, meeting_id):
         return HttpResponseForbidden('Not authorized to view document history.')
     events = AuditLog.objects.filter(meeting=meeting).select_related('user').order_by('-timestamp', '-pk')
     page = Paginator(events, 25).get_page(request.GET.get('page'))
+    for event in page:
+        metadata = event.safe_metadata
+        for key in ('signed_at', 'expires_at'):
+            value = metadata.get(key)
+            if isinstance(value, str):
+                try:
+                    parsed = parse_datetime(value)
+                except ValueError:
+                    continue
+                if parsed is not None and timezone.is_aware(parsed):
+                    metadata[key] = timezone.localtime(parsed).isoformat()
+        event.display_metadata = metadata
     return render(request, 'meetings/document_history.html', {'meeting': meeting, 'page_obj': page})
 
 
