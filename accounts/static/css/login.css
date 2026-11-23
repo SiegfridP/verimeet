@@ -20,21 +20,28 @@
 .vm-login .vm-login-wordmark {
   margin: 0 0 1rem;
   color: var(--nav);
-  font-size: clamp(3rem, 5vw, 3.75rem);
-  font-weight: 750;
+  font-size: clamp(3rem, 5vw, 4rem);
+  font-weight: 800;
   line-height: 1.1;
   letter-spacing: -.05em;
 }
+/* Gold highlighter underline, echoing "UA Transforms You" on the university site */
 .vm-login .vm-login-slogan {
-  margin: 0 0 1rem;
-  color: var(--primary-ink);
+  display: inline;
+  margin: 0;
+  padding: 0 .25em;
+  margin-left: -.25em;
+  color: var(--nav);
   font-size: clamp(1.35rem, 2.4vw, 1.85rem);
-  font-weight: 600;
-  line-height: 1.35;
+  font-weight: 700;
+  line-height: 1.6;
+  background: linear-gradient(transparent 58%, #f5be4199 58%);
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
 }
 .vm-login .vm-login-description {
   max-width: 38ch;
-  margin: 0;
+  margin: 1.25rem 0 0;
   color: var(--muted);
   font-size: 1.1rem;
 }
@@ -42,21 +49,40 @@
   width: 100%;
   max-width: 440px;
   justify-self: end;
-  padding: 1.75rem;
+  padding: 2rem 1.75rem 1.75rem;
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: 12px;
-  box-shadow: 0 8px 32px #101c2e0d, 0 2px 6px #101c2e08;
+  border-top: 5px solid var(--gold);
+  border-radius: 14px;
+  box-shadow: 0 12px 40px #0a24631a, 0 2px 6px #0a246310;
 }
 .vm-login-card h1 { color: var(--nav); margin-top: 0; }
-.vm-login-card h2 { font-size: 1.1rem; }
+.vm-login-card h2 { font-size: 1.05rem; }
 .vm-login-card form p { margin: .8rem 0; }
 .vm-login-card form p:has(input[type=checkbox]) { display: flex; align-items: center; gap: .6rem; }
 .vm-login-card input[type=checkbox] { order: -1; }
 .vm-login .vm-login-card form { margin-top: 1.25rem; }
-.vm-login-card button[type=submit] { width: 100%; }
-.vm-login-card ul { padding-left: 1.25rem; }
+.vm-login-card button[type=submit] { width: 100%; min-height: 48px; }
 .vm-login-card hr { border: 0; border-top: 1px solid var(--border); margin: 1.25rem 0; }
+
+/* Third-party sign-in providers become full-width buttons instead of a bulleted link */
+.vm-login-card ul { list-style: none; margin: .75rem 0 0; padding: 0; display: grid; gap: .6rem; }
+.vm-login-card ul a {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 46px;
+  padding: .55rem 1rem;
+  background: #fff;
+  color: var(--nav);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  font-weight: 650;
+  text-decoration: none;
+  transition: background-color .15s, border-color .15s;
+}
+.vm-login-card ul a:hover { background: var(--surface); border-color: var(--primary); color: var(--nav); }
+
 @media (max-width: 700px) {
   .vm-login .vm-content { padding: 2rem 1rem; }
   .vm-login-layout { grid-template-columns: minmax(0, 1fr); gap: 2rem; min-height: 0; }

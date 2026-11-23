@@ -1,6 +1,8 @@
 {% load static %}<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block head_title %}VeriMeet{% endblock %}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap">
 <link rel="stylesheet" href="{% static 'css/verimeet.css' %}">
 <script src="{% static 'js/workspace.js' %}" defer></script>{% block extra_head %}{% endblock %}</head>
 <body class="vm-app {% block body_class %}{% if user.is_authenticated %}vm-workspace{% else %}vm-public{% endif %}{% endblock %}">
