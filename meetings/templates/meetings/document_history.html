@@ -3,21 +3,55 @@
 {% block head_title %}Document History{% endblock %}
 {% load pht_display %}
 {% block content %}
-<header class="vm-page-header"><div><p class="vm-eyebrow">Activity &amp; evidence</p><h1>Document History</h1></div></header>
-<p>{{ meeting.title }} — {{ meeting.department.name }}</p><nav><a href="{% dashboard_url 'review_meeting' meeting.pk %}">Review meeting</a> <a href="{% dashboard_url 'department_dashboard' meeting.department_id %}">Department Dashboard</a></nav>
-<table class="vm-history-table">
-<thead><tr><th>Event</th><th>Type</th><th>Actor</th><th>Timestamp</th><th>Target</th><th>Details</th></tr></thead>
-<tbody>
+<header class="vm-page-header">
+  <div>
+    <p class="vm-eyebrow">Activity &amp; evidence</p>
+    <h1>Document History</h1>
+    <p class="vm-lead">{{ meeting.title }} &middot; {{ meeting.department.name }}</p>
+  </div>
+  <div class="vm-header-actions">
+    <a href="{% dashboard_url 'review_meeting' meeting.pk %}" class="button btn-secondary">Review meeting</a>
+    <a href="{% dashboard_url 'department_dashboard' meeting.department_id %}" class="button btn-secondary">Department dashboard</a>
+  </div>
+</header>
+
+{% if page_obj.paginator.count %}
+<p class="vm-panel-caption">{{ page_obj.paginator.count }} recorded event{{ page_obj.paginator.count|pluralize }}.</p>
+{% endif %}
+
+<ol class="vm-timeline">
 {% for event in page_obj %}
-<tr><td>{{ event.action }}</td><td>{{ event.event_type }}</td>
-<td>{% if event.user_id %}User #{{ event.user_id }}{% else %}System / unavailable{% endif %}</td>
-<td>{{ event.timestamp|pht_datetime }}</td><td>{{ event.target_type }} #{{ event.target_id }}</td>
-<td><dl>{% for key, value in event.display_metadata.items %}<dt>{{ key }}</dt><dd>{{ value }}</dd>{% endfor %}</dl></td></tr>
-{% empty %}<tr><td colspan="6">No document history recorded.</td></tr>{% endfor %}
-</tbody></table>
+  <li class="vm-event {% if 'signature' in event.event_type %}vm-ev-sign{% elif 'export' in event.event_type %}vm-ev-export{% elif 'revok' in event.event_type %}vm-ev-danger{% endif %}">
+    <div class="vm-event-head">
+      <h2 class="vm-event-title">{{ event.action }}</h2>
+      <time class="vm-event-time">{{ event.timestamp|pht_datetime }}</time>
+    </div>
+    <p class="vm-event-meta">
+      <span><b>Actor</b>{% if event.user_id %}User #{{ event.user_id }}{% else %}System / unavailable{% endif %}</span>
+      <span><b>Target</b>{{ event.target_type }} #{{ event.target_id }}</span>
+      <span class="badge">{{ event.event_type }}</span>
+    </p>
+    {% if event.display_metadata %}
+    <details>
+      <summary>Details ({{ event.display_metadata|length }})</summary>
+      <dl class="vm-kv">
+        {% for key, value in event.display_metadata.items %}
+        <div><dt>{{ key }}</dt><dd>{{ value }}</dd></div>
+        {% endfor %}
+      </dl>
+    </details>
+    {% endif %}
+  </li>
+{% empty %}
+  <li class="vm-event vm-empty">No document history recorded.</li>
+{% endfor %}
+</ol>
+
+{% if page_obj.paginator.num_pages > 1 %}
 <nav aria-label="History pages">
-{% if page_obj.has_previous %}<a href="?page={{ page_obj.previous_page_number }}&amp;{% dashboard_query %}">Previous</a>{% endif %}
-<span>Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span>
-{% if page_obj.has_next %}<a href="?page={{ page_obj.next_page_number }}&amp;{% dashboard_query %}">Next</a>{% endif %}
+  {% if page_obj.has_previous %}<a href="?page={{ page_obj.previous_page_number }}&amp;{% dashboard_query %}">&larr; Previous</a>{% else %}<span></span>{% endif %}
+  <span>Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span>
+  {% if page_obj.has_next %}<a href="?page={{ page_obj.next_page_number }}&amp;{% dashboard_query %}">Next &rarr;</a>{% else %}<span></span>{% endif %}
 </nav>
+{% endif %}
 {% endblock %}
