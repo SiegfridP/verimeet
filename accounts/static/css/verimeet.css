@@ -172,6 +172,8 @@
 /* ---------- Buttons (one system for buttons AND link-buttons) ---------- */
 .vm-content :is(button, .button, .btn, .btn-primary, .invitation-card__review),
 .vm-content :is(.actions, .actions-row, .nav-links, .actions-bar, .vm-toolbar, .vm-header-actions, .vm-page-header, nav) > a:not([class*="vm-"]),
+.vm-content form[method=get] a:not([class*="vm-"]),
+.vm-content :is(.vm-settings-panel, .vm-settings-panel :not(li)) > a:not([class*="vm-"]),
 .vm-content td:last-child a {
   --btn-bg: var(--primary); --btn-fg: #fff; --btn-bd: transparent;
   --btn-bg-h: var(--navy); --btn-fg-h: #fff; --btn-bd-h: transparent;
@@ -184,6 +186,8 @@
 }
 .vm-content :is(button, .button, .btn, .btn-primary, .invitation-card__review):hover,
 .vm-content :is(.actions, .actions-row, .nav-links, .actions-bar, .vm-toolbar, .vm-header-actions, .vm-page-header, nav) > a:not([class*="vm-"]):hover,
+.vm-content form[method=get] a:not([class*="vm-"]):hover,
+.vm-content :is(.vm-settings-panel, .vm-settings-panel :not(li)) > a:not([class*="vm-"]):hover,
 .vm-content td:last-child a:hover {
   background: var(--btn-bg-h); color: var(--btn-fg-h); border-color: var(--btn-bd-h); text-decoration: none;
 }
@@ -191,6 +195,8 @@
 /* Secondary: any plain link inside an action area, plus explicit secondary classes */
 .vm-content :is(.btn-secondary, .button-secondary, .secondary-link),
 .vm-content :is(.actions, .actions-row, .nav-links, .actions-bar, .vm-toolbar, .vm-header-actions, .vm-page-header, nav) > a:not([class*="vm-"], .button, .btn),
+.vm-content form[method=get] a:not([class*="vm-"]):not(.button, .btn),
+.vm-content :is(.vm-settings-panel, .vm-settings-panel :not(li)) > a:not([class*="vm-"]):not(.button, .btn),
 .vm-content td:last-child a:not(.button, .btn) {
   --btn-bg: #fff; --btn-fg: var(--navy); --btn-bd: var(--border-strong);
   --btn-bg-h: var(--surface); --btn-fg-h: var(--navy); --btn-bd-h: var(--primary);
@@ -200,6 +206,8 @@
 .vm-content .btn-finalize { --btn-bg: var(--gold); --btn-fg: var(--navy); --btn-bd: transparent; --btn-bg-h: var(--gold-deep); --btn-fg-h: var(--navy); --btn-bd-h: transparent; }
 .vm-content .btn-tertiary { --btn-bg: transparent; --btn-fg: var(--primary-ink); --btn-bd: transparent; --btn-bg-h: var(--surface); --btn-fg-h: var(--navy); box-shadow: none; }
 .vm-content :is(button:disabled, input:disabled, select:disabled, .button[aria-disabled=true]) { opacity: .6; cursor: not-allowed; box-shadow: none; }
+
+.vm-content :is(.vm-settings-panel, .vm-settings-panel :not(li)) > a:not([class*="vm-"]) { margin: .25rem .5rem .25rem 0; }
 
 /* Compact buttons inside tables */
 .vm-content td:last-child a { min-height: 34px; padding: .3rem .75rem; font-size: .8125rem; margin: .15rem .35rem .15rem 0; }
@@ -370,10 +378,75 @@
 .vm-projector .vm-footer { font-size: .75rem; }
 .vm-auth .vm-content { max-width: 620px; background: white; border: 1px solid var(--border); border-top: 4px solid var(--gold); border-radius: var(--radius); margin: 2rem auto; padding: 2.5rem; box-shadow: var(--shadow); }
 .vm-auth .vm-content form { margin-top: 1.5rem; }
-.vm-auth .vm-content form p > :is(input, select) { width: 100%; }
+.vm-auth .vm-content form p > :is(input:not([type=radio]):not([type=checkbox]), select) { width: 100%; }
 .vm-auth .vm-content input[type=checkbox] { width: 1.15rem; }
 .vm-public .vm-content { max-width: 900px; }
 .vm-error .vm-content { max-width: 760px; padding-block: 4rem; }
+
+/* ---------- Radio / checkbox rows (e.g. Email Settings) ---------- */
+.vm-content :is(p, div, li):has(> input[type=radio], > input[type=checkbox]) {
+  display: flex; align-items: center; gap: .65rem; flex-wrap: nowrap;
+}
+.vm-content :is(p, div, li):has(> input[type=radio], > input[type=checkbox]) > label {
+  display: inline-flex; align-items: center; gap: .5rem; flex-wrap: wrap; flex: 1 1 auto; min-width: 0; margin: 0; cursor: pointer;
+}
+.vm-content label:has(> input[type=radio], > input[type=checkbox]) {
+  display: inline-flex; align-items: center; gap: .65rem; flex-wrap: wrap; cursor: pointer;
+}
+.vm-content input[type=radio], .vm-content input[type=checkbox] { width: 1.15rem; height: 1.15rem; margin: 0; }
+/* Email list: give each address a clean row, status as a pill */
+.vm-content :is(p, div, li):has(> input[name=email][type=radio]) {
+  padding: .85rem 1rem; margin: .6rem 0; background: #F6F9FE; border: 1px solid var(--border); border-radius: 10px;
+}
+.vm-content :is(p, div, li):has(> input[name=email][type=radio]) :is(strong, .unverified, .verified, .primary) {
+  display: inline-flex; padding: .1rem .65rem; border-radius: 999px; font-size: .72rem; font-weight: 700; line-height: 1.6;
+  background: #FEF0C3; color: #6B4A00;
+}
+.vm-content :is(p, div, li):has(> input[name=email][type=radio]) .verified { background: #DCFCE7; color: #166534; }
+.vm-content :is(p, div, li):has(> input[name=email][type=radio]) .primary { background: #DCEAF8; color: var(--navy); }
+/* Email action buttons: Remove is destructive */
+.vm-content form button[name=action_remove] { --btn-bg: #fff; --btn-fg: var(--red); --btn-bd: #E7B4B4; --btn-bg-h: var(--red); --btn-fg-h: #fff; --btn-bd-h: var(--red); }
+.vm-content form :is(button[name=action_primary], button[name=action_send], button[name=action_remove]) { min-height: 40px; }
+
+/* ---------- Email list: addresses on the left, action buttons beside them ---------- */
+.vm-content form:has(input[name=email][type=radio]) {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 1.5rem; row-gap: 0; align-items: center;
+}
+.vm-content form:has(input[name=email][type=radio]) > :has(input[type=radio]) { grid-column: 1; margin: .3rem 0; }
+/* Buttons placed directly in the form: one compact stack at the top of the right-hand column */
+.vm-content form:has(input[name=email][type=radio]) > button {
+  grid-column: 2; grid-row: 1 / span 100; align-self: start;
+  width: 100%; min-width: 13rem; height: 2.5rem; min-height: 2.5rem; padding-block: 0; margin: .3rem 0 0;
+}
+.vm-content form:has(input[name=email][type=radio]) > button:nth-of-type(2) { margin-top: calc(.3rem + 3rem); }
+.vm-content form:has(input[name=email][type=radio]) > button:nth-of-type(3) { margin-top: calc(.3rem + 6rem); }
+.vm-content form:has(input[name=email][type=radio]) > button:nth-of-type(4) { margin-top: calc(.3rem + 9rem); }
+/* Buttons inside a wrapper element, if the template provides one */
+.vm-content form:has(input[name=email][type=radio]) > :not(:has(input[type=radio])):not(input):not(button) {
+  grid-column: 2; grid-row: 1 / span 100; align-self: start;
+  display: flex; flex-direction: column; align-items: stretch; gap: .5rem; min-width: 13rem; margin: .3rem 0;
+}
+.vm-content form:has(input[name=email][type=radio]) > :not(:has(input[type=radio])):not(input):not(button) > * { width: 100%; margin: 0; }
+@media (max-width: 640px) {
+  .vm-content form:has(input[name=email][type=radio]) { grid-template-columns: minmax(0, 1fr); }
+  .vm-content form:has(input[name=email][type=radio]) > button { grid-column: 1; grid-row: auto !important; min-width: 0; margin: .3rem 0 !important; }
+  .vm-content form:has(input[name=email][type=radio]) > :not(:has(input[type=radio])):not(input):not(button) {
+    grid-column: 1; grid-row: auto; flex-direction: row; flex-wrap: wrap; min-width: 0;
+  }
+  .vm-content form:has(input[name=email][type=radio]) > :not(:has(input[type=radio])):not(input):not(button) > * { width: auto; flex: 1 1 auto; }
+}
+
+/* ---------- Email guidance notice ---------- */
+.vm-content .vm-email-guidance { margin-top: 1.5rem; }
+.vm-content .vm-email-guidance p { margin: .5rem 0; }
+.vm-content .vm-email-guidance p:last-child { color: var(--muted); font-size: .85rem; }
+.vm-content .vm-howto { margin: .6rem 0; background: #fff; border: 1px solid #CFE0F5; border-radius: 8px; }
+.vm-content .vm-howto > summary { padding: .6rem .9rem; font-weight: 650; color: var(--navy); border-radius: 8px; }
+.vm-content .vm-howto > summary:hover { background: var(--surface); }
+.vm-content .vm-howto[open] > summary { border-bottom: 1px solid #CFE0F5; border-radius: 8px 8px 0 0; }
+.vm-content .vm-howto > :not(summary) { margin-inline: .9rem; }
+.vm-content .vm-howto ol { margin-block: .6rem; padding-left: 1.25rem; }
+.vm-content .vm-howto > p { margin-bottom: .75rem; color: var(--muted); font-size: .85rem; }
 
 /* ---------- Responsive ---------- */
 @media (max-width: 900px) {
